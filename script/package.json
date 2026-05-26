@@ -1,0 +1,16 @@
+{
+  "name": "termy-spec-scripts",
+  "version": "1.0.0",
+  "description": "Build-time scripts for Termy: Fig spec → zsh converter and related tools.",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "test": "node test-convert-fig-specs.mjs"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "esbuild": "0.28.0"
+  }
+}

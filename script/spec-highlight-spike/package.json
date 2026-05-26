@@ -1,0 +1,16 @@
+{
+  "name": "spec-highlight-spike",
+  "version": "1.0.0",
+  "description": "Phase-0 de-risking spike for the command-spec-aware syntax highlighting feature (FB-1 follow-up).",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "devDependencies": {
+    "esbuild": "^0.28.0"
+  }
+}

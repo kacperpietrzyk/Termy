@@ -1,0 +1,7 @@
+# Termy spec-highlight: zsh assoc arrays for command "mvn"
+# Auto-generated from Fig spec — do not edit by hand
+# Variable naming: TS_MVN_SUB / TS_MVN_OPT / nested TS_MVN_<sub>_SUB etc.
+# SUB values: 1=has child data, 0=leaf  |  OPT values: 1=takes-arg, 0=flag
+
+typeset -gA TS_MVN_OPT=( ["--also-make"]=0 ["-am"]=0 ["--also-make-dependents"]=0 ["-amd"]=0 ["--batch-mode"]=0 ["-B"]=0 ["--builder"]=1 ["-b"]=1 ["--strict-checksums"]=0 ["-C"]=0 ["--lax-checksums"]=0 ["-c"]=0 ["--color"]=1 ["--check-plugin-updates"]=0 ["-cpu"]=0 ["--define"]=1 ["-D"]=1 ["--errors"]=0 ["-e"]=0 ["--encrypt-master-password"]=1 ["-emp"]=1 ["--encrypt-password"]=1 ["-ep"]=1 ["--file"]=1 ["-f"]=1 ["--fail-at-end"]=0 ["-fae"]=0 ["--fail-fast"]=0 ["-ff"]=0 ["--fail-never"]=0 ["-fn"]=0 ["--global-settings"]=1 ["-gs"]=1 ["--global-toolchains"]=1 ["-gt"]=1 ["--help"]=0 ["-h"]=0 ["--log-file"]=1 ["-l"]=1 ["--legacy-local-repository"]=0 ["-llr"]=0 ["--non-recursive"]=0 ["-N"]=0 ["--no-plugin-registry"]=0 ["-npr"]=0 ["--no-plugin-updates"]=0 ["-npu"]=0 ["--no-snapshot-updates"]=0 ["-nsu"]=0 ["--no-transfer-progress"]=0 ["-ntp"]=0 ["--offline"]=0 ["-o"]=0 ["--activate-profiles"]=1 ["-P"]=1 ["--projects"]=1 ["-pl"]=1 ["--quiet"]=0 ["-q"]=0 ["--resume-from"]=1 ["-rf"]=1 ["--settings"]=1 ["-s"]=1 ["--toolchains"]=1 ["-t"]=1 ["--threads"]=1 ["-T"]=1 ["--update-snapshots"]=0 ["-U"]=0 ["--update-plugins"]=0 ["-up"]=0 ["--version"]=0 ["-v"]=0 ["--show-version"]=0 ["-V"]=0 ["--debug"]=0 ["-X"]=0 )
+# TS_MVN positional args: goal_phase

@@ -1,0 +1,22 @@
+# vendor/freerdp/PINS — pinned sources for the FreeRDP static build
+# Format: FIELD DEP VALUE
+# build_freerdp.sh greps this file as the source of truth.
+# Never change values here without updating the script's SHA constants too.
+
+# FreeRDP 3.26.0
+REPO     FREERDP  https://github.com/FreeRDP/FreeRDP
+TAG      FREERDP  3.26.0
+TAG_SHA  FREERDP  8160db81803e12fc88dff65abb6173c381f42a71
+COMMIT   FREERDP  3f6d7cb1f8973cc84c66b258a9a61c4e2b2f30a6
+
+# OpenSSL 3.5.3 (current LTS stable patch — OpenSSL 3.5 is the 2025-04 LTS line)
+REPO     OPENSSL  https://github.com/openssl/openssl
+TAG      OPENSSL  openssl-3.5.3
+TAG_SHA  OPENSSL  1266c34f486ff9dc174785bb6ec9b02c8f688455
+COMMIT   OPENSSL  c4da9ac23de497ce039a102e6715381047899447
+
+# zlib 1.3.1 (current stable)
+REPO     ZLIB     https://github.com/madler/zlib
+TAG      ZLIB     v1.3.1
+TAG_SHA  ZLIB     925af44f3cde53c6b076611c297850091b5dc7bb
+COMMIT   ZLIB     51b7f2abdade71cd9bb0e7a373ef2610ec6f9daf

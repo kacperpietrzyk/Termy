@@ -1,0 +1,6 @@
+# Termy spec-highlight: zsh assoc arrays for command "psql"
+# Auto-generated from Fig spec — do not edit by hand
+# Variable naming: TS_PSQL_SUB / TS_PSQL_OPT / nested TS_PSQL_<sub>_SUB etc.
+# SUB values: 1=has child data, 0=leaf  |  OPT values: 1=takes-arg, 0=flag
+
+typeset -gA TS_PSQL_OPT=( ["-a"]=0 ["--echo-all"]=0 ["-A"]=0 ["--no-align"]=0 ["-b"]=0 ["--echo-errors"]=0 ["-c"]=1 ["--command"]=1 ["--csv"]=0 ["-d"]=1 ["--dbname"]=1 ["-e"]=0 ["--echo-queries"]=0 ["-E"]=0 ["--echo-hidden"]=0 ["-f"]=1 ["--file"]=1 ["-F"]=1 ["--field-separator"]=1 ["-h"]=1 ["--host"]=1 ["-H"]=0 ["--html"]=0 ["-l"]=0 ["--list"]=0 ["-L"]=1 ["--log-file"]=1 ["-n"]=0 ["--no-readline"]=0 ["-o"]=1 ["--output"]=1 ["-p"]=1 ["--port"]=1 ["-P"]=1 ["--pset"]=1 ["-q"]=0 ["--quiet"]=0 ["-R"]=1 ["--record-separator"]=1 ["-s"]=0 ["--single-step"]=0 ["-S"]=0 ["--single-line"]=0 ["-t"]=0 ["--tuples-only"]=0 ["-T"]=1 ["--table-attr"]=1 ["-U"]=1 ["--username"]=1 ["-v"]=1 ["--set"]=1 ["--variable"]=1 ["-V"]=0 ["--version"]=0 ["-w"]=0 ["--no-password"]=0 ["-W"]=0 ["--password"]=0 ["-x"]=0 ["--expanded"]=0 ["-X"]=0 ["--no-psqlrc"]=0 ["-z"]=0 ["--field-separator-zero"]=0 ["-0"]=0 ["--record-separator-zero"]=0 ["-1"]=0 ["--single-transaction"]=0 ["-?"]=0 ["--help"]=0 )

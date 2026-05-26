@@ -1,0 +1,21 @@
+Termy
+Copyright 2026 Kacper Pietrzyk
+
+This product includes software developed by third parties, redistributed
+under their respective licenses:
+
+- FreeRDP (https://github.com/FreeRDP/FreeRDP) — Apache License 2.0.
+  Statically linked. Pinned 3.26.0. See THIRDPARTY-RDP.md.
+- OpenSSL (https://github.com/openssl/openssl) — Apache License 2.0.
+  Statically linked via the FreeRDP build. Pinned 3.5.3.
+- zlib (https://github.com/madler/zlib) — zlib License.
+  Statically linked via the FreeRDP build. Pinned 1.3.1.
+- SwiftTerm (https://github.com/migueldeicaza/SwiftTerm) — MIT License. Pinned 1.13.0.
+- Sparkle (https://github.com/sparkle-project/Sparkle) — MIT License. Pinned 2.9.2.
+- zsh-syntax-highlighting (https://github.com/zsh-users/zsh-syntax-highlighting)
+  — BSD 3-Clause License. Vendored subset; see vendor/zsh-syntax-highlighting/LICENSE.md
+  and THIRDPARTY-SYNTAX-HL.md.
+- withfig/autocomplete (https://github.com/withfig/autocomplete) — MIT License.
+  A curated subset converted to zsh tables at regeneration time only; see THIRDPARTY-SPECS.md.
+- Geist & Geist Mono fonts (https://github.com/vercel/geist-font)
+  — SIL Open Font License 1.1. See Resources/Fonts/OFL.txt and THIRDPARTY-FONTS.md.

@@ -1,0 +1,6 @@
+# Termy spec-highlight: zsh assoc arrays for command "fzf"
+# Auto-generated from Fig spec — do not edit by hand
+# Variable naming: TS_FZF_SUB / TS_FZF_OPT / nested TS_FZF_<sub>_SUB etc.
+# SUB values: 1=has child data, 0=leaf  |  OPT values: 1=takes-arg, 0=flag
+
+typeset -gA TS_FZF_OPT=( ["-x"]=0 ["--extended"]=0 ["+x"]=0 ["--no-extended"]=0 ["-e"]=0 ["--exact"]=0 ["--algo"]=1 ["-i"]=0 ["+i"]=0 ["--literal"]=0 ["-n"]=1 ["--nth"]=1 ["--with-nth"]=1 ["-d"]=1 ["--delimiter"]=1 ["+s"]=0 ["--no-sort"]=0 ["--tac"]=0 ["--disabled"]=0 ["--tiebreak"]=1 ["-m"]=1 ["--multi"]=1 ["--no-mouse"]=0 ["--bind"]=1 ["--cycle"]=0 ["--keep-right"]=0 ["--no-hscroll"]=0 ["--hscroll-off"]=1 ["--filepath-word"]=0 ["--jump-labels"]=1 ["--height"]=1 ["--min-height"]=1 ["--layout"]=1 ["--border"]=1 ["--margin"]=1 ["--padding"]=1 ["--info"]=1 ["--prompt"]=1 ["--pointer"]=1 ["--marker"]=1 ["--header"]=1 ["--header-lines"]=1 ["--ansi"]=0 ["--tabstop"]=1 ["--color"]=1 ["--no-bold"]=0 ["--history"]=1 ["--history-size"]=1 ["--preview"]=1 ["--preview-window"]=1 ["-q"]=1 ["--query"]=1 ["-1"]=0 ["--select-1"]=0 ["-0"]=0 ["--exit-0"]=0 ["-f"]=1 ["--filter"]=1 ["--print-query"]=0 ["--expect"]=1 ["--read0"]=0 ["--print0"]=0 ["--sync"]=0 ["--version"]=0 )

@@ -1,0 +1,6 @@
+# Termy spec-highlight: zsh assoc arrays for command "gcloud"
+# Auto-generated from Fig spec — do not edit by hand
+# Variable naming: TS_GCLOUD_SUB / TS_GCLOUD_OPT / nested TS_GCLOUD_<sub>_SUB etc.
+# SUB values: 1=has child data, 0=leaf  |  OPT values: 1=takes-arg, 0=flag
+
+typeset -gA TS_GCLOUD_SUB=( ["access-context-manager"]=0 ["active-directory"]=0 ["ai-platform"]=0 ["alpha"]=0 ["anthos"]=0 ["apigee"]=0 ["app"]=0 ["artifacts"]=0 ["asset"]=0 ["auth"]=0 ["beta"]=0 ["bigtable"]=0 ["builds"]=0 ["cheat-sheet"]=0 ["cloud-shell"]=0 ["components"]=0 ["composer"]=0 ["compute"]=0 ["config"]=0 ["container"]=0 ["data-catalog"]=0 ["dataflow"]=0 ["dataproc"]=0 ["datastore"]=0 ["debug"]=0 ["deployment-manager"]=0 ["dns"]=0 ["docker"]=0 ["domains"]=0 ["endpoints"]=0 ["feedback"]=0 ["filestore"]=0 ["firebase"]=0 ["firestore"]=0 ["functions"]=0 ["game"]=0 ["healthcare"]=0 ["help"]=0 ["iam"]=0 ["iap"]=0 ["identity"]=0 ["info"]=0 ["init"]=0 ["iot"]=0 ["kms"]=0 ["logging"]=0 ["meta"]=0 ["ml"]=0 ["ml-engine"]=0 ["monitoring"]=0 ["network-management"]=0 ["organizations"]=0 ["policy-troubleshoot"]=0 ["projects"]=0 ["pubsub"]=0 ["recommender"]=0 ["redis"]=0 ["resource-manager"]=0 ["run"]=0 ["scc"]=0 ["scheduler"]=0 ["secrets"]=0 ["services"]=0 ["source"]=0 ["spanner"]=0 ["sql"]=0 ["survey"]=0 ["tasks"]=0 ["topic"]=0 ["version"]=0 )

@@ -1,0 +1,17 @@
+# Termy gitleaks config — extends the default ruleset, allowlisting verified
+# false positives (PEM *marker strings* in detection code + a truncated
+# placeholder test key with no key material).
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Verified non-secret PEM markers and placeholder test fixtures"
+paths = [
+  '''Sources/TermyCore/SSHKeyCommands\.swift''',
+  '''Tests/TermyTests/TermyStorePrivateSyncTests\.swift''',
+  '''Tests/TermyCoreTests/TermyCoreTests\.swift''',
+]
+regexes = [
+  '''-----BEGIN [A-Z ]*PRIVATE KEY-----''',
+  '''b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAA=''',
+]

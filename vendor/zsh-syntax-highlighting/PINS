@@ -1,0 +1,7 @@
+# Canonical pin for the vendored zsh-syntax-highlighting (FB-1).
+# Bump here first, then re-sync THIRDPARTY-SYNTAX-HL.md.
+NAME    zsh-syntax-highlighting
+TAG     0.8.0
+SHA     db085e4661f6aafd24e5acb5b2e17e4dd5dddf3e
+REPO    https://github.com/zsh-users/zsh-syntax-highlighting
+LICENSE MIT

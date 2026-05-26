@@ -1,0 +1,15 @@
+--- a/channels/rdpsnd/client/CMakeLists.txt	2026-05-19 22:50:27
++++ b/channels/rdpsnd/client/CMakeLists.txt	2026-05-19 22:50:37
+@@ -23,6 +23,12 @@
+ 
+ add_channel_client_library(${MODULE_PREFIX} ${MODULE_NAME} ${CHANNEL_NAME} FALSE "VirtualChannelEntryEx;DVCPluginEntry")
+ 
++# Termy custom PCM subsystem (M5 design spec §6). Always built into the
++# static libfreerdp-client3.a (no WITH_* guard): it opens no audio device,
++# it forwards PCM into the Termy shim. Selected at connect via the rdpsnd
++# channel arg "sys:termy". Added by script/build_freerdp.sh's overlay hook.
++add_channel_client_subsystem(${MODULE_PREFIX} ${CHANNEL_NAME} "termy" "")
++
+ if(WITH_OSS)
+   add_channel_client_subsystem(${MODULE_PREFIX} ${CHANNEL_NAME} "oss" "")
+ endif()

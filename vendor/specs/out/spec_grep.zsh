@@ -1,0 +1,7 @@
+# Termy spec-highlight: zsh assoc arrays for command "grep"
+# Auto-generated from Fig spec — do not edit by hand
+# Variable naming: TS_GREP_SUB / TS_GREP_OPT / nested TS_GREP_<sub>_SUB etc.
+# SUB values: 1=has child data, 0=leaf  |  OPT values: 1=takes-arg, 0=flag
+
+typeset -gA TS_GREP_OPT=( ["--help"]=0 ["-E"]=0 ["--extended-regexp"]=0 ["-F"]=0 ["--fixed-string"]=0 ["-G"]=0 ["--basic-regexp"]=0 ["-e"]=1 ["--regexp"]=1 ["-i"]=0 ["--ignore-case"]=0 ["-y"]=0 ["-v"]=0 ["--invert-match"]=0 ["-w"]=0 ["--word-regexp"]=0 ["-x"]=0 ["--line-regexp"]=0 ["-c"]=0 ["--count"]=0 ["--color"]=1 ["-L"]=0 ["--files-without-match"]=0 ["-l"]=0 ["--files-with-matches"]=0 ["-m"]=1 ["--max-count"]=1 ["-o"]=0 ["--only-matching"]=0 ["-q"]=0 ["--quiet"]=0 ["--silent"]=0 ["-s"]=0 ["--no-messages"]=0 ["-b"]=0 ["--byte-offset"]=0 ["-H"]=0 ["--with-filename"]=0 ["-h"]=0 ["--no-filename"]=0 ["--label"]=1 ["-n"]=0 ["--line-number"]=0 ["-T"]=0 ["--initial-tab"]=0 ["-u"]=0 ["--unix-byte-offsets"]=0 ["--null"]=0 ["-A"]=1 ["--after-context"]=1 ["-B"]=1 ["--before-context"]=1 ["-C"]=1 ["--context"]=1 ["-a"]=0 ["--text"]=0 ["--binary-files"]=1 ["-D"]=1 ["--devices"]=1 ["-d"]=1 ["--directories"]=1 ["--exclude"]=1 ["--exclude-dir"]=1 ["-I"]=0 ["--include"]=1 ["--include-dir"]=1 ["-R"]=0 ["-r"]=0 ["--recursive"]=0 ["--line-buffered"]=0 ["-U"]=0 ["--binary"]=0 ["-J"]=0 ["-bz2decompress"]=0 ["-V"]=0 ["--version"]=0 ["-P"]=0 ["--perl-regexp"]=0 ["-f"]=1 ["--file"]=1 )
+# TS_GREP positional args: search_pattern file

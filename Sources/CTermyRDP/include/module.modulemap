@@ -1,0 +1,4 @@
+module CTermyRDP {
+    header "ctermyrdp.h"
+    export *
+}

@@ -1,0 +1,8 @@
+# Canonical pin for the vendored withfig/autocomplete spec DB (FB-1 spec-highlight).
+# Bump here first, then re-sync THIRDPARTY-SPECS.md.
+NAME    withfig-autocomplete
+TAG     (none — pinned by SHA)
+SHA     aef52acff84c45edde61ae610cc2c964802b9a38
+REPO    https://github.com/withfig/autocomplete
+LICENSE MIT
+NOTE    Build-time-only source; vendored artifact is the converted text under vendor/specs/out/.
