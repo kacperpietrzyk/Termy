@@ -454,7 +454,10 @@ extension CompletionSidecar {
             // Reap the child to avoid a zombie.
             var status: Int32 = 0
             _ = waitpid(pid, &status, WNOHANG)
-            Task { await sidecar?.simulateCrash() }
+            // Capture an immutable copy so the Task doesn't capture a mutable var
+            // (rejected by stricter/older Swift concurrency checking).
+            let crashSidecar = sidecar
+            Task { await crashSidecar?.simulateCrash() }
         }
         exitSource.resume()
 
@@ -462,13 +465,17 @@ extension CompletionSidecar {
         // attachDispatchSource stores the resources; if terminate() already ran
         // it cleans them up immediately. The drain source cancel handler owns
         // masterFd — no other code closes it after this point.
+        // Capture immutable copies so the Task doesn't capture mutable vars
+        // (rejected by stricter/older Swift concurrency checking).
+        let attachSidecar = sidecar
+        let attachMasterFd = masterFd
         Task {
-            await sidecar.attachDispatchSource(
+            await attachSidecar.attachDispatchSource(
                 watchSource,
                 drainSource: drainSource,
                 exitSource: exitSource,
                 pid: pid,
-                masterFd: masterFd
+                masterFd: attachMasterFd
             )
         }
 
