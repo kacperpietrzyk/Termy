@@ -939,15 +939,17 @@ final class TermyStore: ObservableObject {
     func shellVersion(forSession sessionID: UUID) -> String? {
         guard let session = sessions.first(where: { $0.id == sessionID }),
               session.interactionMode == .rawPTY, session.agentType == nil else { return nil }
-        return shellVersionCache[terminalShellProfile.command.shellPath]
+        // Key by the session's OWN launched shell, not the current global default
+        // (which drifts when the user changes the default shell mid-run).
+        guard let shellPath = terminalLaunchDescriptors[sessionID]?.executable else { return nil }
+        return shellVersionCache[shellPath]
     }
 
     /// Probes `<shell> --version` once per shell path, off the main thread, then caches.
     /// The outer `Task` inherits this type's `@MainActor` isolation (so the cache write
     /// is main-actor-safe); only the blocking `Process` probe is offloaded via an inner
     /// detached task.
-    func warmShellVersionIfNeeded() {
-        let shellPath = terminalShellProfile.command.shellPath
+    func warmShellVersionIfNeeded(forShellPath shellPath: String) {
         guard shellVersionCache[shellPath] == nil else { return }
         Task { [weak self] in
             let version = await Task.detached { Self.probeShellVersion(shellPath: shellPath) }.value
@@ -3120,6 +3122,10 @@ final class TermyStore: ObservableObject {
         AgentProgressFiles.removeAll(forSession: sessionID, in: agentStateRoot)
         terminalInputBuffers[sessionID] = nil
         terminalInputHighlights[sessionID] = nil
+        // The old surface (and its [weak view] input sink) is torn down below.
+        // Clear the stale sink so a restart on an unmounted tab doesn't leave a
+        // dead closure that silently swallows a later interrupt/reply.
+        terminalInputSinks[sessionID] = nil
 
         let now = Date()
         sessions[index].agentActivity = .working
@@ -4008,6 +4014,12 @@ final class TermyStore: ObservableObject {
     }
 
     private func cliAgentIdentity(for session: TermySession) -> (kind: String, displayName: String)? {
+        // Prefer the typed source of truth set at launch; the title is only a
+        // display string and drifts with format/localization/renames.
+        if let agent = session.agentType {
+            return (agent.rawValue, agent.displayName)
+        }
+        // Fallback for sessions lacking a typed agentType (e.g. test-constructed).
         if session.title.localizedCaseInsensitiveContains(CLIAgent.codex.displayName) {
             return (CLIAgent.codex.rawValue, CLIAgent.codex.displayName)
         }
@@ -4914,7 +4926,7 @@ final class TermyStore: ObservableObject {
         // F-4: spawn sidecar for local PTY sessions.
         spawnSidecar(for: sessionID, shellPath: shellCommand.shellPath)
         // v3 Shell §6.1: probe shell version once per shell path (idempotent).
-        warmShellVersionIfNeeded()
+        warmShellVersionIfNeeded(forShellPath: shellCommand.shellPath)
     }
 
     private func spawnSidecar(for sessionID: UUID, shellPath: String) {

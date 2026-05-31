@@ -52,9 +52,15 @@ struct RadialCenterView: View {
         }
     }
 
-    static func timeString(_ date: Date) -> String {
+    // Cached: `timeString` is called every second from the 1 Hz `TimelineView`
+    // above, and `DateFormatter()` is an expensive allocation to repeat.
+    private static let timeFormatter: DateFormatter = {
         let f = DateFormatter()
         f.dateFormat = "HH:mm"
-        return f.string(from: date)
+        return f
+    }()
+
+    static func timeString(_ date: Date) -> String {
+        timeFormatter.string(from: date)
     }
 }

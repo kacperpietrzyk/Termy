@@ -455,13 +455,19 @@ public struct VimEditorState: Equatable, Sendable {
 
         let startIndex = buffer.index(buffer.startIndex, offsetBy: cursorOffset)
         let endIndex = buffer.index(startIndex, offsetBy: toggleCount)
-        let replacement = buffer[startIndex..<endIndex].map { character in
+        let replacement = buffer[startIndex..<endIndex].map { character -> Character in
             if character.isLowercase {
-                Character(String(character).uppercased())
+                // `Character(String:)` traps unless the string is exactly one
+                // grapheme cluster, but some scalars case-fold to multiple
+                // (e.g. "ß".uppercased() == "SS"). Leave those unchanged, which
+                // also matches vim's `~` (it can't case-toggle such glyphs).
+                let upper = String(character).uppercased()
+                return upper.count == 1 ? Character(upper) : character
             } else if character.isUppercase {
-                Character(String(character).lowercased())
+                let lower = String(character).lowercased()
+                return lower.count == 1 ? Character(lower) : character
             } else {
-                character
+                return character
             }
         }
         recordUndoSnapshot()

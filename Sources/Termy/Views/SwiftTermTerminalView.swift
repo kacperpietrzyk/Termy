@@ -66,8 +66,10 @@ struct SwiftTermTerminalView: NSViewRepresentable {
             )
             // No child was ever started. Surface a synthetic exit so the
             // session doesn't wedge forever waiting on output that can never
-            // arrive (the store's onExit closure marks it terminated).
-            onExit(nil)
+            // arrive (the store's onExit closure marks it terminated). Deferred
+            // to the next runloop tick: calling it inline would publish store
+            // changes during `makeNSView` (a SwiftUI view-update cycle).
+            DispatchQueue.main.async { [onExit] in onExit(nil) }
         }
         controller.view = view
         storeRef.terminalSurfacePool.store(controller, forKey: key)

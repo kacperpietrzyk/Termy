@@ -76,10 +76,16 @@ struct DesktopHeroView: View {
         }
     }
 
-    static func dateString(_ date: Date) -> String {
+    // Cached: `dateString` is rebuilt on every render of this view, and a fresh
+    // `DateFormatter` per call is a needlessly expensive Foundation allocation.
+    private static let dateFormatter: DateFormatter = {
         let f = DateFormatter()
         f.locale = Locale(identifier: "en_US")
         f.dateFormat = "EEEE, MMMM d"
-        return f.string(from: date)
+        return f
+    }()
+
+    static func dateString(_ date: Date) -> String {
+        dateFormatter.string(from: date)
     }
 }
