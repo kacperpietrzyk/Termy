@@ -383,7 +383,11 @@ int ctermyrdp_test_pop_event(struct ctermyrdp_session* s,
 
 static void on_channel_connected(void* userdata, const ChannelConnectedEventArgs* e)
 {
-    struct ctermyrdp_session* s = (struct ctermyrdp_session*)userdata;
+    /* FreeRDP raises ChannelConnected with instance->context (an rdpContext*),
+     * not the session pointer — recover the session via ->owner exactly like
+     * every other context-driven callback (termy_end_paint, rdpsnd_deliver). */
+    ctermyrdp_rdp_context* cc = (ctermyrdp_rdp_context*)userdata;
+    struct ctermyrdp_session* s = cc ? cc->owner : NULL;
     if (!s || !e || !e->name) return;
 
     if (strcmp(e->name, CLIPRDR_SVC_CHANNEL_NAME) == 0) {
@@ -406,7 +410,9 @@ static void on_channel_connected(void* userdata, const ChannelConnectedEventArgs
 
 static void on_channel_disconnected(void* userdata, const ChannelDisconnectedEventArgs* e)
 {
-    struct ctermyrdp_session* s = (struct ctermyrdp_session*)userdata;
+    /* See on_channel_connected: userdata is the rdpContext*, recover via ->owner. */
+    ctermyrdp_rdp_context* cc = (ctermyrdp_rdp_context*)userdata;
+    struct ctermyrdp_session* s = cc ? cc->owner : NULL;
     if (!s || !e || !e->name) return;
     if (strcmp(e->name, CLIPRDR_SVC_CHANNEL_NAME) == 0) s->cliprdr = NULL;
     else if (strcmp(e->name, RDPDR_SVC_CHANNEL_NAME) == 0) s->rdpdr = NULL;

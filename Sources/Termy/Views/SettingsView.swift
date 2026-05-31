@@ -49,8 +49,8 @@ struct SettingsView: View {
 
                 DisclosureGroup("Shortcut Cheat Sheet") {
                     VStack(alignment: .leading, spacing: 6) {
-                        ForEach(store.shortcutCheatSheet.indices, id: \.self) { index in
-                            ShortcutCheatSheetRow(entry: store.shortcutCheatSheet[index])
+                        ForEach(store.shortcutCheatSheet) { entry in
+                            ShortcutCheatSheetRow(entry: entry)
                         }
                     }
                 }
