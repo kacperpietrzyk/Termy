@@ -222,6 +222,11 @@ ctermyrdp_status ctermyrdp_send_pointer(ctermyrdp_session*          session,
 ctermyrdp_status ctermyrdp_send_clipboard(ctermyrdp_session*          session,
                                           const ctermyrdp_clipboard_tx* data);
 
+/** Preferred text paste format (CF_UNICODETEXT > CF_TEXT > CF_OEMTEXT) chosen
+ *  from a server-announced format-id list; 0 when none is a known text format.
+ *  Pure helper exposed for unit testing the cliprdr handshake's format choice. */
+uint32_t ctermyrdp_preferred_paste_format(const uint32_t* formats, size_t count);
+
 /** Reply to a CTERMYRDP_EVENT_DRIVE_REQ event. */
 ctermyrdp_status ctermyrdp_submit_drive_response(
     ctermyrdp_session*             session,

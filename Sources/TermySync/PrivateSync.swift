@@ -18,6 +18,47 @@ public enum PrivateSyncDestination: String, Equatable, Sendable {
     case localOnly
 }
 
+/// D3: collision-free encoding for fields that hold lists/maps whose values may
+/// themselves contain the legacy delimiters (` `, `|`, `;`, `=`). The old scheme
+/// `joined(separator:)` corrupted any value containing its delimiter (e.g. a shell
+/// arg `--rcfile "/My Files/rc"` split on the space; a theme name with `|`/`;`; a
+/// keymap binding with `=`/`;`). These encode to a deterministic JSON array;
+/// decoding prefers JSON and falls back to the legacy split so records written by
+/// an older build still restore correctly.
+enum PrivateSyncFieldCodec {
+    static func encode(_ value: [String]) -> String {
+        encodeJSON(value) ?? value.joined(separator: " ")
+    }
+
+    static func encode(matrix: [[String]]) -> String {
+        encodeJSON(matrix) ?? ""
+    }
+
+    /// JSON `[String]`, falling back to splitting on `legacySeparator`.
+    static func decodeArray(_ raw: String, legacySeparator: Character) -> [String] {
+        if let data = raw.data(using: .utf8),
+           let decoded = try? JSONDecoder().decode([String].self, from: data) {
+            return decoded
+        }
+        return raw.split(separator: legacySeparator).map(String.init)
+    }
+
+    /// JSON `[[String]]` (rows), falling back to nil so the caller can run its
+    /// bespoke legacy parse.
+    static func decodeMatrix(_ raw: String) -> [[String]]? {
+        guard let data = raw.data(using: .utf8),
+              let decoded = try? JSONDecoder().decode([[String]].self, from: data) else {
+            return nil
+        }
+        return decoded
+    }
+
+    private static func encodeJSON<T: Encodable>(_ value: T) -> String? {
+        guard let data = try? JSONEncoder().encode(value) else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+}
+
 public struct SyncSnippet: Equatable, Sendable {
     public let id: String
     public let title: String
@@ -214,7 +255,10 @@ public struct PrivateSyncSnapshotRestorer: Sendable {
             workspaces: records.compactMap(SyncWorkspace.init(record:)).sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending },
             aiConversationHistory: records
                 .filter { $0.recordType == "AIConversation" }
-                .sorted { $0.recordName < $1.recordName }
+                // D2: order by the numeric suffix of `ai-history-<offset>`, not
+                // lexicographically (`ai-history-10` < `ai-history-2` would scramble any
+                // history with ≥10 messages).
+                .sorted { Self.aiHistoryOffset($0.recordName) < Self.aiHistoryOffset($1.recordName) }
                 .compactMap { $0.fields["message"] }
         )
     }
@@ -229,38 +273,59 @@ public struct PrivateSyncSnapshotRestorer: Sendable {
         }
         return .custom(
             path: path,
-            arguments: record.fields["terminalShellArguments"]?
-                .split(separator: " ")
-                .map(String.init) ?? []
+            // D3: JSON-first (collision-free), legacy space-split fallback.
+            arguments: record.fields["terminalShellArguments"].map {
+                PrivateSyncFieldCodec.decodeArray($0, legacySeparator: " ")
+            } ?? []
         )
     }
 
     private func restoreThemes(from storageValue: String) -> [TerminalTheme] {
-        storageValue
-            .split(separator: ";")
-            .compactMap { themeValue in
-                let parts = themeValue.split(separator: "|", omittingEmptySubsequences: false).map(String.init)
-                guard parts.count == 7 else { return nil }
-                return TerminalTheme(
-                    id: parts[0],
-                    name: parts[1],
-                    backgroundHex: parts[2],
-                    foregroundHex: parts[3],
-                    promptHex: parts[4],
-                    errorHex: parts[5],
-                    mutedHex: parts[6]
-                )
-            }
+        // D3: JSON `[[String]]` (7 cols each), falling back to the legacy
+        // `;`-between / `|`-within scheme for records written by an older build.
+        let rows: [[String]]
+        if let decoded = PrivateSyncFieldCodec.decodeMatrix(storageValue) {
+            rows = decoded
+        } else {
+            rows = storageValue
+                .split(separator: ";")
+                .map { $0.split(separator: "|", omittingEmptySubsequences: false).map(String.init) }
+        }
+        return rows.compactMap { parts in
+            guard parts.count == 7 else { return nil }
+            return TerminalTheme(
+                id: parts[0],
+                name: parts[1],
+                backgroundHex: parts[2],
+                foregroundHex: parts[3],
+                promptHex: parts[4],
+                errorHex: parts[5],
+                mutedHex: parts[6]
+            )
+        }
     }
 
     private func restoreKeymap(from storageValue: String) -> [String: ShortcutDescriptor] {
-        storageValue
-            .split(separator: ";")
-            .reduce(into: [String: ShortcutDescriptor]()) { bindings, pair in
-                let parts = pair.split(separator: "=", maxSplits: 1).map(String.init)
-                guard parts.count == 2, let shortcut = ShortcutDescriptor(storageValue: parts[1]) else { return }
-                bindings[parts[0]] = shortcut
-            }
+        // D3: JSON `[[key, storageValue]]`, falling back to the legacy
+        // `;`-between / `=`-within scheme.
+        let pairs: [[String]]
+        if let decoded = PrivateSyncFieldCodec.decodeMatrix(storageValue) {
+            pairs = decoded
+        } else {
+            pairs = storageValue
+                .split(separator: ";")
+                .map { $0.split(separator: "=", maxSplits: 1).map(String.init) }
+        }
+        return pairs.reduce(into: [String: ShortcutDescriptor]()) { bindings, pair in
+            guard pair.count == 2, let shortcut = ShortcutDescriptor(storageValue: pair[1]) else { return }
+            bindings[pair[0]] = shortcut
+        }
+    }
+
+    /// Numeric offset parsed from an `ai-history-<offset>` record name; unparseable
+    /// names sort last (defensive — they should not occur).
+    private static func aiHistoryOffset(_ recordName: String) -> Int {
+        Int(recordName.dropFirst("ai-history-".count)) ?? Int.max
     }
 }
 
@@ -280,6 +345,20 @@ public struct PrivateSyncRecord: Equatable, Sendable {
         self.recordName = recordName
         self.fields = fields
         self.zoneName = zoneName
+    }
+
+    /// Returns a copy with `fields[key]` set to `value` (type/name/zone preserved).
+    /// Used to overlay the mutation-stamped `modifiedAt` at stage time without
+    /// reaching into every `*Record` encoder.
+    public func settingField(_ key: String, _ value: String) -> PrivateSyncRecord {
+        var updated = fields
+        updated[key] = value
+        return PrivateSyncRecord(
+            recordType: recordType,
+            recordName: recordName,
+            fields: updated,
+            zoneName: zoneName
+        )
     }
 
     public var cloudKitRecordType: String {
@@ -1097,7 +1176,7 @@ public struct PrivateSyncPlanner: Sendable {
             "terminalIncreasedContrast": String(snapshot.terminalIncreasedContrast),
             "interfaceTextScale": snapshot.interfaceTextScale.rawValue,
             "terminalShellPath": snapshot.terminalShell.command.shellPath,
-            "terminalShellArguments": snapshot.terminalShell.command.arguments.joined(separator: " "),
+            "terminalShellArguments": PrivateSyncFieldCodec.encode(snapshot.terminalShell.command.arguments),
             "terminalOutputMode": snapshot.terminalOutputMode.rawValue,
             "customTerminalThemes": serializeThemes(snapshot.customTerminalThemes),
             "keymapBindings": serializeKeymap(snapshot.keymapBindings)
@@ -1114,7 +1193,7 @@ public struct PrivateSyncPlanner: Sendable {
     }
 
     private func serializeThemes(_ themes: [TerminalTheme]) -> String {
-        themes
+        PrivateSyncFieldCodec.encode(matrix: themes
             .sorted { $0.id < $1.id }
             .map {
                 [
@@ -1125,16 +1204,14 @@ public struct PrivateSyncPlanner: Sendable {
                     $0.promptHex,
                     $0.errorHex,
                     $0.mutedHex
-                ].joined(separator: "|")
-            }
-            .joined(separator: ";")
+                ]
+            })
     }
 
     private func serializeKeymap(_ bindings: [String: ShortcutDescriptor]) -> String {
-        bindings
+        PrivateSyncFieldCodec.encode(matrix: bindings
             .sorted { $0.key < $1.key }
-            .map { "\($0.key)=\($0.value.storageValue)" }
-            .joined(separator: ";")
+            .map { [$0.key, $0.value.storageValue] })
     }
 
     private func snippetRecord(_ snippet: SyncSnippet) -> PrivateSyncRecord {
@@ -1179,6 +1256,27 @@ public struct PrivateSyncPlanner: Sendable {
     }
 }
 
+/// D2 (orphan-resurrect): when the positional `ai-history-<offset>` set shrinks
+/// (the user trims/clears AI history), the higher-index records left in CloudKit
+/// resurrect on the next fetch (the merge re-adds remote records absent locally).
+/// The push must delete them. Scoped to `AIConversation` — the only record family
+/// that is positional and replaced as a whole set, so "present before, absent now"
+/// unambiguously means "trimmed" (config records use stable ids and are handled by
+/// their own future deletion path, not this heuristic).
+public enum PrivateSyncDeletionPlanner {
+    public static func aiHistoryOrphans(
+        previous: [PrivateSyncRecord],
+        current: [PrivateSyncRecord]
+    ) -> [String] {
+        let currentNames = Set(
+            current.lazy.filter { $0.recordType == "AIConversation" }.map(\.recordName)
+        )
+        return previous
+            .filter { $0.recordType == "AIConversation" && !currentNames.contains($0.recordName) }
+            .map(\.recordName)
+    }
+}
+
 public struct PrivateSyncConflictResolver: Sendable {
     public init() {}
 
@@ -1191,18 +1289,13 @@ public struct PrivateSyncConflictResolver: Sendable {
             return local
         }
 
-        var winner = isRemoteNewer(local: local, remote: remote) ? remote : local
-        if let localSecretReferences = local.fields["secretReferences"] {
-            var fields = winner.fields
-            fields["secretReferences"] = localSecretReferences
-            winner = PrivateSyncRecord(
-                recordType: winner.recordType,
-                recordName: winner.recordName,
-                fields: fields,
-                zoneName: winner.zoneName
-            )
-        }
-        return winner
+        // D4: the winner keeps its OWN secretReferences. The previous code force-set
+        // them to local's even when remote won — so a credential re-issued on another
+        // Mac (new reference id) was discarded here and this Mac kept pointing at the
+        // stale Keychain item (auth failure). When local wins it already carries local's
+        // refs; when remote wins its refs are the current ones (and the material itself
+        // syncs via iCloud Keychain). No override needed.
+        return isRemoteNewer(local: local, remote: remote) ? remote : local
     }
 
     public func resolve(
@@ -1214,8 +1307,12 @@ public struct PrivateSyncConflictResolver: Sendable {
     }
 
     private func isRemoteNewer(local: PrivateSyncRecord, remote: PrivateSyncRecord) -> Bool {
+        // D1: compare a REAL per-record last-edited timestamp (stamped at mutation time,
+        // carried in `modifiedAt`). Missing/legacy → epoch 0 (unknown = old). Strict `>`
+        // so equal stamps keep local (no churn) and two unstamped records keep local
+        // (conservative: a genuinely newer remote still wins once it carries a stamp).
         let localModifiedAt = Double(local.fields["modifiedAt"] ?? "") ?? 0
         let remoteModifiedAt = Double(remote.fields["modifiedAt"] ?? "") ?? 0
-        return remoteModifiedAt >= localModifiedAt
+        return remoteModifiedAt > localModifiedAt
     }
 }

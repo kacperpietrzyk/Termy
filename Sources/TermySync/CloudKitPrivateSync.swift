@@ -131,15 +131,21 @@ public struct CloudKitPrivateSyncMapper: Sendable {
 public final class CloudKitPrivateSyncEngineDelegate: NSObject, CKSyncEngineDelegate, @unchecked Sendable {
     private let mapper: CloudKitPrivateSyncMapper
     private let recordsProvider: () async -> [PrivateSyncRecord]
+    private let pendingDeletionsProvider: () async -> [String]
+    private let deletionZoneName: String
     private let eventHandler: (PrivateSyncEngineEvent) async -> Void
 
     public init(
         mapper: CloudKitPrivateSyncMapper = CloudKitPrivateSyncMapper(),
         recordsProvider: @escaping () async -> [PrivateSyncRecord],
+        pendingDeletionsProvider: @escaping () async -> [String] = { [] },
+        deletionZoneName: String = "TermyPrivateSync",
         eventHandler: @escaping (PrivateSyncEngineEvent) async -> Void
     ) {
         self.mapper = mapper
         self.recordsProvider = recordsProvider
+        self.pendingDeletionsProvider = pendingDeletionsProvider
+        self.deletionZoneName = deletionZoneName
         self.eventHandler = eventHandler
         super.init()
     }
@@ -154,14 +160,21 @@ public final class CloudKitPrivateSyncEngineDelegate: NSObject, CKSyncEngineDele
         syncEngine: CKSyncEngine
     ) async -> CKSyncEngine.RecordZoneChangeBatch? {
         let records = await recordsProvider()
-        guard !records.isEmpty else { return nil }
-        return await makeRecordZoneChangeBatch(for: records)
+        let deletions = await pendingDeletionsProvider()
+        guard !records.isEmpty || !deletions.isEmpty else { return nil }
+        return makeRecordZoneChangeBatch(for: records, deleting: deletions)
     }
 
-    public func makeRecordZoneChangeBatch(for records: [PrivateSyncRecord]) async -> CKSyncEngine.RecordZoneChangeBatch {
-        CKSyncEngine.RecordZoneChangeBatch(
+    public func makeRecordZoneChangeBatch(
+        for records: [PrivateSyncRecord],
+        deleting deletedRecordNames: [String] = []
+    ) -> CKSyncEngine.RecordZoneChangeBatch {
+        // D2: tombstone the locally-removed records (e.g. trimmed ai-history) so they
+        // don't resurrect on the next fetch.
+        let zoneID = CKRecordZone.ID(zoneName: deletionZoneName, ownerName: CKCurrentUserDefaultName)
+        return CKSyncEngine.RecordZoneChangeBatch(
             recordsToSave: records.map(mapper.makeCloudKitRecord),
-            recordIDsToDelete: [],
+            recordIDsToDelete: deletedRecordNames.map { CKRecord.ID(recordName: $0, zoneID: zoneID) },
             atomicByZone: true
         )
     }

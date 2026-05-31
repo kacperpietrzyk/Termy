@@ -205,6 +205,16 @@ public struct TerminalANSIParser: Sendable {
             } else if text[index] == "\u{001B}",
                       let endIndex = parseSimpleEscape(in: text, from: index) {
                 index = endIndex
+            } else if text[index] == "\u{001B}" {
+                // An ESC that none of the handlers above consumed (a bare trailing ESC,
+                // or ESC + an unrecognized final such as ESC Z). Terminals swallow these
+                // silently rather than drawing the ESC as a literal glyph. Consume the
+                // ESC and, for the common two-byte form, its single following byte —
+                // unless that byte is itself an ESC beginning a new sequence.
+                index = text.index(after: index)
+                if index < text.endIndex, text[index] != "\u{001B}" {
+                    index = text.index(after: index)
+                }
             } else if text[index] == "\u{000E}" {
                 usesG1CharacterSet = true
                 index = text.index(after: index)

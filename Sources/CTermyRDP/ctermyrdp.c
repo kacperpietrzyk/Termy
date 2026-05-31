@@ -100,6 +100,13 @@ struct ctermyrdp_session {
     ctermyrdp_queued_event* queue_head;
     ctermyrdp_queued_event* queue_tail;
 
+    /* R3: FreeRDP is not thread-safe for concurrent access to one rdpContext.
+     * The pump thread (freerdp_check_event_handles) and the caller-thread input
+     * sends (freerdp_input_send_*, cliprdr) would otherwise race the context.
+     * Held around the context-touching pass / each send — NOT around the pump's
+     * WaitForMultipleObjects, so input never waits the full poll timeout. */
+    CRITICAL_SECTION context_lock;
+
     ctermyrdp_status last_status;
     int32_t last_error_code;
     /* Written by ctermyrdp_disconnect (caller thread), read by
@@ -109,6 +116,17 @@ struct ctermyrdp_session {
     _Atomic int disconnect_requested;
     int connected;
     uint64_t frame_seq; /* shim-owned frame counter; NOT FreeRDP's gdi->frameId */
+
+    /* R4/R5 cliprdr handshake state (touched only on the pump thread via the
+     * cliprdr callbacks, plus send_clipboard which stashes the pending tx under
+     * context_lock). */
+    uint32_t requested_format;   /* R4: format we asked the server for; tags the
+                                  * inbound FORMAT_DATA_RESPONSE (was hardcoded 13). */
+    uint8_t* pending_tx_data;    /* R5: local clipboard bytes stashed by
+                                  * ctermyrdp_send_clipboard, sent when the server
+                                  * issues a FORMAT_DATA_REQUEST. */
+    size_t   pending_tx_size;
+    uint32_t pending_tx_format;
 };
 
 /* ── Small helpers ──────────────────────────────────────────────────────── */
@@ -262,6 +280,113 @@ static BOOL termy_desktop_resize(rdpContext* context)
 
 /* ── Channel hookup (cliprdr / rdpsnd / rdpdr) ──────────────────────────── */
 
+/* CF_UNICODETEXT (winpr/user.h) — the one text format the inbound decoder reads. */
+#define TERMY_CF_UNICODETEXT 13u
+
+/* R4: choose the paste format to request from a server-announced list.
+ * CF_UNICODETEXT ONLY: it is the single format the inbound decoder
+ * (FreeRDPSession.marshalClipboard) reads correctly (UTF-16LE). Requesting
+ * CF_TEXT/CF_OEMTEXT would be decoded as UTF-8 and garble non-ASCII — exactly the
+ * R4 defect, from the other direction — so request nothing (0) when the server
+ * offers no unicode text (it then stays unsupported rather than garbled). Pure
+ * (no FreeRDP types) so it is unit-tested from Swift. */
+uint32_t ctermyrdp_preferred_paste_format(const uint32_t* formats, size_t count)
+{
+    if (!formats) return 0u;
+    for (size_t i = 0; i < count; ++i) {
+        if (formats[i] == TERMY_CF_UNICODETEXT) return TERMY_CF_UNICODETEXT;
+    }
+    return 0u;
+}
+
+/* Send a ClientFormatList. `format` 0 → an empty list (handshake only). */
+static UINT termy_cliprdr_send_format_list(CliprdrClientContext* ctx, uint32_t format)
+{
+    if (!ctx || !ctx->ClientFormatList) return CHANNEL_RC_OK;
+    CLIPRDR_FORMAT fmt;
+    memset(&fmt, 0, sizeof(fmt));
+    fmt.formatId = format;
+    fmt.formatName = NULL;
+    CLIPRDR_FORMAT_LIST list;
+    memset(&list, 0, sizeof(list));
+    list.common.msgType = CB_FORMAT_LIST;
+    list.numFormats = format ? 1u : 0u;
+    list.formats = format ? &fmt : NULL;
+    return ctx->ClientFormatList(ctx, &list);
+}
+
+/* R5: after MonitorReady the client completes the handshake with a format list
+ * (empty until the app shares local clipboard via ctermyrdp_send_clipboard). */
+static UINT termy_cliprdr_monitor_ready(CliprdrClientContext* ctx,
+                                        const CLIPRDR_MONITOR_READY* ready)
+{
+    (void)ready;
+    return termy_cliprdr_send_format_list(ctx, 0u);
+}
+
+/* R4 (inbound paste): ack the server's format list, then request a preferred
+ * text format — which arrives via ServerFormatDataResponse. */
+static UINT termy_cliprdr_server_format_list(CliprdrClientContext* ctx,
+                                             const CLIPRDR_FORMAT_LIST* list)
+{
+    struct ctermyrdp_session* s = ctx ? (struct ctermyrdp_session*)ctx->custom : NULL;
+    if (!s || !list) return CHANNEL_RC_OK;
+
+    if (ctx->ClientFormatListResponse) {
+        CLIPRDR_FORMAT_LIST_RESPONSE resp;
+        memset(&resp, 0, sizeof(resp));
+        resp.common.msgType = CB_FORMAT_LIST_RESPONSE;
+        resp.common.msgFlags = CB_RESPONSE_OK;
+        ctx->ClientFormatListResponse(ctx, &resp);
+    }
+
+    uint32_t ids[64];
+    UINT32 n = list->numFormats < 64 ? list->numFormats : 64u;
+    for (UINT32 i = 0; i < n && list->formats; ++i) ids[i] = list->formats[i].formatId;
+    uint32_t chosen = ctermyrdp_preferred_paste_format(ids, list->formats ? n : 0u);
+    if (chosen == 0u || !ctx->ClientFormatDataRequest) return CHANNEL_RC_OK;
+
+    s->requested_format = chosen;
+    CLIPRDR_FORMAT_DATA_REQUEST req;
+    memset(&req, 0, sizeof(req));
+    req.common.msgType = CB_FORMAT_DATA_REQUEST;
+    req.requestedFormatId = chosen;
+    return ctx->ClientFormatDataRequest(ctx, &req);
+}
+
+static UINT termy_cliprdr_server_format_list_response(
+    CliprdrClientContext* ctx, const CLIPRDR_FORMAT_LIST_RESPONSE* resp)
+{
+    (void)ctx; (void)resp;
+    return CHANNEL_RC_OK;
+}
+
+/* R5 (outbound paste): the server wants our clipboard — answer with the bytes
+ * the app last stashed via ctermyrdp_send_clipboard. */
+static UINT termy_cliprdr_server_format_data_request(
+    CliprdrClientContext* ctx, const CLIPRDR_FORMAT_DATA_REQUEST* req)
+{
+    struct ctermyrdp_session* s = ctx ? (struct ctermyrdp_session*)ctx->custom : NULL;
+    if (!s || !req || !ctx->ClientFormatDataResponse) return CHANNEL_RC_OK;
+
+    /* This callback fires on the pump thread inside freerdp_check_event_handles,
+     * which already holds context_lock (see ctermyrdp_pump). That lock also
+     * guards ctermyrdp_send_clipboard's writes to pending_tx, so reading it here
+     * needs no further locking — and re-locking would rely on CRITICAL_SECTION
+     * recursion. */
+    CLIPRDR_FORMAT_DATA_RESPONSE resp;
+    memset(&resp, 0, sizeof(resp));
+    resp.common.msgType = CB_FORMAT_DATA_RESPONSE;
+    if (s->pending_tx_data && s->pending_tx_size > 0) {
+        resp.common.msgFlags = CB_RESPONSE_OK;
+        resp.common.dataLen = (UINT32)s->pending_tx_size;
+        resp.requestedFormatData = s->pending_tx_data;
+    } else {
+        resp.common.msgFlags = CB_RESPONSE_FAIL;
+    }
+    return ctx->ClientFormatDataResponse(ctx, &resp);
+}
+
 static UINT termy_cliprdr_server_format_data_response(
     CliprdrClientContext* ctx, const CLIPRDR_FORMAT_DATA_RESPONSE* resp)
 {
@@ -281,7 +406,10 @@ static UINT termy_cliprdr_server_format_data_response(
     n->event.kind = CTERMYRDP_EVENT_CLIPBOARD_RX;
     n->event.payload.clipboard_rx.data = n->buf0;
     n->event.payload.clipboard_rx.size = len;
-    n->event.payload.clipboard_rx.format = 13 /* CF_UNICODETEXT */;
+    /* R4: tag with the format we actually requested, not a hardcoded
+     * CF_UNICODETEXT (a FORMAT_DATA_RESPONSE carries no format id of its own). */
+    n->event.payload.clipboard_rx.format =
+        s->requested_format ? s->requested_format : TERMY_CF_UNICODETEXT;
     enqueue(s, n);
     return CHANNEL_RC_OK;
 }
@@ -394,6 +522,14 @@ static void on_channel_connected(void* userdata, const ChannelConnectedEventArgs
         s->cliprdr = (CliprdrClientContext*)e->pInterface;
         if (s->cliprdr) {
             s->cliprdr->custom = s;
+            /* R4/R5: wire the full text clipboard handshake, not just the
+             * inbound data response. */
+            s->cliprdr->MonitorReady = termy_cliprdr_monitor_ready;
+            s->cliprdr->ServerFormatList = termy_cliprdr_server_format_list;
+            s->cliprdr->ServerFormatListResponse =
+                termy_cliprdr_server_format_list_response;
+            s->cliprdr->ServerFormatDataRequest =
+                termy_cliprdr_server_format_data_request;
             s->cliprdr->ServerFormatDataResponse =
                 termy_cliprdr_server_format_data_response;
         }
@@ -580,6 +716,7 @@ ctermyrdp_session* ctermyrdp_create(const ctermyrdp_config* config)
     }
 
     InitializeCriticalSection(&s->queue_lock);
+    InitializeCriticalSection(&s->context_lock);
 
     RDP_CLIENT_ENTRY_POINTS ep;
     memset(&ep, 0, sizeof(ep));
@@ -587,6 +724,7 @@ ctermyrdp_session* ctermyrdp_create(const ctermyrdp_config* config)
 
     rdpContext* ctx = freerdp_client_context_new(&ep);
     if (!ctx) {
+        DeleteCriticalSection(&s->context_lock);
         DeleteCriticalSection(&s->queue_lock);
         scrub_free(&s->password);
         free(s->host); free(s->username); free(s->domain);
@@ -672,7 +810,13 @@ ctermyrdp_status ctermyrdp_pump(ctermyrdp_session*          session,
         DWORD wr = WaitForMultipleObjects(count, handles, FALSE,
                                           CTERMYRDP_PUMP_POLL_MS);
         if (wr != WAIT_TIMEOUT) {
-            if (!freerdp_check_event_handles(ctx)) {
+            /* R3: serialise the context-touching pass against input sends. The
+             * blocking wait above stays outside the lock so a send never waits
+             * the full poll timeout. */
+            EnterCriticalSection(&session->context_lock);
+            BOOL ok = freerdp_check_event_handles(ctx);
+            LeaveCriticalSection(&session->context_lock);
+            if (!ok) {
                 UINT32 err = freerdp_get_last_error(ctx);
                 session->last_error_code = (int32_t)err;
                 session->last_status = map_freerdp_error(err);
@@ -725,9 +869,12 @@ ctermyrdp_status ctermyrdp_send_key(ctermyrdp_session*         session,
     if (!input) return CTERMYRDP_STATUS_CHANNEL_ERROR;
     UINT16 flags = (UINT16)((event->key_down ? KBD_FLAGS_DOWN : KBD_FLAGS_RELEASE) |
                             (event->extended ? KBD_FLAGS_EXTENDED : 0));
-    return freerdp_input_send_keyboard_event(input, flags,
-                                             (UINT16)event->scan_code)
-               ? CTERMYRDP_STATUS_OK : CTERMYRDP_STATUS_CHANNEL_ERROR;
+    /* R3: serialise against the pump's context pass. */
+    EnterCriticalSection(&session->context_lock);
+    BOOL ok = freerdp_input_send_keyboard_event(input, flags,
+                                                (UINT16)event->scan_code);
+    LeaveCriticalSection(&session->context_lock);
+    return ok ? CTERMYRDP_STATUS_OK : CTERMYRDP_STATUS_CHANNEL_ERROR;
 }
 
 ctermyrdp_status ctermyrdp_send_pointer(ctermyrdp_session*             session,
@@ -737,9 +884,12 @@ ctermyrdp_status ctermyrdp_send_pointer(ctermyrdp_session*             session,
     if (!event || !session->instance) return CTERMYRDP_STATUS_INVALID_ARG;
     rdpInput* input = session->context->_p.input;
     if (!input) return CTERMYRDP_STATUS_CHANNEL_ERROR;
-    return freerdp_input_send_mouse_event(input, event->flags,
-                                          event->x, event->y)
-               ? CTERMYRDP_STATUS_OK : CTERMYRDP_STATUS_CHANNEL_ERROR;
+    /* R3: serialise against the pump's context pass. */
+    EnterCriticalSection(&session->context_lock);
+    BOOL ok = freerdp_input_send_mouse_event(input, event->flags,
+                                             event->x, event->y);
+    LeaveCriticalSection(&session->context_lock);
+    return ok ? CTERMYRDP_STATUS_OK : CTERMYRDP_STATUS_CHANNEL_ERROR;
 }
 
 /* ── Channels ────────────────────────────────────────────────────────────── */
@@ -751,17 +901,27 @@ ctermyrdp_status ctermyrdp_send_clipboard(ctermyrdp_session*            session,
     if (!data) return CTERMYRDP_STATUS_INVALID_ARG;
     if (!session->cliprdr) return CTERMYRDP_STATUS_CHANNEL_ERROR;
 
-    CLIPRDR_FORMAT_DATA_RESPONSE resp;
-    memset(&resp, 0, sizeof(resp));
-    resp.common.msgType = CB_FORMAT_DATA_RESPONSE;
-    resp.common.msgFlags = CB_RESPONSE_OK;
-    resp.common.dataLen = (UINT32)data->size;
-    resp.requestedFormatData = data->data;
-    if (!session->cliprdr->ClientFormatDataResponse)
-        return CTERMYRDP_STATUS_CHANNEL_ERROR;
-    return session->cliprdr->ClientFormatDataResponse(session->cliprdr, &resp)
-               == CHANNEL_RC_OK ? CTERMYRDP_STATUS_OK
-                                : CTERMYRDP_STATUS_CHANNEL_ERROR;
+    /* R5: don't send an unsolicited FORMAT_DATA_RESPONSE (the previous code did,
+     * which the server ignores). The correct flow is: announce availability via
+     * ClientFormatList, then answer the server's FORMAT_DATA_REQUEST with the
+     * stashed bytes (termy_cliprdr_server_format_data_request). Stash a private
+     * copy here so the bytes outlive this call. */
+    uint8_t* copy = NULL;
+    if (data->size > 0 && data->data) {
+        copy = (uint8_t*)malloc(data->size);
+        if (!copy) return CTERMYRDP_STATUS_INTERNAL_ERROR;
+        memcpy(copy, data->data, data->size);
+    }
+    EnterCriticalSection(&session->context_lock);
+    free(session->pending_tx_data);
+    session->pending_tx_data = copy;
+    session->pending_tx_size = copy ? data->size : 0;
+    session->pending_tx_format = data->format ? data->format : TERMY_CF_UNICODETEXT;
+    UINT rc = termy_cliprdr_send_format_list(session->cliprdr,
+                                             session->pending_tx_format);
+    LeaveCriticalSection(&session->context_lock);
+    return rc == CHANNEL_RC_OK ? CTERMYRDP_STATUS_OK
+                               : CTERMYRDP_STATUS_CHANNEL_ERROR;
 }
 
 ctermyrdp_status ctermyrdp_submit_drive_response(
@@ -817,8 +977,10 @@ void ctermyrdp_destroy(ctermyrdp_session* session)
 
     ctermyrdp_queued_event* n;
     while ((n = dequeue(session)) != NULL) free_queued(n);
+    DeleteCriticalSection(&session->context_lock);
     DeleteCriticalSection(&session->queue_lock);
 
+    free(session->pending_tx_data);
     scrub_free(&session->password);
     free(session->host);
     free(session->username);

@@ -1,5 +1,36 @@
 import XCTest
+import Darwin
 @testable import TermyCore
+
+final class SidecarMasterFdTests: XCTestCase {
+    // Con2: writes before close reach the fd; once closed, writes are silent
+    // no-ops (never a write into a closed/recycled descriptor), and close is
+    // idempotent.
+    func testWriteReachesFdBeforeCloseAndIsDroppedAfter() throws {
+        var fds: [Int32] = [0, 0]
+        XCTAssertEqual(pipe(&fds), 0)
+        let readEnd = fds[0]
+        let writeEnd = fds[1]
+        defer { close(readEnd) }
+
+        let gate = SidecarMasterFd(writeEnd)
+        XCTAssertFalse(gate.isClosed)
+
+        gate.write(Array("hi".utf8))
+        var buf = [UInt8](repeating: 0, count: 8)
+        let n = buf.withUnsafeMutableBufferPointer { Darwin.read(readEnd, $0.baseAddress, 2) }
+        XCTAssertEqual(n, 2)
+        XCTAssertEqual(Array(buf.prefix(2)), Array("hi".utf8))
+
+        gate.closeForTeardown()
+        XCTAssertTrue(gate.isClosed)
+        // Post-close writes must be dropped, not crash and not hit the fd number.
+        gate.write(Array("dropped".utf8))
+        // Idempotent close.
+        gate.closeForTeardown()
+        XCTAssertTrue(gate.isClosed)
+    }
+}
 
 final class CompletionSidecarLifecycleTests: XCTestCase {
     private var workDir: URL!
