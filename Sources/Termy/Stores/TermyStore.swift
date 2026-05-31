@@ -1227,6 +1227,7 @@ final class TermyStore: ObservableObject {
         } else {
             statusMessage = "Updated shortcut with conflict."
         }
+        stampSyncEdit("appearance-default")
         stagePrivateSyncSnapshot()
     }
 
@@ -1251,6 +1252,7 @@ final class TermyStore: ObservableObject {
         customTerminalThemes.sort { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
         selectedTerminalThemeID = theme.id
         statusMessage = "Added custom theme \(theme.name)."
+        stampSyncEdit("appearance-default")
         stagePrivateSyncSnapshot()
     }
 
@@ -1267,10 +1269,12 @@ final class TermyStore: ObservableObject {
             }
         case "set-terminal-output-stream":
             setSelectedTerminalOutputMode(.stream)
+            stampSyncEdit("appearance-default")
             stagePrivateSyncSnapshot()
             statusMessage = "Terminal output uses classic stream."
         case "set-terminal-output-blocks":
             setSelectedTerminalOutputMode(.blocks)
+            stampSyncEdit("appearance-default")
             stagePrivateSyncSnapshot()
             statusMessage = "Terminal output uses command blocks."
         case "copy-selected-command-output":
@@ -1387,6 +1391,8 @@ final class TermyStore: ObservableObject {
                 statusMessage = "All pane kinds are already in the workspace."
             }
         case "save-workspace":
+            saveCurrentWorkspaceLayout()
+            if let id = selectedWorkspaceID { stampSyncEdit("workspace-\(id)") }
             stagePrivateSyncSnapshot()
         default:
             statusMessage = "No handler registered for \(actionID)."
@@ -1917,6 +1923,7 @@ final class TermyStore: ObservableObject {
         userPromptSnippets.append(snippet)
         userPromptSnippets.sort { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
         statusMessage = "Added prompt snippet \(title)."
+        stampSyncEdit("snippet-user-\(snippet.id)")
         stagePrivateSyncSnapshot()
     }
 
@@ -1924,6 +1931,54 @@ final class TermyStore: ObservableObject {
         let body = snippet.body.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !body.isEmpty else { return }
         aiPrompt = aiPrompt.isEmpty ? body : "\(aiPrompt)\n\(body)"
+    }
+
+    // MARK: - D1 sync conflict timestamps
+
+    /// Per-record last-edited stamps captured at mutation choke points, consumed by the
+    /// next `stagePrivateSyncSnapshot` into each record's `modifiedAt`. Transient — the
+    /// authoritative stamp then rides inside `privateSyncRecords` (and through CloudKit).
+    private var syncRecordEditTimes: [String: Date] = [:]
+
+    /// Set while applying fetched remote records so adoption never self-stamps as a local
+    /// edit (which would let local falsely win on the next push — sync ping-pong).
+    private var isApplyingRemoteSync = false
+
+    /// D2: record names removed locally (trimmed ai-history) that must be tombstoned in
+    /// CloudKit so they don't resurrect on the next fetch. Drained into the CKSyncEngine
+    /// send batch; cleared once a push completes (re-deleting is idempotent).
+    private var pendingSyncDeletions: Set<String> = []
+
+    /// Stamp a syncable record as locally edited "now". No-op while adopting remote
+    /// records. `recordName` must match the encoder: `connection-<id>` / `snippet-<id>` /
+    /// `workspace-<id>` / `appearance-default`. A missed call degrades safely (the record
+    /// keeps its prior stamp and loses only under an actual concurrent newer-remote edit).
+    func stampSyncEdit(_ recordName: String) {
+        guard !isApplyingRemoteSync else { return }
+        syncRecordEditTimes[recordName] = Date()
+    }
+
+    /// Overlay the mutation-stamped `modifiedAt` onto freshly-built records: a record
+    /// edited this session gets `now`; an untouched record preserves its prior stamp;
+    /// ai-history is excluded (append/truncate, not edited — D2). Prior stamps come from
+    /// the records about to be replaced, so call this BEFORE reassigning `privateSyncRecords`.
+    private func overlaySyncModifiedAt(_ records: [PrivateSyncRecord]) -> [PrivateSyncRecord] {
+        let previous = Dictionary(
+            privateSyncRecords.compactMap { record in
+                record.fields["modifiedAt"].map { (record.recordName, $0) }
+            },
+            uniquingKeysWith: { first, _ in first }
+        )
+        return records.map { record in
+            guard record.recordType != "AIConversation" else { return record }
+            if let edited = syncRecordEditTimes[record.recordName] {
+                return record.settingField("modifiedAt", String(edited.timeIntervalSince1970))
+            }
+            if let prior = previous[record.recordName] {
+                return record.settingField("modifiedAt", prior)
+            }
+            return record
+        }
     }
 
     func stagePrivateSyncSnapshot(scheduleSync: Bool = true) {
@@ -1952,7 +2007,15 @@ final class TermyStore: ObservableObject {
             aiConversationHistory: currentAIConversationHistory()
         )
         let plan = PrivateSyncPlanner().plan(for: snapshot)
-        privateSyncRecords = plan.records
+        let stagedRecords = overlaySyncModifiedAt(plan.records)
+        // D2: ai-history records that disappeared since the last stage are orphans to
+        // tombstone; anything (re)staged is no longer an orphan.
+        pendingSyncDeletions.formUnion(
+            PrivateSyncDeletionPlanner.aiHistoryOrphans(previous: privateSyncRecords, current: stagedRecords)
+        )
+        pendingSyncDeletions.subtract(stagedRecords.map(\.recordName))
+        privateSyncRecords = stagedRecords
+        syncRecordEditTimes.removeAll()
         statusMessage = "Staged \(plan.records.count) CloudKit private sync record(s); secrets remain in iCloud Keychain."
         if scheduleSync {
             schedulePrivateSyncChangePush()
@@ -1960,6 +2023,11 @@ final class TermyStore: ObservableObject {
     }
 
     func applyPrivateSyncRecordsToAppState() {
+        // Adopting fetched remote records must never self-stamp as a local edit (that
+        // would let local falsely win on the next push — ping-pong). The merged records
+        // already carry the winners' `modifiedAt`, preserved by the next stage's overlay.
+        isApplyingRemoteSync = true
+        defer { isApplyingRemoteSync = false }
         let restored = PrivateSyncSnapshotRestorer().restore(from: privateSyncRecords)
         if !restored.profiles.isEmpty {
             profiles = [ConnectionProfile.local(terminalOutputMode: .blocks)] + restored.profiles
@@ -2271,6 +2339,7 @@ final class TermyStore: ObservableObject {
     func finishPaneSplitResize() {
         let persisted = persistSelectedWorkspacePaneTree()
         if persisted {
+            if let id = selectedWorkspaceID { stampSyncEdit("workspace-\(id)") }
             stagePrivateSyncSnapshot()
         }
         statusMessage = "Resized workspace split."
@@ -3219,6 +3288,7 @@ final class TermyStore: ObservableObject {
         sshProfilePortDraft = "22"
         sshProfileGroupDraft = ""
         selectedConnectionProfileID = profile.id
+        stampSyncEdit("connection-\(profile.id.uuidString)")
         stagePrivateSyncSnapshot()
         statusMessage = "Created SSH profile \(profile.name)."
     }
@@ -3253,6 +3323,7 @@ final class TermyStore: ObservableObject {
         rdpProfileGatewayDraft = ""
         rdpProfileGroupDraft = ""
         selectedConnectionProfileID = profile.id
+        stampSyncEdit("connection-\(profile.id.uuidString)")
         stagePrivateSyncSnapshot()
         statusMessage = "Created RDP profile \(profile.name)."
     }
@@ -3279,6 +3350,7 @@ final class TermyStore: ObservableObject {
         sshOptionsDraft = ConnectionProfile.serializedSSHOptions(options)
             .split(separator: ";")
             .joined(separator: "\n")
+        stampSyncEdit("connection-\(selectedConnectionProfileID.uuidString)")
         stagePrivateSyncSnapshot()
         statusMessage = "Updated SSH options for \(profileName)."
     }
@@ -4211,6 +4283,11 @@ final class TermyStore: ObservableObject {
                     self?.privateSyncRecords ?? []
                 }
             },
+            pendingDeletionsProvider: { [weak self] in
+                await MainActor.run {
+                    Array(self?.pendingSyncDeletions ?? [])
+                }
+            },
             eventHandler: { [weak self] event in
                 await self?.handlePrivateSyncEngineEvent(event)
             }
@@ -4237,6 +4314,9 @@ final class TermyStore: ObservableObject {
             privateSyncStatus = "Sync failed"
             statusMessage = "Private sync \(formatPrivateSyncOperationKind(failedResult.operation.kind)) failed: \(failureMessage(failedResult.outcome))"
         } else if let savedRecordCount = step.savedRecordCount {
+            // D2: a successful push has carried the tombstones; re-deleting would be
+            // idempotent, but clear them so we don't resend indefinitely.
+            pendingSyncDeletions.removeAll()
             privateSyncStatus = "Saved \(savedRecordCount) records"
             statusMessage = "Saved \(savedRecordCount) private CloudKit record(s) and ensured subscription."
         } else if let fetchedRecordCount = step.fetchedRecordCount {
@@ -4761,12 +4841,22 @@ final class TermyStore: ObservableObject {
         }
         rdpConnectionTasks[sessionID] = Task { [weak self] in
             do {
-                let freerdp = try await Task.detached(priority: .userInitiated) {
-                    try await connect(descriptor)
+                // R2: the FreeRDP handshake (`start` → `ctermyrdp_connect`) is a
+                // blocking TLS/CredSSP exchange or a multi-second TCP timeout on
+                // an unreachable host. Run BOTH the session construction AND
+                // `start()` off the main actor so a slow host can never freeze the
+                // UI; the event pump already lives on FreeRDPSession's own queue.
+                let freerdp = try await Task.detached(priority: .userInitiated) { () -> FreeRDPSession in
+                    let session = try await connect(descriptor)
+                    do {
+                        try session.start { event in dispatch(sessionID, event) }
+                    } catch {
+                        // Never leak a partially-constructed session/connection.
+                        session.stop()
+                        throw error
+                    }
+                    return session
                 }.value
-                try freerdp.start { event in
-                    dispatch(sessionID, event)
-                }
                 await MainActor.run {
                     self?.activateLiveRDPConnection(freerdp, for: sessionID)
                 }
@@ -4779,6 +4869,17 @@ final class TermyStore: ObservableObject {
     }
 
     private func activateLiveRDPConnection(_ freerdp: FreeRDPSession, for sessionID: UUID) {
+        // S2: the connect + handshake ran off-main, so the user may have closed
+        // the session during that window. `closeSession` cancels our task and
+        // removes the session, but it cannot reach `freerdp` — a task-local until
+        // this line — so without this guard the off-main pump thread AND the live
+        // outbound RDP connection would leak (privacy: an unwanted connection
+        // stays up). If the session is gone, tear the transport down and bail.
+        guard sessions.contains(where: { $0.id == sessionID }) else {
+            freerdp.stop()
+            rdpConnectionTasks[sessionID] = nil
+            return
+        }
         rdpSessions[sessionID] = freerdp
         rdpConnectionTasks[sessionID] = nil
         // Mark the router as connected so the lifecycle transitions out of
@@ -4801,6 +4902,13 @@ final class TermyStore: ObservableObject {
     }
 
     private func failLiveRDPConnection(_ error: Error, for sessionID: UUID) {
+        // S2 (symmetry): if the session was closed during the off-main connect
+        // window, closeSession already tore everything down — don't write a stray
+        // status/line for a session the user dropped.
+        guard sessions.contains(where: { $0.id == sessionID }) else {
+            rdpConnectionTasks[sessionID] = nil
+            return
+        }
         rdpSessions[sessionID]?.stop()
         rdpSessions[sessionID] = nil
         rdpConnectionTasks[sessionID] = nil

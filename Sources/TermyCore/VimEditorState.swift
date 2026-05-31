@@ -399,7 +399,11 @@ public struct VimEditorState: Equatable, Sendable {
     private mutating func appendCountDigit(_ digit: Int) {
         guard mode == .normal || mode == .visual, (0...9).contains(digit) else { return }
         if pendingCount == nil, digit == 0 { return }
-        pendingCount = min(((pendingCount ?? 0) * 10) + digit, 999)
+        // Cap high enough that realistic counts (e.g. 1000dd) aren't silently
+        // truncated, while still bounding the value far below Int overflow. The old
+        // 999 cap turned `1000` into `999`. Use-site operations clamp again to the
+        // buffer size, so a large pending count is harmless.
+        pendingCount = min(((pendingCount ?? 0) * 10) + digit, 1_000_000)
     }
 
     private mutating func consumeCount() -> Int {
@@ -432,8 +436,13 @@ public struct VimEditorState: Equatable, Sendable {
 
     private mutating func replaceCharacters(with character: Character, count: Int) {
         guard mode == .normal, cursorOffset < buffer.count else { return }
-        let replaceCount = min(count, buffer.count - cursorOffset)
-        guard replaceCount > 0 else { return }
+        // `r` never crosses a line boundary: it replaces exactly `count` characters
+        // on the current line, and is a no-op (vim rings the bell) when fewer than
+        // `count` remain before the newline. The old `min(count, buffer.count - …)`
+        // bled across the newline and merged the next line into this one.
+        let lineRemaining = currentLine().end - cursorOffset
+        let replaceCount = count
+        guard replaceCount > 0, replaceCount <= lineRemaining else { return }
 
         let startIndex = buffer.index(buffer.startIndex, offsetBy: cursorOffset)
         let endIndex = buffer.index(startIndex, offsetBy: replaceCount)
@@ -817,7 +826,11 @@ public struct VimEditorState: Equatable, Sendable {
         if yankRegisterIsLinewise {
             cursorOffset = insertionOffset + (insertedText.hasPrefix("\n") ? 1 : 0)
         } else {
-            cursorOffset = insertionOffset + insertedText.count
+            // Vim leaves the cursor ON the last character of charwise-pasted text,
+            // not one column past it.
+            cursorOffset = insertedText.isEmpty
+                ? insertionOffset
+                : insertionOffset + insertedText.count - 1
         }
     }
 
@@ -838,7 +851,7 @@ public struct VimEditorState: Equatable, Sendable {
             for _ in 0..<count {
                 target = wordForwardOffset(from: target)
             }
-            return (start, target)
+            return (start, clampWordOperatorToStartLine(target))
         case .moveWordBackward:
             for _ in 0..<count {
                 target = wordBackwardOffset(from: target)
@@ -858,7 +871,7 @@ public struct VimEditorState: Equatable, Sendable {
             for _ in 0..<count {
                 target = bigWordForwardOffset(from: target)
             }
-            return (start, target)
+            return (start, clampWordOperatorToStartLine(target))
         case .moveBigWordBackward:
             for _ in 0..<count {
                 target = bigWordBackwardOffset(from: target)
@@ -1150,6 +1163,16 @@ public struct VimEditorState: Equatable, Sendable {
 
     private func currentLine() -> (start: Int, end: Int) {
         lineRanges().first { cursorOffset >= $0.start && cursorOffset <= $0.end } ?? (start: 0, end: buffer.count)
+    }
+
+    /// Vim's word-operator special case: `dw`/`cw`/`dW`/`cW` never cross a line
+    /// boundary. When the `w`/`W` motion would move onto a later line, the operated
+    /// text ends at the current line's end — the newline is not consumed, so the
+    /// next line is not merged in. (The bare `w` cursor motion still crosses lines;
+    /// only the operator form is clamped, and `motionRange` is the operator path.)
+    private func clampWordOperatorToStartLine(_ target: Int) -> Int {
+        let lineEnd = currentLine().end
+        return target > lineEnd ? lineEnd : target
     }
 
     private func lineEndOffset(count: Int) -> Int {

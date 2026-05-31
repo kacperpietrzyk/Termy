@@ -170,9 +170,10 @@ final class TermyCoreTests: XCTestCase {
         XCTAssertEqual(appearanceRecord.fields["terminalFontFamily"], "JetBrains Mono")
         XCTAssertEqual(appearanceRecord.fields["terminalIncreasedContrast"], "true")
         XCTAssertEqual(appearanceRecord.fields["interfaceTextScale"], "large")
-        XCTAssertEqual(appearanceRecord.fields["keymapBindings"], "open-command-center=commandShift:p;toggle-ai-panel=commandOption:a")
+        // D3: collision-free JSON encoding (was delimiter-joined).
+        XCTAssertEqual(appearanceRecord.fields["keymapBindings"], "[[\"open-command-center\",\"commandShift:p\"],[\"toggle-ai-panel\",\"commandOption:a\"]]")
         XCTAssertEqual(appearanceRecord.fields["terminalShellPath"], "/opt/homebrew/bin/fish")
-        XCTAssertEqual(appearanceRecord.fields["terminalShellArguments"], "--login")
+        XCTAssertEqual(appearanceRecord.fields["terminalShellArguments"], "[\"--login\"]")
         XCTAssertEqual(plan.datasets[.terminalScrollback], .localOnly)
         XCTAssertFalse(plan.records.contains { record in
             record.fields.values.contains { value in
@@ -200,6 +201,104 @@ final class TermyCoreTests: XCTestCase {
         XCTAssertEqual(appearanceRecord.fields["terminalFontFamily"], "Berkeley Mono")
         let restored = PrivateSyncSnapshotRestorer().restore(from: [appearanceRecord])
         XCTAssertEqual(restored.terminalFontFamily, "Berkeley Mono")
+    }
+
+    func testPrivateSyncRestoresAIHistoryInNumericOrderBeyondTenMessages() {
+        // D2: positional record names (`ai-history-<offset>`) restored by a LEXICOGRAPHIC
+        // sort put `ai-history-10` before `ai-history-2`, scrambling any history with ≥10
+        // messages. The restore must order by the numeric suffix.
+        let messages = (0..<12).map { "message-\($0)" }
+        let records = messages.enumerated().map { offset, message in
+            PrivateSyncRecord(
+                recordType: "AIConversation",
+                recordName: "ai-history-\(offset)",
+                fields: ["message": message]
+            )
+        }.shuffled()
+
+        let restored = PrivateSyncSnapshotRestorer().restore(from: records)
+        XCTAssertEqual(restored.aiConversationHistory, messages)
+    }
+
+    func testPrivateSyncDeletionPlannerFindsShrunkAIHistoryOrphans() {
+        // D2: when ai-history shrinks, the higher-index records that disappeared must
+        // be tombstoned so they don't resurrect on the next fetch. Non-AIConversation
+        // records and still-present indices are not deleted.
+        func ai(_ n: Int) -> PrivateSyncRecord {
+            PrivateSyncRecord(recordType: "AIConversation", recordName: "ai-history-\(n)", fields: [:])
+        }
+        let previous = [ai(0), ai(1), ai(2),
+                        PrivateSyncRecord(recordType: "Snippet", recordName: "snippet-x", fields: [:])]
+        let current = [ai(0),
+                       PrivateSyncRecord(recordType: "Snippet", recordName: "snippet-x", fields: [:])]
+
+        XCTAssertEqual(
+            PrivateSyncDeletionPlanner.aiHistoryOrphans(previous: previous, current: current).sorted(),
+            ["ai-history-1", "ai-history-2"]
+        )
+        // No shrink → no orphans.
+        XCTAssertEqual(
+            PrivateSyncDeletionPlanner.aiHistoryOrphans(previous: current, current: previous),
+            []
+        )
+    }
+
+    func testPrivateSyncRoundTripsDelimiterContainingShellArgsThemesKeymap() throws {
+        // D3: list/map values containing the legacy delimiters (space, |, ;, =)
+        // survive the round-trip (the old joined(separator:) scheme corrupted them).
+        let theme = TerminalTheme(
+            id: "t;1", name: "Solar | Dark; v2",
+            backgroundHex: "#001", foregroundHex: "#eee",
+            promptHex: "#0f0", errorHex: "#f00", mutedHex: "#888"
+        )
+        let snapshot = PrivateSyncSnapshot(
+            profiles: [],
+            terminalThemeID: "t;1",
+            terminalFontSize: 13,
+            terminalUsesLigatures: false,
+            terminalShell: .custom(path: "/opt/homebrew/bin/fish",
+                                   arguments: ["--rcfile", "/Users/x/My Files/rc", "-o", "a;b|c"]),
+            customTerminalThemes: [theme],
+            keymapBindings: ["weird=key;id": .command("k")],
+            snippets: [],
+            workspaces: [],
+            terminalScrollback: [],
+            aiConversationHistory: []
+        )
+
+        let plan = PrivateSyncPlanner().plan(for: snapshot)
+        let appearance = try XCTUnwrap(plan.records.first { $0.recordType == "Appearance" })
+        let restored = PrivateSyncSnapshotRestorer().restore(from: [appearance])
+
+        guard case .custom(_, let args)? = restored.terminalShell else {
+            return XCTFail("expected a custom shell profile")
+        }
+        XCTAssertEqual(args, ["--rcfile", "/Users/x/My Files/rc", "-o", "a;b|c"])
+        XCTAssertEqual(restored.customTerminalThemes, [theme])
+        XCTAssertEqual(restored.keymapBindings["weird=key;id"], .command("k"))
+    }
+
+    func testPrivateSyncStillDecodesLegacyDelimiterEncodedAppearanceFields() {
+        // D3: records written by an older build (delimiter-joined, no JSON) must
+        // still restore via the fallback path.
+        let legacy = PrivateSyncRecord(
+            recordType: "Appearance",
+            recordName: "appearance-default",
+            fields: [
+                "terminalShellPath": "/opt/homebrew/bin/fish",
+                "terminalShellArguments": "-l -i",
+                "customTerminalThemes": "t1|Dark|#000|#fff|#0f0|#f00|#888",
+                "keymapBindings": "save=command:s"
+            ]
+        )
+        let restored = PrivateSyncSnapshotRestorer().restore(from: [legacy])
+
+        guard case .custom(_, let args)? = restored.terminalShell else {
+            return XCTFail("expected a custom shell profile")
+        }
+        XCTAssertEqual(args, ["-l", "-i"])
+        XCTAssertEqual(restored.customTerminalThemes.first?.name, "Dark")
+        XCTAssertEqual(restored.keymapBindings["save"], .command("s"))
     }
 
     func testPrivateSyncPlannerPreservesTerminalOutputMode() throws {
@@ -551,7 +650,9 @@ final class TermyCoreTests: XCTestCase {
         let remoteWorkspace = PrivateSyncRecord(
             recordType: "Workspace",
             recordName: "workspace-debug",
-            fields: ["name": "Debug Remote", "panelIDs": "terminal,git"]
+            // Newer stamp than the unstamped local (→ epoch 0) so the fetched remote edit
+            // legitimately wins the conflict (D1: equal/unknown stamps keep local).
+            fields: ["name": "Debug Remote", "panelIDs": "terminal,git", "modifiedAt": "200"]
         )
         let remoteAppearance = PrivateSyncRecord(
             recordType: "Appearance",
@@ -964,7 +1065,10 @@ final class TermyCoreTests: XCTestCase {
         let source = PrivateSyncRecord(
             recordType: "Workspace",
             recordName: "workspace-debug",
-            fields: ["name": "Debug", "panelIDs": "terminal,git"]
+            // D1: the conflict timestamp must survive the CKRecord round-trip — if the
+            // inbound decoder dropped it, remote would always read as epoch 0 and local
+            // would always win, silently breaking inbound sync.
+            fields: ["name": "Debug", "panelIDs": "terminal,git", "modifiedAt": "200"]
         )
         let mapper = CloudKitPrivateSyncMapper()
 
@@ -975,7 +1079,10 @@ final class TermyCoreTests: XCTestCase {
         XCTAssertEqual(record.recordID.zoneID.zoneName, "TermyPrivateSync")
         XCTAssertEqual(record["name"] as? String, "Debug")
         XCTAssertEqual(record["panelIDs"] as? String, "terminal,git")
-        XCTAssertEqual(try mapper.makePrivateSyncRecord(from: record), source)
+        XCTAssertEqual(record["modifiedAt"] as? String, "200")
+        let roundTripped = try mapper.makePrivateSyncRecord(from: record)
+        XCTAssertEqual(roundTripped, source)
+        XCTAssertEqual(roundTripped.fields["modifiedAt"], "200")
         #endif
     }
 
@@ -1041,12 +1148,22 @@ final class TermyCoreTests: XCTestCase {
                 recordsProvider: { [source] },
                 eventHandler: { _ in }
             )
-            let batch = await delegate.makeRecordZoneChangeBatch(for: [source])
+            let batch = delegate.makeRecordZoneChangeBatch(for: [source])
 
             XCTAssertEqual(batch.recordsToSave.count, 1)
             XCTAssertEqual(batch.recordsToSave.first?.recordID.recordName, "workspace-runtime")
             XCTAssertEqual(batch.recordIDsToDelete, [])
             XCTAssertTrue(batch.atomicByZone)
+
+            // D2: tombstones for locally-removed records ride in recordIDsToDelete.
+            let withDeletes = delegate.makeRecordZoneChangeBatch(
+                for: [source], deleting: ["ai-history-2", "ai-history-3"]
+            )
+            XCTAssertEqual(
+                withDeletes.recordIDsToDelete.map(\.recordName).sorted(),
+                ["ai-history-2", "ai-history-3"]
+            )
+            XCTAssertEqual(withDeletes.recordIDsToDelete.first?.zoneID.zoneName, "TermyPrivateSync")
             XCTAssertEqual(CloudKitPrivateSyncEngineSession.defaultSubscriptionID, "TermyPrivateSyncZoneChanges")
             XCTAssertFalse(CloudKitPrivateSyncEngineSession.defaultAutomaticallySync)
         }
@@ -1076,12 +1193,16 @@ final class TermyCoreTests: XCTestCase {
             fields: ["name": "Remote", "activeSession": "remote", "modifiedAt": "200"]
         )
 
+        // D4: remote is newer (200 > 100) and wins, so its secretReferences must be
+        // adopted — NOT force-overwritten with local's. Force-local here is the D4 bug:
+        // after a credential is re-issued on another Mac (new reference id), this Mac
+        // would keep pointing at the stale Keychain item and auth would fail.
         XCTAssertEqual(
             resolver.resolve(local: localProfile, remote: remoteProfile, activeLocalSessionRecordNames: []),
             PrivateSyncRecord(
                 recordType: "ConnectionProfile",
                 recordName: "connection-prod",
-                fields: ["host": "remote.example", "secretReferences": "local-key", "modifiedAt": "200"]
+                fields: ["host": "remote.example", "secretReferences": "remote-key", "modifiedAt": "200"]
             )
         )
         XCTAssertEqual(
@@ -1091,6 +1212,57 @@ final class TermyCoreTests: XCTestCase {
                 activeLocalSessionRecordNames: ["workspace-current"]
             ),
             activeLocalWorkspace
+        )
+    }
+
+    func testPrivateSyncConflictResolverUsesLastEditedTimestamps() {
+        let resolver = PrivateSyncConflictResolver()
+        func profile(_ host: String, modifiedAt: String?) -> PrivateSyncRecord {
+            var fields = ["host": host]
+            if let modifiedAt { fields["modifiedAt"] = modifiedAt }
+            return PrivateSyncRecord(
+                recordType: "ConnectionProfile",
+                recordName: "connection-prod",
+                fields: fields
+            )
+        }
+
+        // Local edited more recently → local wins (D1: the bug let remote always win).
+        XCTAssertEqual(
+            resolver.resolve(
+                local: profile("local", modifiedAt: "200"),
+                remote: profile("remote", modifiedAt: "100"),
+                activeLocalSessionRecordNames: []
+            ).fields["host"],
+            "local"
+        )
+        // Equal stamps → keep local (strict `>`; avoids needless churn on unchanged records).
+        XCTAssertEqual(
+            resolver.resolve(
+                local: profile("local", modifiedAt: "100"),
+                remote: profile("remote", modifiedAt: "100"),
+                activeLocalSessionRecordNames: []
+            ).fields["host"],
+            "local"
+        )
+        // Both legacy/unstamped (missing → epoch 0) → keep local (conservative; no surprise
+        // overwrite). A genuinely newer remote still wins once it carries a real stamp.
+        XCTAssertEqual(
+            resolver.resolve(
+                local: profile("local", modifiedAt: nil),
+                remote: profile("remote", modifiedAt: nil),
+                activeLocalSessionRecordNames: []
+            ).fields["host"],
+            "local"
+        )
+        // Remote stamped, local unstamped (unknown = old) → remote wins.
+        XCTAssertEqual(
+            resolver.resolve(
+                local: profile("local", modifiedAt: nil),
+                remote: profile("remote", modifiedAt: "1"),
+                activeLocalSessionRecordNames: []
+            ).fields["host"],
+            "remote"
         )
     }
 
@@ -3620,6 +3792,13 @@ final class TermyCoreTests: XCTestCase {
         )
     }
 
+    func testTerminalANSIParserSwallowsUnhandledEscapesInsteadOfRenderingGlyphs() {
+        // ESC Z (unrecognized escape final) and a bare trailing ESC must be consumed,
+        // not drawn as literal glyphs.
+        let visible = TerminalANSIParser().parse("a\u{001B}Zb\u{001B}").map(\.text).joined()
+        XCTAssertEqual(visible, "ab")
+    }
+
     func testTerminalANSIParserStripsEscapesAndKeepsTrueColorRuns() {
         let runs = TerminalANSIParser().parse("plain \u{001B}[38;2;255;128;0morange\u{001B}[0m done")
 
@@ -4310,9 +4489,10 @@ final class TermyCoreTests: XCTestCase {
             .records
             .first { $0.recordType == "Appearance" }
 
+        // D3: collision-free JSON encoding (was `|`-within / `;`-between).
         XCTAssertEqual(
             appearanceRecord?.fields["customTerminalThemes"],
-            "custom-forest|Forest|#101A14|#E6F2E8|#7DD87D|#FF6B6B|#78917D"
+            "[[\"custom-forest\",\"Forest\",\"#101A14\",\"#E6F2E8\",\"#7DD87D\",\"#FF6B6B\",\"#78917D\"]]"
         )
     }
 
@@ -4698,6 +4878,16 @@ final class TermyCoreTests: XCTestCase {
                 .init(text: "\"Termy\"", kind: .string)
             ]
         )
+    }
+
+    func testSyntaxHighlighterBoundsUnterminatedStringToItsLine() {
+        // A stray/unterminated quote must not render the rest of the file as a
+        // string — the `let` on the next line is still highlighted as a keyword.
+        let tokens = SyntaxHighlighter().highlight("x = \"oops\nlet y = 1", fileName: "App.swift")
+        XCTAssertTrue(tokens.contains { $0.text == "let" && $0.kind == .keyword },
+                      "an unterminated string on line 1 must not swallow line 2's keyword")
+        XCTAssertFalse(tokens.contains { $0.kind == .string && $0.text.contains("let") },
+                       "the string token must stop at the newline")
     }
 
     func testSyntaxHighlighterCoversPRDEditorLanguages() {
@@ -5124,7 +5314,8 @@ final class TermyCoreTests: XCTestCase {
         state.apply(.pasteBefore)
 
         XCTAssertEqual(state.buffer, "one one two three")
-        XCTAssertEqual(state.cursorOffset, 8)
+        // Vim: cursor lands on the last char of the charwise paste ("one " → offset 7).
+        XCTAssertEqual(state.cursorOffset, 7)
 
         state = VimEditorState(buffer: "one\ntwo\nthree", cursorOffset: 4)
         state.apply(.yankOperator)
@@ -5147,7 +5338,8 @@ final class TermyCoreTests: XCTestCase {
         state.apply(.pasteBefore)
 
         XCTAssertEqual(state.buffer, "one one one one two")
-        XCTAssertEqual(state.cursorOffset, 12)
+        // Vim: cursor on the last char of the charwise paste ("one one one " → offset 11).
+        XCTAssertEqual(state.cursorOffset, 11)
 
         state = VimEditorState(buffer: "one\ntwo\nthree", cursorOffset: 4)
         state.apply(.yankOperator)
@@ -5331,6 +5523,29 @@ final class TermyCoreTests: XCTestCase {
         state.apply(.undoLastChange)
         XCTAssertEqual(state.buffer, "abZdef")
         XCTAssertEqual(state.cursorOffset, 3)
+    }
+
+    func testVimEditorReplaceCharacterDoesNotCrossLineBoundary() {
+        // `3r x` with only 1 char left on the line is a no-op in vim (it must not
+        // replace the newline and merge the next line in).
+        var state = VimEditorState(buffer: "ab\ncd", cursorOffset: 1)
+        state.apply(.countDigit(3))
+        state.apply(.replaceCharacter("x"))
+        XCTAssertEqual(state.buffer, "ab\ncd")
+
+        // A replace that fits on the line still works (1 char remains at offset 1).
+        state.apply(.replaceCharacter("y"))
+        XCTAssertEqual(state.buffer, "ay\ncd")
+    }
+
+    func testVimEditorDeleteWordDoesNotCrossLineBoundary() {
+        // `dw` on the last word of a line deletes the word but keeps the newline —
+        // it must not merge the next line in.
+        var state = VimEditorState(buffer: "foo bar\nbaz", cursorOffset: 4)
+        state.apply(.deleteOperator)
+        state.apply(.moveWordForward)
+        XCTAssertEqual(state.buffer, "foo \nbaz")
+        XCTAssertEqual(state.cursorOffset, 4)
     }
 
     func testVimEditorStateMovesToMatchingBracket() {

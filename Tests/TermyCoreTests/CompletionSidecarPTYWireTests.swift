@@ -15,6 +15,18 @@ final class CompletionSidecarPTYWireTests: XCTestCase {
         XCTAssertEqual(wire, "\u{0015}git p\u{001B}[D\u{001B}[D\u{001B}q")
     }
 
+    func test_complete_cursorUsesScalarsNotGraphemes() {
+        // "é" as e + combining acute = 2 scalars but 1 grapheme, then "x" → 3 scalars,
+        // 2 graphemes. zsh CURSOR=2 means "after é, before x". The left-move count must
+        // be 3 - 2 = 1 (scalars); the old grapheme math gave 2 - 2 = 0 → wrong column.
+        let buffer = "e\u{0301}x"
+        let b64 = Data(buffer.utf8).base64EncodedString()
+        let q = "__termy_complete \(b64) 2 /tmp 1\n"
+        let wire = CompletionSidecar.ptyWireString(forQLine: q)!
+        let leftMoves = wire.components(separatedBy: "\u{001B}[D").count - 1
+        XCTAssertEqual(leftMoves, 1)
+    }
+
     func test_cd_basic() {
         let q = "__termy_cd /var/log\n"
         XCTAssertEqual(

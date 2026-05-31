@@ -156,6 +156,11 @@ public struct SyntaxHighlighter: Sendable {
                 let start = index
                 index = source.index(after: index)
                 while index < source.endIndex {
+                    // Bound an unterminated string to its own line so a single stray
+                    // quote can't render the entire rest of the file as a string. A
+                    // terminated single-line string is unaffected (it breaks on the
+                    // closing quote first).
+                    if source[index] == "\n" { break }
                     let character = source[index]
                     index = source.index(after: index)
                     if character == quote { break }

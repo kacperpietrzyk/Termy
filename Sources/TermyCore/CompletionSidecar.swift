@@ -1,6 +1,53 @@
 import Foundation
 import Darwin
 
+/// Thread-safe wrapper around the sidecar PTY master fd.
+///
+/// Con2 fix: the bootstrap sequence writes to the master fd ~1.7 s after spawn,
+/// while `terminate()` (via the drain source's cancel handler) closes it. Without
+/// serialization, a delayed write could hit a closed fd (EBADF — harmless) or, if
+/// the fd number was recycled, write shell keystrokes into an unrelated descriptor.
+/// This gate makes `write` mutually exclusive with `closeForTeardown` and turns
+/// every write after close into a silent no-op.
+///
+/// `fd` stays readable for the GCD read source, which owns the fd's *readiness*
+/// lifecycle — so `closeForTeardown()` must be invoked ONLY from that source's
+/// cancel handler (where GCD guarantees no further reads). Writes (writer closure +
+/// bootstrap) go through `write`.
+final class SidecarMasterFd: @unchecked Sendable {
+    private let lock = NSLock()
+    let fd: Int32
+    private var closed = false
+
+    init(_ fd: Int32) { self.fd = fd }
+
+    func write(_ bytes: [UInt8]) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !closed else { return }
+        _ = bytes.withUnsafeBufferPointer { buf in
+            Darwin.write(fd, buf.baseAddress, buf.count)
+        }
+    }
+
+    /// Close the fd and block all further writes. Call ONLY from the drain read
+    /// source's cancel handler (GCD owns the fd's readiness lifecycle).
+    func closeForTeardown() {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !closed else { return }
+        Darwin.close(fd)
+        closed = true
+    }
+
+    /// Test seam: whether `closeForTeardown()` has run.
+    var isClosed: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return closed
+    }
+}
+
 /// Per-session sidecar zsh actor.
 ///
 /// Owns the state machine ({.booting, .ready, .crashed, .disabled}), the Q-frame
@@ -296,6 +343,28 @@ extension CompletionSidecar {
         if let zdotdir { env["ZDOTDIR"] = zdotdir }
         for (k, v) in extraEnvironment { env[k] = v }
 
+        // Con1 (fork-safety): build EVERYTHING the child needs HERE, in the parent,
+        // before forking. Between fork and exec a child must call only
+        // async-signal-safe functions — `setenv`/`strdup`/Swift `Dictionary`
+        // iteration all touch the malloc or environ lock, and if another parent
+        // thread held that lock at the instant of fork (its state is frozen into
+        // the child) the child would deadlock and the sidecar would silently never
+        // boot. So we hand the child a ready `argv`/`envp` and use `execve` (which
+        // takes the environment directly — no `setenv` in the child).
+        var envp: [UnsafeMutablePointer<CChar>?] = env.map { strdup("\($0.key)=\($0.value)") }
+        envp.append(nil)
+        let argv: [UnsafeMutablePointer<CChar>?] = [strdup(shellPath), strdup("-i"), nil]
+        let cwdCString = strdup(cwd)
+        let shellPathCString = strdup(shellPath)
+        defer {
+            // Parent reclaims the prepared C strings; the child runs in its own
+            // (copy-on-write) address space, so freeing here never affects it.
+            envp.forEach { free($0) }
+            argv.forEach { free($0) }
+            free(cwdCString)
+            free(shellPathCString)
+        }
+
         // Reasonable defaults; some completion functions branch on $COLUMNS.
         var winSize = winsize(ws_row: 24, ws_col: 200, ws_xpixel: 0, ws_ypixel: 0)
         var masterFd: Int32 = -1
@@ -304,24 +373,10 @@ extension CompletionSidecar {
             return makeImmediatelyDisabled(workDir: workDir, onEvent: onEvent, onStateChange: onStateChange)
         }
         if pid == 0 {
-            // CHILD — keep this path tight; only signal-safe operations
-            // until execvp. setenv is acceptable for our spawn-immediately
-            // pattern since no other threads in the child compete.
-            cwd.withCString { _ = chdir($0) }
-            for (k, v) in env {
-                k.withCString { kc in
-                    v.withCString { vc in
-                        _ = setenv(kc, vc, 1)
-                    }
-                }
-            }
-            let argv0 = strdup(shellPath)
-            let argv1 = strdup("-i")
-            var argv: [UnsafeMutablePointer<CChar>?] = [argv0, argv1, nil]
-            argv.withUnsafeMutableBufferPointer { buf in
-                _ = execv(shellPath, buf.baseAddress)
-            }
-            Darwin._exit(127)  // execv only returns on failure
+            // CHILD — async-signal-safe ONLY: chdir, execve, _exit. No allocation.
+            _ = chdir(cwdCString)
+            _ = execve(shellPathCString, argv, envp)
+            Darwin._exit(127)  // execve only returns on failure
         }
         // PARENT — fall through; masterFd is our end, child has slave on 0/1/2.
 
@@ -336,9 +391,9 @@ extension CompletionSidecar {
         // NOTE: writes are blocking. For the small Q-lines we emit (< 512 bytes)
         // the PTY buffer will never fill, so blocking is harmless. If a future
         // change emits large payloads, make the fd non-blocking and buffer.
-        let masterCopy = masterFd
+        let master = SidecarMasterFd(masterFd)
         let writer: @Sendable (String) -> Void = { line in
-            CompletionSidecar.writePTYLine(line, toMaster: masterCopy, workDir: workDir)
+            CompletionSidecar.writePTYLine(line, toMaster: master, workDir: workDir)
         }
 
         let sidecar = CompletionSidecar(
@@ -356,16 +411,19 @@ extension CompletionSidecar {
         // The cancel handler below owns the close(masterFd) — nowhere else does.
         let drainQueue = DispatchQueue(label: "termy.sidecar.drain", qos: .utility)
         let drainSource = DispatchSource.makeReadSource(
-            fileDescriptor: masterCopy, queue: drainQueue
+            fileDescriptor: master.fd, queue: drainQueue
         )
         drainSource.setEventHandler {
             var buf = [UInt8](repeating: 0, count: 4096)
             _ = buf.withUnsafeMutableBufferPointer { ptr in
-                Darwin.read(masterCopy, ptr.baseAddress, ptr.count)
+                Darwin.read(master.fd, ptr.baseAddress, ptr.count)
             }
             // Discard all display bytes; result delivery uses the workDir watcher.
         }
-        drainSource.setCancelHandler { close(masterCopy) }
+        // The cancel handler owns the close — routed through the gate so any
+        // concurrent (writer / bootstrap) write is excluded and post-close writes
+        // become no-ops (Con2).
+        drainSource.setCancelHandler { master.closeForTeardown() }
         drainSource.resume()
 
         // --- 8. Watch workDir for result files. ---
@@ -431,17 +489,13 @@ extension CompletionSidecar {
             // load. Wait generously so ZLE is initialized before we
             // inject input.
             try? await Task.sleep(nanoseconds: 1_500_000_000)
+            // Con2: route through the gate. If terminate() already closed the fd
+            // during this delay, these writes are silent no-ops (no recycled-fd write).
             let disablePaste = "unset zle_bracketed_paste 2>/dev/null; printf '\\033[?2004l'\n"
-            var bytes = Array(disablePaste.utf8)
-            _ = bytes.withUnsafeBufferPointer { buf in
-                Darwin.write(masterCopy, buf.baseAddress!, buf.count)
-            }
+            master.write(Array(disablePaste.utf8))
             try? await Task.sleep(nanoseconds: 200_000_000)
             let sourceCmd = "source '\(escapedPath)'\n"
-            bytes = Array(sourceCmd.utf8)
-            _ = bytes.withUnsafeBufferPointer { buf in
-                Darwin.write(masterCopy, buf.baseAddress!, buf.count)
-            }
+            master.write(Array(sourceCmd.utf8))
         }
 
         // --- 10. Termination monitor — replaces Process.terminationHandler. ---
@@ -500,8 +554,14 @@ extension CompletionSidecar {
                 let data = Data(base64Encoded: request.bufferBase64),
                 let buffer = String(data: data, encoding: .utf8)
             else { return nil }
-            let clampedCursor = max(0, min(request.cursor, buffer.count))
-            let leftMoves = String(repeating: "\u{001B}[D", count: buffer.count - clampedCursor)
+            // zsh's `$CURSOR` indexes `$BUFFER` in characters (Unicode scalars), and
+            // each ESC[D is one ZLE backward-char (one scalar). Swift's `String.count`
+            // is grapheme clusters, so a multi-scalar grapheme (emoji, combining marks,
+            // flags) would make the left-move count wrong and land the cursor in the
+            // wrong column. Measure in scalars to match ZLE.
+            let scalarCount = buffer.unicodeScalars.count
+            let clampedCursor = max(0, min(request.cursor, scalarCount))
+            let leftMoves = String(repeating: "\u{001B}[D", count: scalarCount - clampedCursor)
             return "\u{0015}" + buffer + leftMoves + "\u{001B}q"
         }
         let trimmed = line.hasSuffix("\n") ? String(line.dropLast()) : line
@@ -513,15 +573,12 @@ extension CompletionSidecar {
         return nil
     }
 
-    private static func writePTYLine(_ line: String, toMaster fd: Int32, workDir: URL) {
+    private static func writePTYLine(_ line: String, toMaster master: SidecarMasterFd, workDir: URL) {
         if let request = parseCompleteQLine(line) {
             guard writeRequestMetadata(request, to: workDir) else { return }
         }
         guard let wire = ptyWireString(forQLine: line) else { return }
-        let bytes = Array(wire.utf8)
-        _ = bytes.withUnsafeBufferPointer { buf in
-            Darwin.write(fd, buf.baseAddress, buf.count)
-        }
+        master.write(Array(wire.utf8))
     }
 
     private struct ParsedComplete {

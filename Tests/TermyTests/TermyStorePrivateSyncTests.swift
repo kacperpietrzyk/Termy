@@ -188,4 +188,37 @@ final class TermyStorePrivateSyncTests: XCTestCase {
         ])
         XCTAssertEqual(store.privateSyncStatus, "Applied 2 runtime change(s)")
     }
+
+    @MainActor
+    func testStagedSyncRecordsCarryMutationStampedModifiedAtAndPreserveIt() throws {
+        // D1: editing a profile stamps its record's `modifiedAt`; re-staging without an
+        // edit preserves that stamp (no churn). ai-history is never stamped.
+        let store = TermyStore(startInitialPTY: false)
+        defer { store.shutdown() }
+        store.sshProfileNameDraft = "Prod"
+        store.sshProfileHostDraft = "prod.example"
+        store.sshProfileUserDraft = "kacper"
+        store.sshProfilePortDraft = "22"
+        store.sshProfileIdentityDraft = "~/.ssh/id_ed25519"
+        store.aiConversationHistory = ["question", "answer"]
+
+        store.createSSHProfileFromDraft()
+
+        // The store seeds sample profiles; locate the one we just edited by host.
+        let record = try XCTUnwrap(store.privateSyncRecords.first { $0.fields["host"] == "prod.example" })
+        let stamp = try XCTUnwrap(record.fields["modifiedAt"].flatMap(Double.init))
+        XCTAssertGreaterThan(stamp, 0, "an edited profile record must carry a real modifiedAt")
+
+        // ai-history is excluded from the timestamp model.
+        let aiRecords = store.privateSyncRecords.filter { $0.recordType == "AIConversation" }
+        XCTAssertFalse(aiRecords.isEmpty, "test should exercise ai-history records")
+        XCTAssertTrue(aiRecords.allSatisfy { $0.fields["modifiedAt"] == nil },
+                      "ai-history records must never be timestamp-stamped")
+
+        // Re-stage without editing → the stamp is preserved, not bumped to now.
+        store.stagePrivateSyncSnapshot()
+        let restaged = try XCTUnwrap(store.privateSyncRecords.first { $0.fields["host"] == "prod.example" })
+        XCTAssertEqual(restaged.fields["modifiedAt"], record.fields["modifiedAt"],
+                       "an untouched record must keep its prior stamp across staging")
+    }
 }

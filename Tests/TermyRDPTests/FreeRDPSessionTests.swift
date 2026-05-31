@@ -301,6 +301,16 @@ final class FreeRDPSessionMarshallingTests: XCTestCase {
             return XCTFail("expected .disconnected(.userInitiated), got \(String(describing: event))")
         }
     }
+
+    // R4: the cliprdr handshake requests CF_UNICODETEXT only (the one format the
+    // inbound decoder reads correctly); anything else → 0 (request nothing) so a
+    // non-unicode format is never requested-then-garbled.
+    func testPreferredPasteFormatRequestsUnicodeOnly() {
+        XCTAssertEqual(ctermyrdp_preferred_paste_format([1, 7, 13], 3), 13)    // unicode present → 13
+        XCTAssertEqual(ctermyrdp_preferred_paste_format([7, 1], 2), 0)         // only CF_TEXT/OEM → none
+        XCTAssertEqual(ctermyrdp_preferred_paste_format([49158, 49159], 2), 0) // app-defined only → none
+        XCTAssertEqual(ctermyrdp_preferred_paste_format(nil, 0), 0)
+    }
 }
 
 final class FreeRDPSessionStatusMappingTests: XCTestCase {
