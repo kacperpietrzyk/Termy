@@ -128,11 +128,19 @@ function compadd {
   fi
 
   # Effective insertion prefix: the already-consumed word part zsh re-inserts
-  # ahead of every match in this call ($IPREFIX, set by the completer's
-  # `compset -P`, plus any explicit `compadd -p`). Empty for plain command/
-  # subcommand completion, `Projects/` for `cd Projects/<TAB>`, `~/` for
-  # `cd ~/Pro<TAB>`, etc.
-  local __t_prefix="${IPREFIX}${__t_pprefix}"
+  # ahead of every match in this call. Empty for plain command/subcommand
+  # completion, `Projects/` for `cd Projects/<TAB>`, `~/` for `cd ~/Pro<TAB>`.
+  # It is carried EITHER by $IPREFIX (completer used `compset -P`) OR by an
+  # explicit `compadd -p` value — and occasionally the `-p` value ALREADY embeds
+  # $IPREFIX (zsh's _path_files `-U` branch passes `-p "${Uopt:+$IPREFIX}…"`).
+  # Avoid double-counting: if the captured `-p` value already starts with
+  # $IPREFIX, use it verbatim; otherwise concatenate.
+  local __t_prefix
+  if [[ -n "$__t_pprefix" && -n "$IPREFIX" && "$__t_pprefix" == "${IPREFIX}"* ]]; then
+    __t_prefix="$__t_pprefix"
+  else
+    __t_prefix="${IPREFIX}${__t_pprefix}"
+  fi
   local __t_n=${#__t_matched} __t_j=1
   while (( __t_j <= __t_n )); do
     local __t_title="${__t_matched[__t_j]}"

@@ -168,6 +168,36 @@ final class CompletionSidecarPathCompletionTests: XCTestCase {
             "Tilde-prefixed path keeps `~/` in the replacement word")
     }
 
+    /// Regression guard (code-review finding): some completers (zsh `_path_files`
+    /// `-U` branch) pass `compadd -p` with a value that ALREADY embeds `$IPREFIX`.
+    /// The shadow must NOT prepend `$IPREFIX` a second time (`X/X/deep/gamma`).
+    /// A custom completer reproduces that exact shape deterministically.
+    func test_realZsh_pPrefixEmbeddingIPREFIX_noDoubleCount() async throws {
+        let cwd = try tmpDir("cwd-dbl")
+        let workDir = try tmpDir("work-dbl")
+        let zdot = try tmpDir("zdot-dbl")
+        // Custom completer for `fakecmd2`: consume `X/` into $IPREFIX via compset,
+        // then add a match with `-p "${IPREFIX}deep/"` (embeds IPREFIX, mimicking _path_files -U).
+        try """
+        autoload -Uz compinit
+        compinit -u
+        _termy_fakecmd2() { compset -P 'X/'; compadd -p "${IPREFIX}deep/" gamma }
+        compdef _termy_fakecmd2 fakecmd2
+        """.write(to: zdot.appendingPathComponent(".zshrc"), atomically: true, encoding: .utf8)
+        defer { for d in [cwd, workDir, zdot] { try? FileManager.default.removeItem(at: d) } }
+
+        let sink = EventSink()
+        let sidecar = try await spawnReadySidecar(cwd: cwd, workDir: workDir, zdotdir: zdot, sink: sink)
+        defer { Task { await sidecar.terminate() } }
+
+        await sidecar.query(buffer: "fakecmd2 X/", cursor: 11, cwd: cwd.path)
+        let items = await awaitResult(sink, timeout: 8) { $0.contains { $0.title == "gamma" } }
+        let cands = try XCTUnwrap(items, "No result containing `gamma`")
+        let gamma = try XCTUnwrap(cands.first { $0.title == "gamma" })
+        XCTAssertEqual(gamma.replacement, "X/deep/gamma",
+            "IPREFIX must not be double-prepended when the -p value already embeds it")
+    }
+
     func test_realZsh_subcommand_replacementUnchanged() async throws {
         let cwd = try tmpDir("cwd2")
         let workDir = try tmpDir("work2")
