@@ -138,8 +138,14 @@ public struct LocalFileService {
             }
     }
 
-    public func tree(relativePath: String = "") throws -> [LocalFileTreeItem] {
-        try treeItems(relativePath: relativePath, depth: 0)
+    /// Bounded recursive walk. `maxDepth`/`maxNodes` are a hard safety ceiling so a
+    /// pathological root (e.g. `projectRoot` defaulting to `/` when the app is launched
+    /// via `open`, which sets cwd to `/`) can NEVER turn this into a whole-filesystem
+    /// walk that pins the main thread at launch. The Files UI only needs a shallow,
+    /// bounded view; deeper/larger trees are truncated rather than walked unbounded.
+    public func tree(relativePath: String = "", maxDepth: Int = 8, maxNodes: Int = 5000) throws -> [LocalFileTreeItem] {
+        var budget = maxNodes
+        return try treeItems(relativePath: relativePath, depth: 0, maxDepth: maxDepth, budget: &budget)
     }
 
     public func createFile(named relativePath: String, contents: String = "") throws {
@@ -206,14 +212,16 @@ public struct LocalFileService {
         return candidate
     }
 
-    private func treeItems(relativePath: String, depth: Int) throws -> [LocalFileTreeItem] {
+    private func treeItems(relativePath: String, depth: Int, maxDepth: Int, budget: inout Int) throws -> [LocalFileTreeItem] {
         var result: [LocalFileTreeItem] = []
         for item in try list(relativePath: relativePath).sorted(by: fileTreeSort) {
+            if budget <= 0 { break }            // hard node ceiling — stop, never run away
+            budget -= 1
             result.append(LocalFileTreeItem(item: item, depth: depth))
-            if item.isDirectory {
+            if item.isDirectory && depth < maxDepth {
                 // One unreadable subtree (permissions / broken symlink) must not
                 // discard the whole tree — skip it but keep the folder node.
-                if let children = try? treeItems(relativePath: item.relativePath, depth: depth + 1) {
+                if let children = try? treeItems(relativePath: item.relativePath, depth: depth + 1, maxDepth: maxDepth, budget: &budget) {
                     result.append(contentsOf: children)
                 }
             }
