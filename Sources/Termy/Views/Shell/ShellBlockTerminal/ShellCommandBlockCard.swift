@@ -1,10 +1,25 @@
 import SwiftUI
 import TermyCore
 
+/// Footer state for a command block. Poziom-2b: a successful command shows NO
+/// footer chrome (clean, like Warp); only an error surfaces `EXIT n` (+ its
+/// duration for context), and a still-running command shows `RUNNING`.
+enum BlockFooterState: Equatable {
+    case none                 // exit == 0 → clean, no chrome
+    case running              // not finished yet
+    case error(code: Int32)   // exit != 0 → surface it
+
+    init(exitCode: Int32?) {
+        guard let exit = exitCode else { self = .running; return }
+        self = exit == 0 ? .none : .error(code: exit)
+    }
+}
+
 /// §6.1 inline command block (NOT a bordered card — matches the handoff `.ln`):
 /// a prompt line (`user@host:cwd ❯ command`) → ANSI-colored output → a footer
-/// chip (`EXIT 0` / `EXIT n` / `RUNNING`) + duration. Output color comes from the
-/// foundation `ANSITextParser` over the captured transcript text.
+/// that is empty on success and shows `EXIT n` (+ duration) only on error, or
+/// `RUNNING` while in flight. Output color comes from the foundation
+/// `ANSITextParser` over the captured transcript text.
 struct ShellCommandBlockCard: View {
     let block: TerminalRenderedCommandBlock
     let promptUserHost: String      // e.g. "kacper@mac-studio-kacper"
@@ -38,16 +53,19 @@ struct ShellCommandBlockCard: View {
     }
 
     @ViewBuilder private var footer: some View {
-        HStack(spacing: 8) {
-            if let exit = block.exitCode {
-                badge(text: "EXIT \(exit)", ok: exit == 0)
-            } else {
-                badge(text: "RUNNING", ok: nil)
-            }
-            if let duration = block.duration {
-                Text(ShellModuleModel.formatBlockDuration(duration))
-                    .font(Typography.mono(10.5))
-                    .foregroundStyle(Color(DesignTokens.fg4))
+        switch BlockFooterState(exitCode: block.exitCode) {
+        case .none:
+            EmptyView()                              // success → clean, no chrome
+        case .running:
+            HStack(spacing: 8) { badge(text: "RUNNING", ok: nil) }
+        case .error(let code):
+            HStack(spacing: 8) {
+                badge(text: "EXIT \(code)", ok: false)
+                if let duration = block.duration {   // keep timing only where it informs
+                    Text(ShellModuleModel.formatBlockDuration(duration))
+                        .font(Typography.mono(10.5))
+                        .foregroundStyle(Color(DesignTokens.fg4))
+                }
             }
         }
     }
