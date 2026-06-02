@@ -121,4 +121,33 @@ final class ANSITextParserTests: XCTestCase {
     func testIncompleteCharsetDesignationIsDropped() {
         XCTAssertEqual(parser.parse("ok\u{1b}("), [ANSISpan(text: "ok")])
     }
+
+    // Poziom-2a#2: inline-TUI repaints (cursor moves back, rewrites) must collapse to
+    // the FINAL state, not concatenate — the `787878%` residue half.
+
+    func testCursorHorizontalAbsoluteRepaintCollapses() {
+        // write "78", return to col 1 (CHA), rewrite, again, then "78%" → final "78%".
+        XCTAssertEqual(parser.parse("78\u{1b}[G78\u{1b}[G78%"), [ANSISpan(text: "78%")])
+    }
+
+    func testCursorBackOverwrites() {
+        // "abc", cursor back 3, write "X" → overwrites 'a' → "Xbc".
+        XCTAssertEqual(parser.parse("abc\u{1b}[3DX"), [ANSISpan(text: "Xbc")])
+    }
+
+    func testEraseLineThenRewriteFromColumnZero() {
+        // "junk", clear whole line (2K), CHA col 1, write "kept" → "kept".
+        XCTAssertEqual(parser.parse("junk\u{1b}[2K\u{1b}[Gkept"), [ANSISpan(text: "kept")])
+    }
+
+    func testForwardOnlyMultilineIsUnchanged() {
+        // No backward motion → byte-identical single span across newlines (regression).
+        XCTAssertEqual(parser.parse("a\nb\nc"), [ANSISpan(text: "a\nb\nc")])
+    }
+
+    func testCursorUpThenRewriteOverwritesEarlierLine() {
+        // "old\nx", up one row, CHA col 1, clear line, "new" → row0 "new", row1 "x".
+        XCTAssertEqual(parser.parse("old\nx\u{1b}[A\u{1b}[G\u{1b}[2Knew"),
+                       [ANSISpan(text: "new\nx")])
+    }
 }
