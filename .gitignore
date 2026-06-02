@@ -37,3 +37,7 @@ design_handoff_termy_v3/
 
 # Per-user Xcode UI state
 .swiftpm/xcode/xcuserdata/
+DESIGN.md
+theme.css
+tokens.json
+variables.css
