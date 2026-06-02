@@ -37,12 +37,21 @@ struct WorkspacesSubRailView: View {
                 if !filteredSSH.isEmpty {
                     section("Recent SSH") {
                         ForEach(filteredSSH) { profile in
-                            let isLive = store.sessions.contains { $0.profile.name == profile.name }
+                            let liveSession = store.sessions.first { $0.profile.name == profile.name }
                             WorkspaceSubCard(
                                 icon: "server.rack", hue: DesignTokens.host.base,
                                 name: profile.name, meta: "ssh",
-                                live: isLive, active: false
-                            ) {}
+                                live: liveSession != nil, active: false
+                            ) {
+                                // Focus the live session if one exists; otherwise jump to
+                                // Connections to (re)connect this host. No dead taps.
+                                if let liveSession {
+                                    store.selectedSessionID = liveSession.id
+                                    store.openModuleTab(.shell)
+                                } else {
+                                    store.openModuleTab(.connections)
+                                }
+                            }
                         }
                     }
                 }
@@ -83,10 +92,10 @@ private struct WorkspaceSubCard: View {
                 if live { TermyStatusDot(hue: DesignTokens.sync.base, pulsing: false) }
             }
             .padding(.horizontal, 10).padding(.vertical, 9)
-            .background((active || hovering) ? Color(DesignTokens.bg2) : Color.clear,
+            // Neutral translucent selection bar — never a colored fill (DESIGN.md).
+            .background(active ? DesignTokens.Glass.fillSelection
+                        : (hovering ? Color(DesignTokens.bg2) : Color.clear),
                         in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md))
-            .overlay(RoundedRectangle(cornerRadius: DesignTokens.Radius.md)
-                .stroke(active ? Color(hue).opacity(0.5) : Color.clear, lineWidth: 1))
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }

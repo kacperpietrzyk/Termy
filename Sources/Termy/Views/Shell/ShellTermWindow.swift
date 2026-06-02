@@ -61,11 +61,13 @@ struct ShellTermWindow: View {
 
     private var header: some View {
         HStack(spacing: 8) {
-            TermyStatusDot(hue: DesignTokens.sync.base, pulsing: true)
+            // Pulses green only while the child is alive; settles to a dim dot once it exits.
+            TermyStatusDot(hue: session.processExited ? DesignTokens.fg5 : DesignTokens.sync.base,
+                           pulsing: !session.processExited)
             Text(session.title).font(Typography.ui(12, weight: .medium)).foregroundStyle(Color(DesignTokens.fg1))
             Text("· \(shellLabel)").font(Typography.mono(11)).foregroundStyle(Color(DesignTokens.fg4))
             Spacer()
-            Text("cmd-blocks · OSC 133 · sidecar \(store.sidecarDisabledSessions.contains(session.id) ? "disabled" : "healthy")")
+            Text("sidecar \(store.sidecarDisabledSessions.contains(session.id) ? "disabled" : "healthy")")
                 .font(Typography.mono(10.5)).foregroundStyle(Color(DesignTokens.fg4))
         }
         .padding(.horizontal, 12).padding(.vertical, 8)

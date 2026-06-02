@@ -5429,13 +5429,19 @@ final class TermyStore: ObservableObject {
         // descriptor's workingDirectory is nil (e.g. local zsh inheriting
         // FileManager.currentDirectoryPath), the session's cwd stays nil
         // and HistoryStore.record(cwd: nil) records without cwd until D fires.
-        if let index = sessions.firstIndex(where: { $0.id == id }),
-           sessions[index].currentWorkingDirectory == nil {
-            sessions[index].currentWorkingDirectory = descriptor.workingDirectory
+        if let index = sessions.firstIndex(where: { $0.id == id }) {
+            // A (re)launch means the child is live again — clear any prior exit.
+            sessions[index].processExited = false
+            if sessions[index].currentWorkingDirectory == nil {
+                sessions[index].currentWorkingDirectory = descriptor.workingDirectory
+            }
         }
     }
     func bumpTerminalLaunchGeneration(for id: UUID) {
         terminalLaunchGenerations[id, default: 0] += 1
+        if let index = sessions.firstIndex(where: { $0.id == id }) {
+            sessions[index].processExited = false   // restart re-spawns → live again
+        }
     }
 
     /// SwiftTerm-owned screen text for the "Copy Visible Terminal Screen"
@@ -5538,6 +5544,7 @@ final class TermyStore: ObservableObject {
         }
         guard let index = sessions.firstIndex(where: { $0.id == sessionID }) else { return }
         if let exitCode { sessions[index].lastExitCode = exitCode }
+        sessions[index].processExited = true
         let detail = exitCode.map { "status \($0)" } ?? "I/O error"
         appendLine(TerminalLine(role: .system, text: "Process exited (\(detail))."), to: sessionID)
         if let context = tunnelReconnectContexts[sessionID] {

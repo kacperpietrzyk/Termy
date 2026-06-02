@@ -34,7 +34,7 @@ struct OverlayPanelView: View {
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 11)
-            .background(.bar)
+            .background(Color(DesignTokens.bg2))
 
             Divider()
             }
@@ -241,7 +241,7 @@ private struct FileExplorerPanel: View {
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(8)
-                        .background(.quaternary, in: RoundedRectangle(cornerRadius: 6))
+                        .background(DesignTokens.Glass.fillControl, in: RoundedRectangle(cornerRadius: DesignTokens.Radius.control))
                         .onDrop(of: [UTType.fileURL.identifier, UTType.text.identifier], isTargeted: nil) { providers in
                             handleSFTPDrop(providers: providers, profile: profile)
                         }
@@ -273,7 +273,7 @@ private struct FileExplorerPanel: View {
                     Spacer()
                         .frame(width: CGFloat(treeItem.depth) * 14)
                     Image(systemName: treeItem.iconName)
-                        .foregroundStyle(treeItem.item.isDirectory ? Color(DesignTokens.git.base) : Color(DesignTokens.fg3))
+                        .foregroundStyle(treeItem.item.isDirectory ? Color(DesignTokens.fg2) : Color(DesignTokens.fg3))
                     Text(treeItem.item.name)
                     Spacer(minLength: 0)
                 }
@@ -566,7 +566,7 @@ private struct EditorPanel: View {
                         .padding(10)
                 }
                 .frame(height: 140)
-                .background(.bar)
+                .background(Color(DesignTokens.bg2))
             }
             if !store.editorAICompletion.isEmpty {
                 Divider()
@@ -580,7 +580,7 @@ private struct EditorPanel: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .padding(10)
-                .background(.bar)
+                .background(Color(DesignTokens.bg2))
             }
         }
     }
@@ -637,7 +637,7 @@ private struct SyntaxPreview: View {
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
-            .background(.bar)
+            .background(Color(DesignTokens.bg2))
 
             ScrollView([.vertical, .horizontal]) {
                 Text(attributedText)

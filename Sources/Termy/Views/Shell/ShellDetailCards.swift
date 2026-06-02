@@ -47,7 +47,8 @@ struct ShellAIContextCard: View {
                     Text(ShellModuleModel.endpointDisplay(store.aiEndpoint)).detailValue()
                 }
                 ShellDetailRow(key: "Network", showsTopSeparator: true) {
-                    TermyPill(title: "0 net · loopback only", systemImage: "lock", tint: Color(DesignTokens.sync.base))
+                    // Privacy invariant (P1), not a fabricated live counter.
+                    TermyPill(title: "loopback only", systemImage: "lock", tint: Color(DesignTokens.sync.base))
                 }
                 ShellDetailRow(key: "Last explain", showsTopSeparator: true) {
                     Text(ShellModuleModel.lastExplainSummary(store.lastTerminalExplain) ?? "—").detailValue()

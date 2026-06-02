@@ -68,10 +68,10 @@ private struct AgentSubCard: View {
                                pulsing: vitals.state == .waitingForInput)
             }
             .padding(.horizontal, 10).padding(.vertical, 9)
-            .background((active || hovering) ? Color(DesignTokens.bg2) : Color.clear,
+            // Neutral translucent selection bar — never a colored fill (DESIGN.md).
+            .background(active ? DesignTokens.Glass.fillSelection
+                        : (hovering ? Color(DesignTokens.bg2) : Color.clear),
                         in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md))
-            .overlay(RoundedRectangle(cornerRadius: DesignTokens.Radius.md)
-                .stroke(active ? Color(DesignTokens.ai.base).opacity(0.5) : Color.clear, lineWidth: 1))
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }

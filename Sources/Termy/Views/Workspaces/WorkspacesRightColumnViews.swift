@@ -41,13 +41,13 @@ struct WorkspaceSummaryCardView: View {
 struct WorkspacePersistenceCardView: View {
     var body: some View {
         TermyDetailCard(title: "Persistence") {
+            // User-meaningful, truthful facts only — implementation trivia
+            // (descriptor/parser/model) and the inaccurate "restore: on launch"
+            // removed (layout restores on demand, not at launch).
             VStack(alignment: .leading, spacing: 7) {
-                workspaceStatRow("descriptor", "WorkspaceLayout", hue: nil)
-                workspaceStatRow("parser", "deterministic", hue: nil)
                 workspaceStatRow("sync", "CloudKit private", hue: DesignTokens.sync.base)
-                workspaceStatRow("restore", "on launch", hue: nil)
+                workspaceStatRow("restore", "on demand", hue: nil)
                 workspaceStatRow("scrollback", "local only", hue: nil)
-                workspaceStatRow("model", "CoordinatorModel", hue: nil)
             }
         }
     }
