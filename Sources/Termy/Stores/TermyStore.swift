@@ -691,6 +691,18 @@ final class TermyStore: ObservableObject {
     private var privateSyncDebounceTask: Task<Void, Never>?
     private let privateSyncDebounceSeconds = 5
 
+    /// `projectRoot` defaults to the process cwd, but launching via `open -n`
+    /// (as `script/build_and_run.sh` does) sets cwd to `/`. A root of `/` makes
+    /// Files/Git/SFTP point at the whole filesystem — useless, and the source of
+    /// the original "No files" symptom. Fall back to the user's home directory.
+    nonisolated static func sanitizedProjectRoot(_ url: URL) -> URL {
+        let standardized = url.standardizedFileURL
+        guard standardized.path != "/" else {
+            return FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL
+        }
+        return standardized
+    }
+
     init(
         startInitialPTY: Bool = true,
         projectRoot: URL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath),
@@ -755,7 +767,7 @@ final class TermyStore: ObservableObject {
         self.remoteNotificationSink = remoteNotificationSink
         self.appIsActive = appIsActive
         self.sshPrivateKeyVault = sshPrivateKeyVault
-        self.projectRootURL = projectRoot.standardizedFileURL
+        self.projectRootURL = Self.sanitizedProjectRoot(projectRoot)
         self.agentWorktreeRoot = agentWorktreeRoot
         self.agentStateRoot = agentStateRoot
         self.agentHookHelperPath = agentHookHelperPath
