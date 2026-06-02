@@ -156,159 +156,198 @@ private struct LocalAIPanel: View {
 
 private struct FileExplorerPanel: View {
     @ObservedObject var store: TermyStore
+    @State private var showSFTP = false
+    @State private var showNewItem = false
+    @State private var renaming = false
+    @State private var moving = false
+
+    private var sshProfile: ConnectionProfile? { store.profiles.first { $0.kind == .ssh } }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            toolbar
+            Divider().overlay(Color(DesignTokens.hair))
+            tree
+            if store.selectedFilePath != nil {
+                Divider().overlay(Color(DesignTokens.hair))
+                selectionBar
+            }
+        }
+        .buttonStyle(TermyCompactButtonStyle())
+        .onAppear { store.refreshFiles() }
+        .sheet(isPresented: $showSFTP) {
+            if let profile = sshProfile { FileSFTPSheet(store: store, profile: profile) { showSFTP = false } }
+        }
+    }
+
+    private var toolbar: some View {
+        HStack(spacing: 8) {
+            HStack(spacing: 6) {
+                Image(systemName: "magnifyingglass").font(.system(size: 11)).foregroundStyle(DesignTokens.Glass.textTertiary)
+                TextField("Search files", text: $store.fileSearchQuery).textFieldStyle(.plain).font(Typography.ui(13))
+            }
+            .padding(.horizontal, 9).frame(height: 28).frame(maxWidth: 280)
+            .background(DesignTokens.Glass.fillControl, in: RoundedRectangle(cornerRadius: DesignTokens.Radius.control))
+            .overlay(RoundedRectangle(cornerRadius: DesignTokens.Radius.control).stroke(DesignTokens.Glass.hairline, lineWidth: 1))
+
+            Button { showNewItem = true } label: { Label("New", systemImage: "plus") }
+                .popover(isPresented: $showNewItem, arrowEdge: .bottom) { newItemPopover }
+            Button { store.refreshFiles() } label: { Image(systemName: "arrow.clockwise") }.help("Refresh")
+            Spacer()
+            if sshProfile != nil {
+                Button { showSFTP = true } label: { Label("SFTP", systemImage: "externaldrive.connected.to.line.below") }
+            }
+        }
+        .padding(.horizontal, 16).padding(.vertical, 10)
+    }
+
+    private var newItemPopover: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("New file or folder").font(Typography.ui(12, weight: .semibold))
+            TextField("Name or path", text: $store.fileDraftName).textFieldStyle(GlassTextFieldStyle()).frame(width: 240)
+            HStack {
+                Button { store.createFileFromDraft(); showNewItem = false } label: { Label("File", systemImage: "doc") }
+                Button { store.createDirectoryFromDraft(); showNewItem = false } label: { Label("Folder", systemImage: "folder") }
+            }
+            .disabled(store.fileDraftName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        }
+        .buttonStyle(TermyCompactButtonStyle())
+        .padding(12)
+    }
+
+    private var tree: some View {
+        ScrollView {
+            LazyVStack(spacing: 1) {
+                ForEach(store.visibleFileTreeItems) { treeItem in
+                    let selected = store.selectedFilePath == treeItem.item.relativePath
+                    Button { store.selectedFilePath = treeItem.item.relativePath } label: {
+                        HStack(spacing: 6) {
+                            Spacer().frame(width: CGFloat(treeItem.depth) * 14)
+                            Image(systemName: treeItem.iconName)
+                                .foregroundStyle(treeItem.item.isDirectory ? Color(DesignTokens.fg2) : Color(DesignTokens.fg3))
+                            Text(treeItem.item.name).foregroundStyle(Color(DesignTokens.fg1))
+                            Spacer(minLength: 0)
+                        }
+                        .font(Typography.ui(13))
+                        .padding(.horizontal, 8).padding(.vertical, 4)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(selected ? DesignTokens.Glass.fillSelection : Color.clear,
+                                    in: RoundedRectangle(cornerRadius: DesignTokens.Radius.row))
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help(treeItem.item.relativePath)
+                }
+            }
+            .padding(.horizontal, 8).padding(.vertical, 6)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .overlay {
+            if store.visibleFileTreeItems.isEmpty {
+                ContentUnavailableView(store.fileSearchQuery.isEmpty ? "No files" : "No matches", systemImage: "folder")
+            }
+        }
+    }
+
+    /// Contextual action bar for the selected file (rename/move via popovers).
+    private var selectionBar: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "doc.text").font(.system(size: 11)).foregroundStyle(Color(DesignTokens.fg3))
+            Text(store.selectedFilePath ?? "").font(Typography.mono(11)).foregroundStyle(Color(DesignTokens.fg2))
+                .lineLimit(1).truncationMode(.middle)
+            Spacer()
+            Button { store.openSelectedFileInEditor() } label: { Label("Open", systemImage: "square.and.pencil") }
+            Button { renaming = true } label: { Label("Rename", systemImage: "pencil") }
+                .popover(isPresented: $renaming, arrowEdge: .top) {
+                    fieldPopover("Rename to", text: $store.fileRenameName) { store.renameSelectedFile(); renaming = false }
+                }
+            Button { moving = true } label: { Label("Move", systemImage: "arrow.right") }
+                .popover(isPresented: $moving, arrowEdge: .top) {
+                    fieldPopover("Move to folder", text: $store.fileMoveDestination) { store.moveSelectedFile(); moving = false }
+                }
+            Button(role: .destructive) { store.deleteSelectedFile() } label: { Label("Delete", systemImage: "trash") }
+        }
+        .padding(.horizontal, 16).padding(.vertical, 10)
+        .background(Color(DesignTokens.bg1))
+    }
+
+    private func fieldPopover(_ title: String, text: Binding<String>, confirm: @escaping () -> Void) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title).font(Typography.ui(12, weight: .semibold))
+            TextField(title, text: text).textFieldStyle(GlassTextFieldStyle()).frame(width: 260)
+            Button("Confirm", action: confirm).buttonStyle(TermyCommandButtonStyle(emphasized: true))
+                .disabled(text.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        }
+        .padding(12)
+    }
+}
+
+/// SFTP transfer surface, lifted into a sheet off the Files toolbar.
+private struct FileSFTPSheet: View {
+    @ObservedObject var store: TermyStore
+    let profile: ConnectionProfile
+    let onClose: () -> Void
 
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                TextField("Search files", text: $store.fileSearchQuery)
-                    .textFieldStyle(GlassTextFieldStyle())
-                TextField("Name or path", text: $store.fileDraftName)
-                    .textFieldStyle(GlassTextFieldStyle())
-                Button("File") {
-                    store.createFileFromDraft()
-                }
-                Button("Folder") {
-                    store.createDirectoryFromDraft()
-                }
+                Text("SFTP — \(profile.name)").font(Typography.ui(14, weight: .semibold))
+                Spacer()
+                Button("Done", action: onClose)
             }
-            .padding()
-
-            Divider()
-
-            HStack {
-                TextField("Rename selected to", text: $store.fileRenameName)
-                    .textFieldStyle(GlassTextFieldStyle())
-                TextField("Move to folder", text: $store.fileMoveDestination)
-                    .textFieldStyle(GlassTextFieldStyle())
-                Button("Open") {
-                    store.openSelectedFileInEditor()
-                }
-                .disabled(store.selectedFilePath == nil)
-                Button("Rename") {
-                    store.renameSelectedFile()
-                }
-                .disabled(store.selectedFilePath == nil)
-                Button("Move") {
-                    store.moveSelectedFile()
-                }
-                .disabled(store.selectedFilePath == nil)
-                Button("Delete", role: .destructive) {
-                    store.deleteSelectedFile()
-                }
-                .disabled(store.selectedFilePath == nil)
-            }
-            .padding()
-
-            Divider()
-
-            VStack(alignment: .leading, spacing: 8) {
+            .padding(14)
+            Divider().overlay(Color(DesignTokens.hair))
+            VStack(alignment: .leading, spacing: 12) {
                 HStack {
-                    TextField("SFTP path", text: $store.sftpRemotePath)
-                        .textFieldStyle(GlassTextFieldStyle())
-                    if let profile = store.profiles.first(where: { $0.kind == .ssh }) {
-                        Button("Browse SFTP") {
-                            store.refreshSFTPFiles(profile: profile)
-                        }
-                        Button("Upload") {
-                            store.uploadSelectedFileToSFTP(profile: profile)
-                        }
+                    TextField("Remote path", text: $store.sftpRemotePath).textFieldStyle(GlassTextFieldStyle())
+                    Button("Browse") { store.refreshSFTPFiles(profile: profile) }
+                }
+                HStack {
+                    Button { store.uploadSelectedFileToSFTP(profile: profile) } label: { Label("Upload", systemImage: "arrow.up") }
                         .disabled(store.selectedFilePath == nil)
-                        Button("Download") {
-                            store.downloadSelectedSFTPFile(profile: profile)
-                        }
+                    Button { store.downloadSelectedSFTPFile(profile: profile) } label: { Label("Download", systemImage: "arrow.down") }
                         .disabled(store.selectedSFTPRemotePath == nil)
-                        Button("New Remote Folder") {
-                            store.createSFTPDirectoryFromDraft(profile: profile)
-                        }
+                    Button { store.createSFTPDirectoryFromDraft(profile: profile) } label: { Label("New Folder", systemImage: "folder.badge.plus") }
                         .disabled(store.fileDraftName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                        Button("Rename Remote") {
-                            store.renameSelectedSFTPItem(profile: profile)
-                        }
+                    Button { store.renameSelectedSFTPItem(profile: profile) } label: { Label("Rename", systemImage: "pencil") }
                         .disabled(store.selectedSFTPRemotePath == nil)
-                        Button("Move Remote") {
-                            store.moveSelectedSFTPItem(profile: profile)
-                        }
+                    Button(role: .destructive) { store.deleteSelectedSFTPItem(profile: profile) } label: { Label("Delete", systemImage: "trash") }
                         .disabled(store.selectedSFTPRemotePath == nil)
-                        Button("Delete Remote", role: .destructive) {
-                            store.deleteSelectedSFTPItem(profile: profile)
-                        }
-                        .disabled(store.selectedSFTPRemotePath == nil)
-                    }
                 }
-                if let profile = store.profiles.first(where: { $0.kind == .ssh }) {
-                    Text("Drop local files here to upload. Drag a remote item onto this panel to download.")
-                        .font(Typography.ui(12))
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(8)
-                        .background(DesignTokens.Glass.fillControl, in: RoundedRectangle(cornerRadius: DesignTokens.Radius.control))
-                        .onDrop(of: [UTType.fileURL.identifier, UTType.text.identifier], isTargeted: nil) { providers in
-                            handleSFTPDrop(providers: providers, profile: profile)
-                        }
-                }
-                if !store.sftpRemoteItems.isEmpty {
-                    ScrollView(.horizontal) {
-                        HStack(spacing: 8) {
-                            ForEach(store.filteredSFTPRemoteItems, id: \.path) { item in
-                                Button {
-                                    store.selectedSFTPRemotePath = item.path
-                                } label: {
-                                    Label(item.name, systemImage: item.isDirectory ? "folder.badge.gearshape" : "doc")
+                Text("Drop local files here to upload; drag a remote item out to download.")
+                    .font(Typography.ui(12)).foregroundStyle(DesignTokens.Glass.textTertiary)
+                    .frame(maxWidth: .infinity, alignment: .leading).padding(10)
+                    .background(DesignTokens.Glass.fillControl, in: RoundedRectangle(cornerRadius: DesignTokens.Radius.control))
+                    .onDrop(of: [UTType.fileURL.identifier, UTType.text.identifier], isTargeted: nil) { handleSFTPDrop(providers: $0, profile: profile) }
+                ScrollView {
+                    LazyVStack(spacing: 1) {
+                        ForEach(store.filteredSFTPRemoteItems, id: \.path) { item in
+                            Button { store.selectedSFTPRemotePath = item.path } label: {
+                                HStack(spacing: 6) {
+                                    Image(systemName: item.isDirectory ? "folder" : "doc")
+                                        .foregroundStyle(Color(DesignTokens.fg3))
+                                    Text(item.name).foregroundStyle(Color(DesignTokens.fg1))
+                                    Spacer(minLength: 0)
                                 }
-                                .buttonStyle(.bordered)
-                                .controlSize(.small)
-                                .draggable(item.path)
+                                .font(Typography.ui(13)).padding(.horizontal, 8).padding(.vertical, 4)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .background(store.selectedSFTPRemotePath == item.path ? DesignTokens.Glass.fillSelection : Color.clear,
+                                            in: RoundedRectangle(cornerRadius: DesignTokens.Radius.row))
+                                .contentShape(Rectangle())
                             }
+                            .buttonStyle(.plain)
+                            .draggable(item.path)
                         }
-                        .padding(.horizontal)
                     }
                 }
+                .frame(maxHeight: .infinity)
+                .overlay { if store.sftpRemoteItems.isEmpty { Text("Browse to list remote files.").font(Typography.ui(12)).foregroundStyle(DesignTokens.Glass.textTertiary) } }
             }
-            .padding()
-
-            Divider()
-
-            ScrollView {
-                LazyVStack(spacing: 1) {
-                    ForEach(store.visibleFileTreeItems) { treeItem in
-                        let selected = store.selectedFilePath == treeItem.item.relativePath
-                        Button {
-                            store.selectedFilePath = treeItem.item.relativePath
-                        } label: {
-                            HStack(spacing: 6) {
-                                Spacer().frame(width: CGFloat(treeItem.depth) * 14)
-                                Image(systemName: treeItem.iconName)
-                                    .foregroundStyle(treeItem.item.isDirectory ? Color(DesignTokens.fg2) : Color(DesignTokens.fg3))
-                                Text(treeItem.item.name).foregroundStyle(Color(DesignTokens.fg1))
-                                Spacer(minLength: 0)
-                            }
-                            .font(Typography.ui(13))
-                            .padding(.horizontal, 8).padding(.vertical, 4)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            // Neutral translucent selection bar — never a colored fill (DESIGN.md).
-                            .background(selected ? DesignTokens.Glass.fillSelection : Color.clear,
-                                        in: RoundedRectangle(cornerRadius: DesignTokens.Radius.row))
-                            .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .help(treeItem.item.relativePath)
-                    }
-                }
-                .padding(.horizontal, 8).padding(.vertical, 6)
-            }
-            .overlay {
-                if store.visibleFileTreeItems.isEmpty {
-                    ContentUnavailableView(
-                        store.fileSearchQuery.isEmpty ? "No Files" : "No Matches",
-                        systemImage: "folder"
-                    )
-                }
-            }
+            .padding(16)
         }
+        .frame(width: 620, height: 560)
+        .background(Color(DesignTokens.bg1))
         .buttonStyle(TermyCompactButtonStyle())
-        .onAppear {
-            store.refreshFiles()
-        }
     }
 
     private func handleSFTPDrop(providers: [NSItemProvider], profile: ConnectionProfile) -> Bool {
@@ -317,17 +356,8 @@ private struct FileExplorerPanel: View {
             if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
                 handled = true
                 provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
-                    let url: URL?
-                    if let data = item as? Data {
-                        url = URL(dataRepresentation: data, relativeTo: nil)
-                    } else {
-                        url = item as? URL
-                    }
-                    if let url {
-                        Task { @MainActor in
-                            store.uploadDroppedLocalFilesToSFTP([url], profile: profile)
-                        }
-                    }
+                    let url: URL? = (item as? Data).flatMap { URL(dataRepresentation: $0, relativeTo: nil) } ?? (item as? URL)
+                    if let url { Task { @MainActor in store.uploadDroppedLocalFilesToSFTP([url], profile: profile) } }
                 }
             } else if provider.canLoadObject(ofClass: NSString.self) {
                 handled = true
@@ -604,51 +634,28 @@ private struct GitDiffSheet: View {
 
 private struct EditorPanel: View {
     @ObservedObject var store: TermyStore
+    @State private var showPreview = true
+    @State private var showAI = false
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack {
-                Text(store.editorFilePath ?? "Scratch")
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+            HStack(spacing: 8) {
+                Image(systemName: store.editorFilePath == nil ? "doc.text" : "doc")
+                    .font(.system(size: 12)).foregroundStyle(Color(DesignTokens.fg3))
+                Text(store.editorFilePath.map { ($0 as NSString).lastPathComponent } ?? "Scratch")
+                    .font(Typography.ui(13, weight: .medium)).foregroundStyle(Color(DesignTokens.fg1)).lineLimit(1)
                 Spacer()
-                TextField("AI edit instruction", text: $store.editorAIInstruction)
-                    .textFieldStyle(GlassTextFieldStyle())
-                    .frame(maxWidth: 240)
-                Button("Propose Edit") {
-                    store.suggestEditorEditWithLocalAI()
-                }
-                .disabled(store.editorAIInstruction.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                Button("Explain Selection") {
-                    store.explainEditorSelectionWithLocalAI()
-                }
-                .disabled(store.editorVimState.visualSelectionRange == nil)
-                Button("Complete") {
-                    store.suggestEditorCompletionWithLocalAI()
-                }
-                Button("Accept Completion") {
-                    store.acceptEditorAICompletion()
-                }
-                .disabled(store.editorAICompletion.isEmpty)
-                Button("Accept") {
-                    store.acceptEditorAIProposal()
-                }
-                .disabled(store.editorAIProposal.isEmpty)
-                Button("Apply Patch") {
-                    store.applyEditorAIMultiFilePatch()
-                }
-                .disabled(store.editorAIMultiFilePatch.isEmpty)
-                Button("Save") {
-                    store.saveEditorFile()
-                }
-                .disabled(store.editorFilePath == nil)
-                Toggle("Vim", isOn: Binding(
-                    get: { store.editorVimEnabled },
-                    set: { store.setEditorVimEnabled($0) }
-                ))
-                .toggleStyle(.switch)
+                Button { showAI = true } label: { Label("AI", systemImage: "sparkles") }
+                    .popover(isPresented: $showAI, arrowEdge: .bottom) { aiPopover }
+                Toggle(isOn: $showPreview) { Image(systemName: "sidebar.right") }
+                    .toggleStyle(.button).help("Toggle preview")
+                Toggle("Vim", isOn: Binding(get: { store.editorVimEnabled },
+                                            set: { store.setEditorVimEnabled($0) }))
+                    .toggleStyle(.switch).tint(DesignTokens.Glass.accent).fixedSize()
+                Button { store.saveEditorFile() } label: { Label("Save", systemImage: "square.and.arrow.down") }
+                    .buttonStyle(TermyCommandButtonStyle(emphasized: true)).disabled(store.editorFilePath == nil)
             }
-            .padding()
+            .padding(.horizontal, 16).padding(.vertical, 10)
 
             Divider()
 
@@ -723,14 +730,22 @@ private struct EditorPanel: View {
                 Divider()
             }
 
-            HSplitView {
+            if showPreview {
+                HSplitView {
+                    TextEditor(text: editorText)
+                        .font(.system(.body, design: .monospaced))
+                        .scrollContentBackground(.hidden)
+                        .padding(8)
+                        .frame(minWidth: 280)
+                    SyntaxPreview(tokens: store.editorSyntaxTokens())
+                        .frame(minWidth: 220)
+                }
+            } else {
                 TextEditor(text: editorText)
                     .font(.system(.body, design: .monospaced))
+                    .scrollContentBackground(.hidden)
                     .padding(8)
-                    .frame(minWidth: 280)
-
-                SyntaxPreview(tokens: store.editorSyntaxTokens())
-                    .frame(minWidth: 220)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
 
             if !store.editorAIDiff.isEmpty {
@@ -777,6 +792,32 @@ private struct EditorPanel: View {
         }
         // Compact glass toolbar buttons; the Vim key bar sets its own .bordered style.
         .buttonStyle(TermyCompactButtonStyle())
+    }
+
+    /// AI actions + instruction, lifted out of the toolbar into a focused popover.
+    private var aiPopover: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Local AI").font(Typography.ui(12, weight: .semibold))
+            TextField("Edit instruction", text: $store.editorAIInstruction, axis: .vertical)
+                .textFieldStyle(GlassTextFieldStyle()).lineLimit(1...3).frame(width: 280)
+            HStack {
+                Button { store.suggestEditorEditWithLocalAI() } label: { Label("Propose", systemImage: "wand.and.stars") }
+                    .disabled(store.editorAIInstruction.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                Button { store.explainEditorSelectionWithLocalAI() } label: { Label("Explain", systemImage: "text.magnifyingglass") }
+                    .disabled(store.editorVimState.visualSelectionRange == nil)
+                Button { store.suggestEditorCompletionWithLocalAI() } label: { Label("Complete", systemImage: "text.append") }
+            }
+            HStack {
+                Button { store.acceptEditorAIProposal() } label: { Label("Accept edit", systemImage: "checkmark") }
+                    .disabled(store.editorAIProposal.isEmpty)
+                Button { store.acceptEditorAICompletion() } label: { Label("Accept completion", systemImage: "checkmark.circle") }
+                    .disabled(store.editorAICompletion.isEmpty)
+                Button { store.applyEditorAIMultiFilePatch() } label: { Label("Apply patch", systemImage: "doc.badge.gearshape") }
+                    .disabled(store.editorAIMultiFilePatch.isEmpty)
+            }
+        }
+        .buttonStyle(TermyCompactButtonStyle())
+        .padding(12)
     }
 
     private var editorText: Binding<String> {
