@@ -1,11 +1,12 @@
 import Foundation
 import TermyCore
 
-/// Pure, view-free helpers for the v3 Desktop scene (DESIGN.md §3). Unit-tested
-/// directly; the SwiftUI views stay thin and call into these.
+/// Pure, view-free helpers for the live-card **Home** surface. Unit-tested
+/// directly; the SwiftUI views stay thin and call into these. Every value is
+/// derived from real state (agents/git/sessions) — no fabricated metrics.
 enum DesktopModel {
 
-    // MARK: §3.1 — time-of-day greeting.
+    // MARK: time-of-day greeting.
     static func greeting(at date: Date, name: String,
                          calendar: Calendar = .current) -> (lead: String, name: String) {
         let hour = calendar.component(.hour, from: date)
@@ -18,13 +19,7 @@ enum DesktopModel {
         return (lead, name)
     }
 
-    // MARK: §3.2 — orb placement: start at top (-π/2), clockwise.
-    static func radialOrbPosition(index: Int, count: Int, radius: CGFloat) -> CGPoint {
-        let a = -Double.pi / 2 + (Double(index) / Double(count)) * Double.pi * 2
-        return CGPoint(x: CGFloat(cos(a)) * radius, y: CGFloat(sin(a)) * radius)
-    }
-
-    // MARK: §3.2 center / Agents badge — highest-priority attention signal.
+    // MARK: Agents attention signal — highest-priority signal for the Agents card.
     enum AttentionSignal: Equatable {
         case waiting(name: String)
         case running(count: Int)

@@ -2,18 +2,17 @@ import Foundation
 import Observation
 import TermyCore
 
-/// Tab/stage navigation state for the v3 app shell (Phase 2). Mirrors the
-/// prototype `design_handoff_termy_v3/app.jsx`: a permanent Desktop Tab 0
-/// plus dynamic module tabs. Pure state — no SwiftUI — so it is unit-tested
-/// directly. Views observe it through `TermyStore` forwarders (M2c-3 pattern);
-/// they do not reach this `@Observable` through the `ObservableObject` store
-/// reference.
+/// Navigation state for the Raycast-v2 glass shell: a **fixed left rail** of all
+/// eight modules plus a permanent **Home** surface (root `DESIGN.md`). Unlike the
+/// retired v3 dynamic-tab model, every module is always present on the rail; there
+/// are no closeable module tabs. Pure state — no SwiftUI — so it is unit-tested
+/// directly. Views observe it through `TermyStore` forwarders (M2c-3 pattern).
 @MainActor
 @Observable
 final class ShellNavigationModel {
-    /// The eight design modules (DESIGN.md §3.2 orbs, stable order).
+    /// The eight modules, in stable rail order (Home is separate, above the rail).
     enum Module: String, CaseIterable, Identifiable, Equatable {
-        case shell, agents, connections, editor, files, git, workspaces, settings
+        case shell, agents, workspaces, connections, git, editor, files, settings
         var id: String { rawValue }
 
         var title: String {
@@ -57,48 +56,38 @@ final class ShellNavigationModel {
     }
 
     enum ActiveTab: Equatable {
-        case desktop
+        case home
         case module(Module)
     }
 
-    private(set) var openTabs: [Module] = []
-    private(set) var activeTab: ActiveTab = .desktop
+    private(set) var activeTab: ActiveTab = .home
 
-    /// A stable string key for `.animation(value:)` driving the §7 transition.
+    /// A stable string key for `.animation(value:)` driving the stage transition.
     var activeTabKey: String {
         switch activeTab {
-        case .desktop: "desktop"
+        case .home: "home"
         case .module(let m): m.rawValue
         }
     }
 
-    /// Open a module: append if not already open, then activate.
-    func open(_ m: Module) {
-        if !openTabs.contains(m) { openTabs.append(m) }
-        activeTab = .module(m)
+    /// The currently active module, if any (nil on Home).
+    var activeModule: Module? {
+        if case .module(let m) = activeTab { return m }
+        return nil
     }
 
-    /// Switch to a tab; opening the module first if it isn't already open.
-    func goTo(_ tab: ActiveTab) {
-        if case .module(let m) = tab { open(m); return }
-        activeTab = tab
-    }
+    /// Open / focus a module (rail is fixed — this just activates it).
+    func open(_ m: Module) { activeTab = .module(m) }
 
-    /// Close a module tab; if it was active, fall back to Desktop.
-    func close(_ m: Module) {
-        openTabs.removeAll { $0 == m }
-        if activeTab == .module(m) { activeTab = .desktop }
-    }
+    /// Switch to a tab.
+    func goTo(_ tab: ActiveTab) { activeTab = tab }
 
-    /// Close whatever module tab is active (no-op on Desktop).
-    func closeActive() {
-        if case .module(let m) = activeTab { close(m) }
-    }
+    func goHome() { activeTab = .home }
 
-    /// 1-based lookup for ⌘1..9.
-    func tab(at index: Int) -> Module? {
+    /// 1-based rail lookup for ⌘1..8 (fixed order, not dynamic).
+    func module(at index: Int) -> Module? {
         let i = index - 1
-        guard openTabs.indices.contains(i) else { return nil }
-        return openTabs[i]
+        guard Module.allCases.indices.contains(i) else { return nil }
+        return Module.allCases[i]
     }
 }

@@ -7,12 +7,18 @@ struct ContentView: View {
 
     var body: some View {
         ZStack {
-            VStack(spacing: 0) {
-                TabBarView(store: store)
-                StageView(store: store)
-                StatusBarView(store: store)
+            // Native translucent glass under the whole window (DESIGN.md), tinted
+            // toward glass-base so it reads as near-neutral charcoal.
+            GlassMaterial(material: .underWindowBackground).ignoresSafeArea()
+            DesignTokens.Glass.base.opacity(0.5).ignoresSafeArea()
+
+            HStack(spacing: 0) {
+                SidebarView(store: store)
+                VStack(spacing: 0) {
+                    StageView(store: store)
+                    StatusBarView(store: store)
+                }
             }
-            .background(Color(DesignTokens.bg0))
 
             if store.isCommandCenterPresented {
                 CommandCenterView(store: store)
@@ -44,9 +50,9 @@ private extension InterfaceTextScale {
     }
 }
 
-/// Applies the v3 window chrome (DESIGN.md §1) once the SwiftUI window exists:
-/// transparent full-size-content title bar, hidden title. Traffic lights stay
-/// system-drawn; the tab bar reserves their leading inset.
+/// Applies the glass window chrome once the SwiftUI window exists: a transparent,
+/// full-size-content title bar with the title hidden. Traffic lights stay
+/// system-drawn (top-left over the sidebar, which reserves their inset).
 struct WindowAccessor: NSViewRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator() }
     func makeNSView(context: Context) -> NSView { NSView() }
@@ -59,9 +65,11 @@ struct WindowAccessor: NSViewRepresentable {
             window.styleMask.insert(.fullSizeContentView)
             window.titlebarAppearsTransparent = true
             window.titleVisibility = .hidden
+            window.isMovableByWindowBackground = true
+            window.backgroundColor = .clear
         }
     }
 
-    /// Tracks whether the one-time chrome has been applied (DESIGN.md §1: applied once).
+    /// Tracks whether the one-time chrome has been applied.
     final class Coordinator { var applied = false }
 }

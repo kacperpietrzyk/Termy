@@ -52,12 +52,12 @@ final class TermyStore: ObservableObject {
         get { appModel.terminal.commandQuery }
         set { objectWillChange.send(); appModel.terminal.commandQuery = newValue }
     }
-    // v3 shell navigation (Phase 2) → `appModel.shellNav`. Computed forwarders
-    // + nav methods that `objectWillChange.send()` so the ObservableObject
-    // views re-render (M2c-3 strangler-facade pattern).
+    // Raycast-v2 glass shell navigation → `appModel.shellNav`. Fixed left rail of
+    // all modules + a permanent Home. Computed forwarders + nav methods that
+    // `objectWillChange.send()` so the ObservableObject views re-render.
     var activeTab: ShellNavigationModel.ActiveTab { appModel.shellNav.activeTab }
-    var openTabs: [ShellNavigationModel.Module] { appModel.shellNav.openTabs }
     var activeTabKey: String { appModel.shellNav.activeTabKey }
+    var activeModule: ShellNavigationModel.Module? { appModel.shellNav.activeModule }
 
     func openModuleTab(_ m: ShellNavigationModel.Module) {
         objectWillChange.send()
@@ -69,37 +69,42 @@ final class TermyStore: ObservableObject {
         appModel.shellNav.goTo(tab)
     }
 
-    func goToDesktop() { goToTab(.desktop) }
+    func goToHome() {
+        objectWillChange.send()
+        appModel.shellNav.goHome()
+    }
 
-    /// v3 Shell §6.1: spawn a new local zsh session (selects it + starts its PTY,
-    /// via the shared `addSession` path). Backs the breadcrumb "New session" button.
+    /// Shell §6.1: spawn a new local zsh session (selects it + starts its PTY,
+    /// via the shared `addSession` path). Backs the "New session" affordance.
     func newLocalShellSession() {
         addSession(profile: .local(name: "Local Shell \(sessions.count + 1)", terminalOutputMode: .blocks))
     }
 
-    /// Context-aware ⌘T (author decision 2026-05-26): in the Shell module a new
-    /// local shell session; everywhere else, the existing "go to Desktop".
+    /// Context-aware ⌘T: in the Shell module a new local shell session; everywhere
+    /// else, jump to Home.
     func handleNewTabShortcut() {
         if activeTab == .module(.shell) {
             newLocalShellSession()
         } else {
-            goToDesktop()
+            goToHome()
         }
     }
 
+    /// ⌘1..8 — select a module on the fixed rail (stable order).
     func goToTab(index: Int) {
-        guard let m = appModel.shellNav.tab(at: index) else { return }
+        guard let m = appModel.shellNav.module(at: index) else { return }
         goToTab(.module(m))
     }
 
-    func closeModuleTab(_ m: ShellNavigationModel.Module) {
-        objectWillChange.send()
-        appModel.shellNav.close(m)
-    }
-
+    /// ⌘W — the rail is fixed (no closeable module tabs): close the active session
+    /// inside a session-bearing module, otherwise return to Home.
     func closeActiveTab() {
-        objectWillChange.send()
-        appModel.shellNav.closeActive()
+        switch appModel.shellNav.activeTab {
+        case .module(.shell), .module(.agents), .module(.connections):
+            perform("close-session")
+        default:
+            goToHome()
+        }
     }
 
     // M2c-1 strangler facade → `appModel.editor`. Computed forwarders; the

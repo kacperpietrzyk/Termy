@@ -28,17 +28,6 @@ final class DesktopModelTests: XCTestCase {
         XCTAssertEqual(DesktopModel.greeting(at: date(hour: 23), name: "Kacper").name, "Kacper")
     }
 
-    func testRadialOrbPositionStartsAtTopAndGoesClockwise() {
-        let top = DesktopModel.radialOrbPosition(index: 0, count: 8, radius: 240)
-        XCTAssertEqual(top.x, 0, accuracy: 0.001)
-        XCTAssertEqual(top.y, -240, accuracy: 0.001)   // top (-π/2)
-        let right = DesktopModel.radialOrbPosition(index: 2, count: 8, radius: 240)
-        XCTAssertEqual(right.x, 240, accuracy: 0.001)  // right (angle 0)
-        XCTAssertEqual(right.y, 0, accuracy: 0.001)
-        let bottom = DesktopModel.radialOrbPosition(index: 4, count: 8, radius: 240)
-        XCTAssertEqual(bottom.y, 240, accuracy: 0.001) // bottom (π/2)
-    }
-
     func testAttentionSignalPriority() {
         XCTAssertEqual(DesktopModel.attentionSignal([]), .calm)
         XCTAssertEqual(
