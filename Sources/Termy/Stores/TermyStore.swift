@@ -1431,6 +1431,29 @@ final class TermyStore: ObservableObject {
         }
     }
 
+    /// Frecency-ranked commands for the active cwd — backs the Home "Frequent
+    /// commands" section (real history, no fabrication).
+    func frequentCommands(limit: Int = 6) -> [String] {
+        historyStore.rankedSnapshot(forCwd: currentSessionCwd(), limit: limit)
+    }
+
+    /// Run a command from Home: focus a live local shell, open the Shell module,
+    /// and submit it via the session's input sink. The sink call is a safe no-op
+    /// if no terminal is mounted yet, so this never crashes or misfires.
+    func runCommandInShell(_ command: String) {
+        let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        if let local = sessions.first(where: { $0.profile.kind == .local }) {
+            selectedSessionID = local.id
+        } else if selectedSessionID == nil {
+            newLocalShellSession()
+        }
+        openModuleTab(.shell)
+        if let id = selectedSessionID {
+            terminalInputSinks[id]?(trimmed + "\r")
+        }
+    }
+
     func runCommand(_ command: String) {
         guard !command.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               let selectedSessionID,

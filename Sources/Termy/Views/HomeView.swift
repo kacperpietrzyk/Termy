@@ -18,22 +18,40 @@ struct HomeView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 28) {
+            VStack(alignment: .leading, spacing: 24) {
                 header
                 cardsGrid
+                if !store.frequentCommands().isEmpty {
+                    frequentCommandsSection
+                }
                 quickActions
             }
-            .frame(maxWidth: 860, alignment: .leading)
+            .frame(maxWidth: 900, alignment: .leading)
             .frame(maxWidth: .infinity)
             .padding(.horizontal, 40)
-            .padding(.top, 48)
-            .padding(.bottom, 40)
+            .padding(.vertical, 40)
+            // Vertically center the block so Home reads as a calm, balanced hero
+            // rather than content pinned to the top of a large empty window.
+            .frame(minHeight: 640, alignment: .center)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         // Load real git status promptly so the Git card reflects the repo instead
         // of the unqueried sentinel (the metric/empty-state still guard on a
         // confirmed-clean marker, so there is no false "clean" before this lands).
         .task { store.refreshGitStatus() }
+    }
+
+    // MARK: frequent commands (real frecency history)
+
+    private var frequentCommandsSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("FREQUENT COMMANDS")
+                .font(.system(size: 11, weight: .semibold)).tracking(0.5)
+                .foregroundStyle(DesignTokens.Glass.textTertiary)
+            FlowChips(items: store.frequentCommands(limit: 8)) { cmd in
+                store.runCommandInShell(cmd)
+            }
+        }
     }
 
     // MARK: greeting + subline
@@ -302,6 +320,31 @@ private struct HomeCardLine: View {
                     .lineLimit(1)
             }
             Spacer(minLength: 0)
+        }
+    }
+}
+
+/// Wrapping row of clickable command chips (real frecency history).
+private struct FlowChips: View {
+    let items: [String]
+    let onTap: (String) -> Void
+
+    var body: some View {
+        FlowLayout(spacing: 8) {
+            ForEach(items, id: \.self) { item in
+                Button { onTap(item) } label: {
+                    Text(item)
+                        .font(.system(size: 12, design: .monospaced))
+                        .lineLimit(1).truncationMode(.middle)
+                        .frame(maxWidth: 280)
+                        .padding(.horizontal, 10).padding(.vertical, 5)
+                        .background(DesignTokens.Glass.fillControl, in: Capsule())
+                        .overlay(Capsule().stroke(DesignTokens.Glass.hairline, lineWidth: 1))
+                        .foregroundStyle(DesignTokens.Glass.textSecondary)
+                }
+                .buttonStyle(.plain)
+                .help("Run “\(item)” in a shell")
+            }
         }
     }
 }

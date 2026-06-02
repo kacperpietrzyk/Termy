@@ -869,239 +869,237 @@ private struct SyntaxPreview: View {
     }
 }
 
+private enum ConnSheet: String, Identifiable { case ssh, rdp, tunnels, keys; var id: String { rawValue } }
+
 private struct ConnectionsPanel: View {
     @ObservedObject var store: TermyStore
+    @State private var sheet: ConnSheet?
 
     var body: some View {
-        // Wrapped in a ScrollView so this tall form does not impose a min height
-        // larger than the window — an unscrolled VStack here overflows the parent
-        // and pushes the module breadcrumb + global tab/status bars off-screen.
-        ScrollView {
         VStack(spacing: 0) {
-            HStack {
-                Button("Import SSH Config") {
-                    store.importSSHConfig()
+            HStack(spacing: 8) {
+                Button { sheet = .ssh } label: { Label("New SSH", systemImage: "plus") }
+                Button { sheet = .rdp } label: { Label("New RDP", systemImage: "display") }
+                Button { sheet = .tunnels } label: { Label("Tunnels", systemImage: "arrow.left.arrow.right") }
+                Button { sheet = .keys } label: { Label("SSH Keys", systemImage: "key") }
+                Spacer()
+                Button { store.importSSHConfig() } label: { Label("Import", systemImage: "square.and.arrow.down") }
+            }
+            .padding(.horizontal, 16).padding(.vertical, 10)
+            Divider().overlay(Color(DesignTokens.hair))
+
+            if store.profiles.isEmpty {
+                ContentUnavailableView {
+                    Label("No connections", systemImage: "network")
+                } description: {
+                    Text("Add an SSH or RDP host to connect, tunnel, or browse over SFTP.")
+                } actions: {
+                    Button("New SSH") { sheet = .ssh }.buttonStyle(TermyCommandButtonStyle(emphasized: true))
+                }
+            } else {
+                ScrollView {
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 320), spacing: 14)], spacing: 14) {
+                        ForEach(store.profiles) { ConnectionCard(store: store, profile: $0) }
+                    }
+                    .padding(16)
+                }
+            }
+        }
+        .buttonStyle(TermyCompactButtonStyle())
+        .sheet(item: $sheet) { which in
+            ConnectionsSheet(store: store, kind: which) { sheet = nil }
+        }
+    }
+}
+
+/// One saved connection as a glass card: identity + Connect + per-kind actions.
+private struct ConnectionCard: View {
+    @ObservedObject var store: TermyStore
+    let profile: ConnectionProfile
+    @State private var hovering = false
+
+    private var hostLine: String {
+        let user = profile.user.map { "\($0)@" } ?? ""
+        let port = profile.port.map { ":\($0)" } ?? ""
+        return "\(user)\(profile.host)\(port)"
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 10) {
+                Image(systemName: profile.kind == .rdp ? "display" : "terminal")
+                    .font(.system(size: 14)).foregroundStyle(Color(DesignTokens.host.base))
+                    .frame(width: 32, height: 32)
+                    .background(Color(DesignTokens.host.base).opacity(0.14),
+                                in: RoundedRectangle(cornerRadius: DesignTokens.Radius.sm))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(profile.name).font(Typography.ui(14, weight: .semibold)).foregroundStyle(Color(DesignTokens.fg1))
+                    Text(hostLine).font(Typography.mono(11)).foregroundStyle(DesignTokens.Glass.textTertiary).lineLimit(1)
+                }
+                Spacer()
+                TermyPill(title: profile.kind.rawValue.uppercased(), tint: Color(DesignTokens.host.base))
+            }
+            if let gateway = profile.gateway, !gateway.isEmpty {
+                Text("via \(gateway)").font(Typography.ui(11)).foregroundStyle(DesignTokens.Glass.textQuaternary)
+            }
+            HStack(spacing: 8) {
+                Button { store.openConnection(profile) } label: { Label("Connect", systemImage: "bolt.fill") }
+                    .buttonStyle(TermyCommandButtonStyle(emphasized: true))
+                if profile.kind == .ssh {
+                    Button { store.openSFTPSession(profile) } label: { Label("SFTP", systemImage: "folder") }
+                    Button { store.openLocalTunnel(profile) } label: { Label("Tunnel", systemImage: "arrow.left.arrow.right") }
                 }
                 Spacer()
             }
-            .padding()
-
-            Divider()
-
-            VStack(alignment: .leading, spacing: 8) {
-                Text("SSH Tunnel")
-                    .font(Typography.ui(15, weight: .semibold))
-                Picker("Type", selection: $store.tunnelKind) {
-                    ForEach(SSHTunnelKind.allCases) { kind in
-                        Text(kind.title).tag(kind)
-                    }
-                }
-                .pickerStyle(.segmented)
-                HStack {
-                    TextField(store.tunnelKind == .remote ? "Remote port" : "Local port", text: $store.tunnelLocalPort)
-                    if store.tunnelKind != .dynamic {
-                        TextField(store.tunnelKind == .remote ? "Local host" : "Remote host", text: $store.tunnelRemoteHost)
-                        TextField(store.tunnelKind == .remote ? "Local port" : "Remote port", text: $store.tunnelRemotePort)
-                    }
-                }
-                .textFieldStyle(GlassTextFieldStyle())
-                if let sshProfile = store.profiles.first(where: { $0.kind == .ssh }) {
-                    HStack {
-                        Button("Save Tunnel") {
-                            store.saveCurrentLocalTunnel(sshProfile)
-                        }
-                        Button("Start Saved") {
-                            if let tunnel = store.savedTunnels.first {
-                                store.openSavedTunnel(tunnel)
-                            }
-                        }
-                        .disabled(store.savedTunnels.isEmpty)
-                    }
-                }
-            }
-            .padding()
-
-            Divider()
-
-            if !store.savedTunnels.isEmpty {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Saved Tunnels")
-                        .font(Typography.ui(15, weight: .semibold))
-                    ForEach(store.savedTunnels) { tunnel in
-                        HStack {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(tunnel.name)
-                                Text(tunnel.autoReconnect ? "Auto-reconnect" : "Manual")
-                                    .font(Typography.ui(12))
-                                    .foregroundStyle(.secondary)
-                                Text(store.tunnelHealth[tunnel.id]?.summary ?? "Not started")
-                                    .font(Typography.ui(12))
-                                    .foregroundStyle(.secondary)
-                                Text(store.tunnelProbeStatus[tunnel.id] ?? "Not probed")
-                                    .font(Typography.ui(12))
-                                    .foregroundStyle(.secondary)
-                            }
-                            Spacer()
-                            Button("Start") {
-                                store.openSavedTunnel(tunnel)
-                            }
-                            Button("Probe") {
-                                store.probeSavedTunnel(tunnel)
-                            }
-                        }
-                    }
-                }
-                .padding()
-
-                Divider()
-            }
-
-            VStack(alignment: .leading, spacing: 8) {
-                Text("New SSH Profile")
-                    .font(Typography.ui(15, weight: .semibold))
-                HStack {
-                    TextField("Name", text: $store.sshProfileNameDraft)
-                    TextField("Host", text: $store.sshProfileHostDraft)
-                }
-                HStack {
-                    TextField("User", text: $store.sshProfileUserDraft)
-                    TextField("Port", text: $store.sshProfilePortDraft)
-                    TextField("Identity path", text: $store.sshProfileIdentityDraft)
-                }
-                TextField("Group", text: $store.sshProfileGroupDraft)
-                Button("Create SSH Profile") {
-                    store.createSSHProfileFromDraft()
-                }
-            }
-            .textFieldStyle(GlassTextFieldStyle())
-            .padding()
-
-            Divider()
-
-            VStack(alignment: .leading, spacing: 8) {
-                Text("SSH Options")
-                    .font(Typography.ui(15, weight: .semibold))
-                TextEditor(text: $store.sshOptionsDraft)
-                    .font(Typography.mono(12))
-                    .frame(minHeight: 72)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 6)
-                            .stroke(.separator, lineWidth: 1)
-                    )
-                HStack {
-                    Button("Save SSH Options") {
-                        store.saveSSHOptionsForSelectedProfile()
-                    }
-                    .disabled(store.selectedConnectionProfileID == nil)
-                    Text("One option per line, e.g. Compression=yes. Secret-bearing options are ignored.")
-                        .font(Typography.ui(12))
-                        .foregroundStyle(.secondary)
-                }
-            }
-            .padding()
-
-            Divider()
-
-            VStack(alignment: .leading, spacing: 8) {
-                Text("SSH Keys")
-                    .font(Typography.ui(15, weight: .semibold))
-                TextField("Key path", text: $store.sshKeyPath)
-                    .textFieldStyle(GlassTextFieldStyle())
-                TextField("Comment", text: $store.sshKeyComment)
-                    .textFieldStyle(GlassTextFieldStyle())
-                HStack {
-                    Button("Generate Key") {
-                        store.generateSSHKey()
-                    }
-                    Button("Add to Agent") {
-                        store.addSSHKeyToAgent()
-                    }
-                    Button("Sync Key") {
-                        store.importSSHPrivateKeyToKeychain()
-                    }
-                    Button("Restore Key") {
-                        store.restoreSSHPrivateKeyFromKeychain()
-                    }
-                }
-            }
-            .padding()
-
-            Divider()
-
-            VStack(alignment: .leading, spacing: 8) {
-                Text("RDP")
-                    .font(Typography.ui(15, weight: .semibold))
-                HStack {
-                    TextField("Name", text: $store.rdpProfileNameDraft)
-                    TextField("Host", text: $store.rdpProfileHostDraft)
-                }
-                HStack {
-                    TextField("User", text: $store.rdpProfileUserDraft)
-                    TextField("Gateway", text: $store.rdpProfileGatewayDraft)
-                    TextField("Credential reference", text: $store.rdpProfileCredentialDraft)
-                }
-                TextField("Group", text: $store.rdpProfileGroupDraft)
-                Button("Create RDP Profile") {
-                    store.createRDPProfileFromDraft()
-                }
-                HStack {
-                    TextField("Width", text: $store.rdpWidth)
-                    TextField("Height", text: $store.rdpHeight)
-                    TextField("Scale", text: $store.rdpScale)
-                }
-                .textFieldStyle(GlassTextFieldStyle())
-                TextField("Local folder redirect", text: $store.rdpLocalFolderPath)
-                    .textFieldStyle(GlassTextFieldStyle())
-            }
-            .padding()
-
-            Divider()
-
-            List(store.profiles) { profile in
-                HStack(alignment: .top) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(profile.name)
-                            .font(Typography.ui(15, weight: .semibold))
-                        Text("\(profile.kind.rawValue.uppercased())  \(profile.host)")
-                            .foregroundStyle(.secondary)
-                        if let gateway = profile.gateway {
-                            Text("Gateway: \(gateway)")
-                                .font(Typography.ui(12))
-                                .foregroundStyle(.secondary)
-                        }
-                        if let groupPath = profile.groupPath {
-                            Text("Group: \(groupPath)")
-                                .font(Typography.ui(12))
-                                .foregroundStyle(.secondary)
-                        }
-                        Text(profile.secretReferences.isEmpty ? "No secret required" : "Secrets stored by Keychain reference")
-                            .font(Typography.ui(12))
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    Button("Open") {
-                        store.openConnection(profile)
-                    }
-                    if profile.kind == .ssh {
-                        Button("Edit Options") {
-                            store.selectConnectionProfileForEditing(profile)
-                        }
-                        Button("Tunnel") {
-                            store.openLocalTunnel(profile)
-                        }
-                        Button("Save Tunnel") {
-                            store.saveCurrentLocalTunnel(profile)
-                        }
-                        Button("SFTP") {
-                            store.openSFTPSession(profile)
-                        }
-                    }
-                }
-                .padding(.vertical, 4)
-            }
-            .frame(height: 260)
         }
+        .padding(14)
+        .background(DesignTokens.Glass.raised.opacity(0.55), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.lg))
+        .overlay(RoundedRectangle(cornerRadius: DesignTokens.Radius.lg)
+            .stroke(hovering ? DesignTokens.Glass.hairlineStrong : DesignTokens.Glass.hairline, lineWidth: 1))
+        .onHover { hovering = $0 }
+    }
+}
+
+/// Creation / tools, lifted out of the old wall-of-forms into focused sheets.
+private struct ConnectionsSheet: View {
+    @ObservedObject var store: TermyStore
+    let kind: ConnSheet
+    let onClose: () -> Void
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text(title).font(Typography.ui(15, weight: .semibold))
+                Spacer()
+                Button("Done", action: onClose).buttonStyle(TermyCompactButtonStyle())
+            }
+            .padding(14)
+            Divider().overlay(Color(DesignTokens.hair))
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) { content }
+                    .padding(18)
+            }
         }
+        .frame(width: 560, height: 540)
+        .background(Color(DesignTokens.bg1))
         .buttonStyle(TermyCompactButtonStyle())
+        .textFieldStyle(GlassTextFieldStyle())
+    }
+
+    private var title: String {
+        switch kind {
+        case .ssh: "New SSH connection"
+        case .rdp: "New RDP connection"
+        case .tunnels: "SSH tunnels"
+        case .keys: "SSH keys & options"
+        }
+    }
+
+    @ViewBuilder private var content: some View {
+        switch kind {
+        case .ssh: sshForm
+        case .rdp: rdpForm
+        case .tunnels: tunnelsForm
+        case .keys: keysForm
+        }
+    }
+
+    private var sshForm: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            TextField("Name", text: $store.sshProfileNameDraft)
+            TextField("Host", text: $store.sshProfileHostDraft)
+            HStack {
+                TextField("User", text: $store.sshProfileUserDraft)
+                TextField("Port", text: $store.sshProfilePortDraft).frame(width: 90)
+            }
+            TextField("Identity path", text: $store.sshProfileIdentityDraft)
+            TextField("Group", text: $store.sshProfileGroupDraft)
+            Button { store.createSSHProfileFromDraft(); onClose() } label: { Label("Create SSH connection", systemImage: "plus") }
+                .buttonStyle(TermyCommandButtonStyle(emphasized: true))
+                .disabled(store.sshProfileNameDraft.trimmingCharacters(in: .whitespaces).isEmpty
+                          || store.sshProfileHostDraft.trimmingCharacters(in: .whitespaces).isEmpty)
+        }
+    }
+
+    private var rdpForm: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            TextField("Name", text: $store.rdpProfileNameDraft)
+            TextField("Host", text: $store.rdpProfileHostDraft)
+            TextField("User", text: $store.rdpProfileUserDraft)
+            TextField("Gateway", text: $store.rdpProfileGatewayDraft)
+            TextField("Credential reference", text: $store.rdpProfileCredentialDraft)
+            TextField("Group", text: $store.rdpProfileGroupDraft)
+            HStack {
+                TextField("Width", text: $store.rdpWidth)
+                TextField("Height", text: $store.rdpHeight)
+                TextField("Scale", text: $store.rdpScale)
+            }
+            TextField("Local folder redirect", text: $store.rdpLocalFolderPath)
+            Button { store.createRDPProfileFromDraft(); onClose() } label: { Label("Create RDP connection", systemImage: "plus") }
+                .buttonStyle(TermyCommandButtonStyle(emphasized: true))
+                .disabled(store.rdpProfileNameDraft.trimmingCharacters(in: .whitespaces).isEmpty
+                          || store.rdpProfileHostDraft.trimmingCharacters(in: .whitespaces).isEmpty)
+        }
+    }
+
+    private var tunnelsForm: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Picker("Type", selection: $store.tunnelKind) {
+                ForEach(SSHTunnelKind.allCases) { Text($0.title).tag($0) }
+            }
+            .pickerStyle(.segmented).labelsHidden()
+            HStack {
+                TextField(store.tunnelKind == .remote ? "Remote port" : "Local port", text: $store.tunnelLocalPort)
+                if store.tunnelKind != .dynamic {
+                    TextField(store.tunnelKind == .remote ? "Local host" : "Remote host", text: $store.tunnelRemoteHost)
+                    TextField(store.tunnelKind == .remote ? "Local port" : "Remote port", text: $store.tunnelRemotePort)
+                }
+            }
+            if let ssh = store.profiles.first(where: { $0.kind == .ssh }) {
+                Button { store.saveCurrentLocalTunnel(ssh) } label: { Label("Save tunnel", systemImage: "square.and.arrow.down") }
+            }
+            if !store.savedTunnels.isEmpty {
+                Divider().overlay(Color(DesignTokens.hair))
+                Text("SAVED").font(.system(size: 10, weight: .semibold)).tracking(0.5).foregroundStyle(DesignTokens.Glass.textQuaternary)
+                ForEach(store.savedTunnels) { tunnel in
+                    HStack {
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(tunnel.name).font(Typography.ui(12)).foregroundStyle(Color(DesignTokens.fg2))
+                            Text(store.tunnelHealth[tunnel.id]?.summary ?? "Not started")
+                                .font(Typography.ui(11)).foregroundStyle(DesignTokens.Glass.textTertiary)
+                        }
+                        Spacer()
+                        Button("Start") { store.openSavedTunnel(tunnel) }
+                        Button("Probe") { store.probeSavedTunnel(tunnel) }
+                    }
+                }
+            }
+        }
+    }
+
+    private var keysForm: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("SSH KEYS").font(.system(size: 10, weight: .semibold)).tracking(0.5).foregroundStyle(DesignTokens.Glass.textQuaternary)
+            TextField("Key path", text: $store.sshKeyPath)
+            TextField("Comment", text: $store.sshKeyComment)
+            HStack {
+                Button("Generate") { store.generateSSHKey() }
+                Button("Add to Agent") { store.addSSHKeyToAgent() }
+                Button("Sync") { store.importSSHPrivateKeyToKeychain() }
+                Button("Restore") { store.restoreSSHPrivateKeyFromKeychain() }
+            }
+            Divider().overlay(Color(DesignTokens.hair))
+            Text("SSH OPTIONS (selected profile)").font(.system(size: 10, weight: .semibold)).tracking(0.5).foregroundStyle(DesignTokens.Glass.textQuaternary)
+            TextEditor(text: $store.sshOptionsDraft)
+                .font(Typography.mono(12)).frame(minHeight: 90)
+                .scrollContentBackground(.hidden)
+                .padding(6)
+                .background(DesignTokens.Glass.fillControl, in: RoundedRectangle(cornerRadius: DesignTokens.Radius.control))
+                .overlay(RoundedRectangle(cornerRadius: DesignTokens.Radius.control).stroke(DesignTokens.Glass.hairline, lineWidth: 1))
+            Button("Save SSH options") { store.saveSSHOptionsForSelectedProfile() }
+                .disabled(store.selectedConnectionProfileID == nil)
+            Text("One option per line, e.g. Compression=yes. Secret-bearing options are ignored.")
+                .font(Typography.ui(11)).foregroundStyle(DesignTokens.Glass.textTertiary)
+        }
     }
 }
