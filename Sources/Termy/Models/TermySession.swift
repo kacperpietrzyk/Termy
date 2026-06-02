@@ -1,6 +1,12 @@
 import Foundation
 import TermyCore
 
+/// Poziom 1: optional per-session color tag (Warp-style swatch). UI-agnostic —
+/// the view layer maps each case to a concrete color. `.none` = no tag.
+enum SessionColorTag: String, CaseIterable, Codable, Equatable {
+    case none, red, orange, yellow, green, blue, purple, pink
+}
+
 struct TermySession: Identifiable {
     enum InteractionMode {
         case commandLine
@@ -28,6 +34,8 @@ struct TermySession: Identifiable {
     /// FB-3-4: when `agentActivity` last changed (drives "waiting 24s"). Stamped in
     /// `TermyStore.feedAgentEvent`.
     var stateChangedAt: Date = Date()
+    /// Poziom 1: optional color tag set from the session context menu. Default none.
+    var colorTag: SessionColorTag = .none
 
     init(
         id: UUID = UUID(),

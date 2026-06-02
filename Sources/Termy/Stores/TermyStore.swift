@@ -107,6 +107,61 @@ final class TermyStore: ObservableObject {
         }
     }
 
+    // MARK: - Poziom 1: per-session tab management (rename / color / close-others / copy)
+
+    /// Rename a session's tab title. Empty/whitespace is ignored (no blank tabs).
+    func renameSession(_ id: UUID, to newTitle: String) {
+        let trimmed = newTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, let idx = sessions.firstIndex(where: { $0.id == id }) else { return }
+        sessions[idx].title = trimmed
+    }
+
+    /// Tag a session with a color (or `.none` to clear).
+    func setSessionColorTag(_ id: UUID, _ tag: SessionColorTag) {
+        guard let idx = sessions.firstIndex(where: { $0.id == id }) else { return }
+        sessions[idx].colorTag = tag
+    }
+
+    /// Close every session except `id` (snapshot ids first — closeSession mutates `sessions`).
+    func closeOtherSessions(keeping id: UUID) {
+        for other in sessions.map(\.id) where other != id {
+            closeSession(sessionID: other)
+        }
+    }
+
+    /// Copy a session's working directory to the pasteboard.
+    func copySessionWorkingDirectory(_ id: UUID) {
+        guard let cwd = sessions.first(where: { $0.id == id })?.currentWorkingDirectory, !cwd.isEmpty else {
+            statusMessage = "No working directory for this session."
+            return
+        }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(cwd, forType: .string)
+        statusMessage = "Copied working directory."
+    }
+
+    /// Copy the current git branch of a session's working directory (best-effort,
+    /// off the main thread — a `git` call must never block the UI).
+    func copySessionGitBranch(_ id: UUID) {
+        guard let cwd = sessions.first(where: { $0.id == id })?.currentWorkingDirectory, !cwd.isEmpty else {
+            statusMessage = "No working directory for this session."
+            return
+        }
+        let root = URL(fileURLWithPath: cwd)
+        DispatchQueue.global(qos: .userInitiated).async {
+            let branch = (try? GitRepository(root: root).currentBranch()) ?? ""
+            DispatchQueue.main.async {
+                guard !branch.isEmpty else {
+                    self.statusMessage = "Not a git repository."
+                    return
+                }
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(branch, forType: .string)
+                self.statusMessage = "Copied branch: \(branch)"
+            }
+        }
+    }
+
     // M2c-1 strangler facade → `appModel.editor`. Computed forwarders; the
     // canonical bypass invariant + rationale is at the `let appModel`
     // comment below. Transient — deleted in the final M2c sub-plan.
