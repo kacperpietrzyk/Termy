@@ -305,6 +305,7 @@ private struct FileExplorerPanel: View {
                 }
             }
         }
+        .buttonStyle(TermyCompactButtonStyle())
         .onAppear {
             store.refreshFiles()
         }
@@ -416,6 +417,7 @@ private struct GitPanel: View {
             }
         }
         .padding()
+        .buttonStyle(TermyCompactButtonStyle())
     }
 
     private var gitOutput: String {
@@ -924,5 +926,6 @@ private struct ConnectionsPanel: View {
             .frame(height: 260)
         }
         }
+        .buttonStyle(TermyCompactButtonStyle())
     }
 }

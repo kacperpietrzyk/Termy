@@ -43,6 +43,24 @@ enum TermyDesign {
     static func agentActivityColor(_ state: AgentActivityState) -> Color { Color(activityToken(state)) }
 }
 
+/// Compact glass action button (DESIGN.md control): translucent `fill-control`
+/// fill + flat hairline, system-blue text on press. Sized for dense panel rows.
+/// Applied at panel roots; buttons with an explicit style override it.
+struct TermyCompactButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(Typography.ui(12, weight: .medium))
+            .foregroundStyle(configuration.isPressed ? DesignTokens.Glass.accent : Color(DesignTokens.fg2))
+            .padding(.horizontal, 9)
+            .padding(.vertical, 5)
+            .background(DesignTokens.Glass.fillControl, in: RoundedRectangle(cornerRadius: DesignTokens.Radius.control))
+            .overlay(RoundedRectangle(cornerRadius: DesignTokens.Radius.control)
+                .stroke(DesignTokens.Glass.hairline, lineWidth: 1))
+            .contentShape(Rectangle())
+            .opacity(configuration.isPressed ? 0.8 : 1)
+    }
+}
+
 /// Glass text input (DESIGN.md): translucent `fill-control` fill, flat hairline
 /// (no system bezel), system blue focus is carried by AppKit's focus ring.
 struct GlassTextFieldStyle: TextFieldStyle {

@@ -1521,7 +1521,7 @@ final class TermyStore: ObservableObject {
     }
 
     func refreshGitStatus() {
-        let repository = GitRepository(root: URL(fileURLWithPath: FileManager.default.currentDirectoryPath))
+        let repository = GitRepository(root: gitWorkingRoot)
         DispatchQueue.global(qos: .userInitiated).async {
             let result = Result { try repository.statusShort() }
             let divergence = try? repository.aheadBehind()
@@ -1540,7 +1540,7 @@ final class TermyStore: ObservableObject {
     }
 
     func stageAllGitChanges() {
-        let repository = GitRepository(root: URL(fileURLWithPath: FileManager.default.currentDirectoryPath))
+        let repository = GitRepository(root: gitWorkingRoot)
         DispatchQueue.global(qos: .userInitiated).async {
             let result = Result { try repository.stageAll() }
             DispatchQueue.main.async {
@@ -1557,7 +1557,7 @@ final class TermyStore: ObservableObject {
 
     func commitGitChanges() {
         let message = gitCommitMessage
-        let repository = GitRepository(root: URL(fileURLWithPath: FileManager.default.currentDirectoryPath))
+        let repository = GitRepository(root: gitWorkingRoot)
         DispatchQueue.global(qos: .userInitiated).async {
             let result = Result { try repository.commit(message: message) }
             DispatchQueue.main.async {
@@ -1575,7 +1575,7 @@ final class TermyStore: ObservableObject {
     }
 
     func refreshGitDiff() {
-        let repository = GitRepository(root: projectRoot)
+        let repository = GitRepository(root: gitWorkingRoot)
         DispatchQueue.global(qos: .userInitiated).async {
             let result = Result { try repository.diff() }
             DispatchQueue.main.async {
@@ -1591,7 +1591,7 @@ final class TermyStore: ObservableObject {
     }
 
     func suggestGitCommitMessageWithLocalAI() {
-        let repository = GitRepository(root: projectRoot)
+        let repository = GitRepository(root: gitWorkingRoot)
         Task {
             do {
                 let diff = try await Task.detached(priority: .userInitiated) {
@@ -1613,7 +1613,7 @@ final class TermyStore: ObservableObject {
     }
 
     func explainGitConflictsWithLocalAI() {
-        let repository = GitRepository(root: projectRoot)
+        let repository = GitRepository(root: gitWorkingRoot)
         Task {
             do {
                 let hunks = try await Task.detached(priority: .userInitiated) {
@@ -1643,7 +1643,7 @@ final class TermyStore: ObservableObject {
     func createGitBranch() {
         let name = gitBranchDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { return }
-        let repository = GitRepository(root: projectRoot)
+        let repository = GitRepository(root: gitWorkingRoot)
         DispatchQueue.global(qos: .userInitiated).async {
             let result = Result { try repository.createBranch(named: name, checkout: true) }
             DispatchQueue.main.async {
@@ -1662,7 +1662,7 @@ final class TermyStore: ObservableObject {
 
     func checkoutSelectedGitBranch() {
         guard let selectedGitBranch else { return }
-        let repository = GitRepository(root: projectRoot)
+        let repository = GitRepository(root: gitWorkingRoot)
         DispatchQueue.global(qos: .userInitiated).async {
             let result = Result { try repository.checkoutBranch(selectedGitBranch) }
             DispatchQueue.main.async {
@@ -1678,7 +1678,7 @@ final class TermyStore: ObservableObject {
     }
 
     func pushCurrentGitBranch() {
-        let repository = GitRepository(root: projectRoot)
+        let repository = GitRepository(root: gitWorkingRoot)
         DispatchQueue.global(qos: .userInitiated).async {
             let result = Result { try repository.pushCurrentBranch() }
             DispatchQueue.main.async {
@@ -1694,7 +1694,7 @@ final class TermyStore: ObservableObject {
     }
 
     func pullCurrentGitBranch() {
-        let repository = GitRepository(root: projectRoot)
+        let repository = GitRepository(root: gitWorkingRoot)
         DispatchQueue.global(qos: .userInitiated).async {
             let result = Result { try repository.pullCurrentBranch() }
             DispatchQueue.main.async {
@@ -4126,7 +4126,7 @@ final class TermyStore: ObservableObject {
     }
 
     private func refreshGitBranches() {
-        let repository = GitRepository(root: URL(fileURLWithPath: FileManager.default.currentDirectoryPath))
+        let repository = GitRepository(root: gitWorkingRoot)
         DispatchQueue.global(qos: .utility).async {
             let result = Result { (try repository.localBranches(), try? repository.currentBranch()) }
             DispatchQueue.main.async {
@@ -4144,6 +4144,35 @@ final class TermyStore: ObservableObject {
 
     private var projectRoot: URL {
         projectRootURL
+    }
+
+    /// The repository git operations act on: the selected session's working
+    /// directory when it sits inside a git repo, otherwise the static project
+    /// root (prior behavior). This makes the Git module + Home Git card follow
+    /// the session you're actually in, without erroring when a session's cwd
+    /// isn't a repo. Used by every git-module read/write op for consistency.
+    private var gitWorkingRoot: URL {
+        if let cwd = selectedSessionWorkingDirectory {
+            let url = URL(fileURLWithPath: cwd)
+            var isDir: ObjCBool = false
+            if FileManager.default.fileExists(atPath: cwd, isDirectory: &isDir), isDir.boolValue,
+               Self.enclosingGitRoot(of: url) != nil {
+                return url
+            }
+        }
+        return projectRootURL
+    }
+
+    /// Walk up from `url` looking for a `.git` entry; returns the repo root or nil.
+    private static func enclosingGitRoot(of url: URL) -> URL? {
+        var dir = url.standardizedFileURL
+        while dir.path != "/" {
+            if FileManager.default.fileExists(atPath: dir.appendingPathComponent(".git").path) {
+                return dir
+            }
+            dir = dir.deletingLastPathComponent()
+        }
+        return nil
     }
 
     private func localAIClient(endpoint: LocalAIEndpoint) -> LocalAIClient {
