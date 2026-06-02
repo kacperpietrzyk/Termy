@@ -133,9 +133,34 @@ open_app() {
   /usr/bin/open -n "$APP_BUNDLE"
 }
 
+# Dev capture mode: launch on the off-screen virtual display WITHOUT stealing focus,
+# so a visual pass (build → screenshot → kill) doesn't disrupt parallel human use of
+# the Mac. Runs the bundle binary directly (not via `open`) to pass TERMY_CAPTURE_SCREEN,
+# and detached so the script returns immediately. See script/capture-display.sh / capture-shot.sh.
+CAPTURE_SCREEN_NAME="${TERMY_CAPTURE_SCREEN:-TermyCapture}"
+CAPTURE_WINDOWID_FILE="${TERMY_CAPTURE_WINDOWID_FILE:-/tmp/termy-capture-windowid}"
+open_app_capture() {
+  "$ROOT_DIR/script/capture-display.sh" connect
+  rm -f "$CAPTURE_WINDOWID_FILE"
+  # The SwiftUI window only materializes on a FOREGROUND launch (a background app can't
+  # self-activate), so capture which app the user is in NOW, launch foreground via
+  # LaunchServices, and let CaptureMode hand focus straight back to that app.
+  local prev_bundle
+  prev_bundle="$(osascript -e 'tell application "System Events" to bundle identifier of first application process whose frontmost is true' 2>/dev/null || true)"
+  /usr/bin/open -n "$APP_BUNDLE" \
+    --env "TERMY_CAPTURE_SCREEN=$CAPTURE_SCREEN_NAME" \
+    --env "TERMY_CAPTURE_WINDOWID_FILE=$CAPTURE_WINDOWID_FILE" \
+    --env "TERMY_CAPTURE_RESTORE_BUNDLE=${prev_bundle:-}"
+  echo "Termy launched in capture mode on virtual screen '$CAPTURE_SCREEN_NAME'."
+  echo "Focus will return to '${prev_bundle:-?}'. Window id → $CAPTURE_WINDOWID_FILE."
+}
+
 case "$MODE" in
   run)
     open_app
+    ;;
+  capture)
+    open_app_capture
     ;;
   --debug|debug)
     lldb -- "$APP_BINARY"
@@ -154,7 +179,7 @@ case "$MODE" in
     pgrep -x "$APP_NAME" >/dev/null
     ;;
   *)
-    echo "usage: $0 [run|--debug|--logs|--telemetry|--verify]" >&2
+    echo "usage: $0 [run|capture|--debug|--logs|--telemetry|--verify]" >&2
     exit 2
     ;;
 esac
