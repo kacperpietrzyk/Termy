@@ -601,6 +601,8 @@ private struct EditorPanel: View {
                 .background(Color(DesignTokens.bg2))
             }
         }
+        // Compact glass toolbar buttons; the Vim key bar sets its own .bordered style.
+        .buttonStyle(TermyCompactButtonStyle())
     }
 
     private var editorText: Binding<String> {
