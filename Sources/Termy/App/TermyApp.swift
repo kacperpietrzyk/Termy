@@ -6,7 +6,15 @@ import TermySync
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
-        NSApp.activate(ignoringOtherApps: true)
+        if CaptureMode.isActive {
+            // Dev capture mode: park the window on the off-screen virtual display and
+            // return focus to the user's app. (SwiftUI won't create its WindowGroup
+            // window without one activation, so CaptureMode does a brief one then
+            // restores focus.) Inert unless TERMY_CAPTURE_SCREEN is set.
+            CaptureMode.activate()
+        } else {
+            NSApp.activate(ignoringOtherApps: true)
+        }
         NativeRemoteNotificationCenter.shared.requestAuthorization()
     }
 }
