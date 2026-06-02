@@ -334,8 +334,19 @@ final class TappedLocalProcessTerminalView: LocalProcessTerminalView {
     ///   MacLocalTerminalView.swift:183
     ///     open func dataReceived(slice: ArraySlice<UInt8>) { feed (byteArray: slice) }
     override func dataReceived(slice: ArraySlice<UInt8>) {
+        // B2: never ingest ALTERNATE-SCREEN output into the Warp-style block
+        // transcript. A full-screen TUI (vim/htop/`claude`) repaints the same
+        // cells many times; the block renderer strips CSI/OSC positioning but
+        // keeps the text between, so those frames concatenate into garbled
+        // overlapping lines that surface after the program exits. Sample the
+        // terminal's own alt-screen flag BEFORE and AFTER `super` so both the
+        // enter chunk (`ESC[?1049h`) and the exit chunk (final TUI frame +
+        // `ESC[?1049l`) are skipped — only genuine shell output is captured.
+        let wasAlternate = getTerminal().isCurrentBufferAlternate
         super.dataReceived(slice: slice)   // SwiftTerm renders, unchanged
-        streamBridge?.ingest(slice)        // observe-only, same queue/frame
+        if !wasAlternate && !getTerminal().isCurrentBufferAlternate {
+            streamBridge?.ingest(slice)    // observe-only, non-alt output only
+        }
     }
 
     /// F-1: Tab/Right-Arrow accept the inline suggestion. SwiftTerm's
