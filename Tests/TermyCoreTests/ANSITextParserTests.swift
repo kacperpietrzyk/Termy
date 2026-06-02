@@ -107,4 +107,18 @@ final class ANSITextParserTests: XCTestCase {
         XCTAssertEqual(spans, [ANSISpan(text: "x",
             attributes: ANSIAttributes(foreground: .indexed(1)))])
     }
+
+    // Poziom-2a: charset designation (ESC ( B etc.) must be dropped, not leaked as
+    // literal text — this is the `(B` half of the reported `78(B78%` TUI residue.
+    func testCharsetDesignationG0IsDropped() {
+        XCTAssertEqual(parser.parse("x\u{1b}(By"), [ANSISpan(text: "xy")])
+    }
+
+    func testCharsetDesignationG1IsDropped() {
+        XCTAssertEqual(parser.parse("a\u{1b})0b"), [ANSISpan(text: "ab")])
+    }
+
+    func testIncompleteCharsetDesignationIsDropped() {
+        XCTAssertEqual(parser.parse("ok\u{1b}("), [ANSISpan(text: "ok")])
+    }
 }

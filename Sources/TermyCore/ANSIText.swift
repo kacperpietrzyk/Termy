@@ -81,6 +81,16 @@ public struct ANSITextParser: Sendable {
                 i = j + 1
                 continue
             }
+            // Charset designation: ESC ( <final> / ESC ) <final> / ESC * … / ESC + …
+            // (one intermediate + one final byte, e.g. `ESC ( B` = designate ASCII).
+            // Inline TUIs (Claude Code) emit these between repaint frames; the parser
+            // must DROP them, otherwise the bare `(B` leaks into the block as literal
+            // text (the reported `78(B78%` residue). Mirrors TerminalANSIParser.
+            if s == "\u{1b}", i + 1 < scalars.count,
+               "()*+".unicodeScalars.contains(scalars[i + 1]) {
+                i = min(i + 3, scalars.count)   // ESC + intermediate + final (if present)
+                continue
+            }
             // OSC: ESC ] … terminated by BEL (0x07) or ST (ESC \). Dropped.
             if s == "\u{1b}", i + 1 < scalars.count, scalars[i + 1] == "]" {
                 var j = i + 2
