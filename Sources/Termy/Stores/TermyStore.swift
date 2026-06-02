@@ -2648,11 +2648,22 @@ final class TermyStore: ObservableObject {
     /// (vim/htop/fzf). Pushed from SwiftTerm's post-render hook; drives the live
     /// zone's full-area takeover.
     private var terminalAltScreen: [UUID: Bool] = [:]
+    /// Sessions whose `.output` is suppressed until the next command starts — set
+    /// when a full-screen TUI leaves the alternate screen (see `setTerminalAltScreen`).
+    private var suppressOutputUntilCommand: Set<UUID> = []
     func terminalAltScreenActive(for id: UUID) -> Bool { terminalAltScreen[id] ?? false }
     func setTerminalAltScreen(_ active: Bool, for id: UUID) {
         guard terminalAltScreen[id] != active else { return }
         objectWillChange.send()
+        let wasActive = terminalAltScreen[id] ?? false
         terminalAltScreen[id] = active
+        // P2a follow-up: a full-screen TUI (claude/vim/htop) OWNED the display while
+        // on the alternate screen, so its command block has no meaningful inline
+        // output. On EXIT, the bytes captured around the alt↔normal transition (a
+        // CHA escape fragmented across a `dataReceived` slice, etc.) are noise — they
+        // surface as residue like `787878%`. Suppress this session's `.output` until
+        // the next command starts (a fresh prompt), so the TUI's block stays clean.
+        if wasActive && !active { suppressOutputUntilCommand.insert(id) }
     }
 
     /// v3 block terminal: shift every line-keyed entry DOWN by `overflow` (the
@@ -4825,6 +4836,7 @@ final class TermyStore: ObservableObject {
         pendingCommandPromptIndex[sessionID] = nil
         terminalLocalClearSinks[sessionID] = nil
         terminalAltScreen[sessionID] = nil
+        suppressOutputUntilCommand.remove(sessionID)
 
         // FB-3-2: tear down per-session agent state.
         agentQuiescenceTasks[sessionID]?.cancel()
@@ -5483,8 +5495,10 @@ final class TermyStore: ObservableObject {
         for event in events {
             switch event {
             case .output(let text):
+                if suppressOutputUntilCommand.contains(sessionID) { break }  // drop post-alt-screen transition noise
                 appendLine(TerminalLine(role: .stdout, text: text), to: sessionID)
             case .commandStarted(let command):
+                suppressOutputUntilCommand.remove(sessionID)   // fresh prompt → resume capturing
                 appendLine(TerminalLine(role: .prompt, text: "$ \(command)"), to: sessionID)
                 // v3 block terminal: record the prompt line index as timing key.
                 // The prompt was just appended, so it's the last line in the session.
@@ -5756,6 +5770,7 @@ final class TermyStore: ObservableObject {
         // transcript instead of leaving the now-stale raw SwiftTerm buffer
         // exposed (which renders as garbled overlapping text).
         terminalAltScreen[sessionID] = nil
+        suppressOutputUntilCommand.remove(sessionID)
         // Slice 5: the child is already gone — evict its surface (frees the launch
         // temp; the processIsDead guard skips a re-kill). No-op for non-pooled
         // (.commandLine SSH/tunnel) sessions, and a no-op in the restart case
