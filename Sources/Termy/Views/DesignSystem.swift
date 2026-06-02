@@ -43,6 +43,22 @@ enum TermyDesign {
     static func agentActivityColor(_ state: AgentActivityState) -> Color { Color(activityToken(state)) }
 }
 
+/// Glass text input (DESIGN.md): translucent `fill-control` fill, flat hairline
+/// (no system bezel), system blue focus is carried by AppKit's focus ring.
+struct GlassTextFieldStyle: TextFieldStyle {
+    // swiftlint:disable:next identifier_name
+    func _body(configuration: TextField<Self._Label>) -> some View {
+        configuration
+            .textFieldStyle(.plain)
+            .font(Typography.ui(13))
+            .padding(.horizontal, 9)
+            .padding(.vertical, 6)
+            .background(DesignTokens.Glass.fillControl, in: RoundedRectangle(cornerRadius: DesignTokens.Radius.control))
+            .overlay(RoundedRectangle(cornerRadius: DesignTokens.Radius.control)
+                .stroke(DesignTokens.Glass.hairline, lineWidth: 1))
+    }
+}
+
 struct TermyIconButtonStyle: ButtonStyle {
     var emphasized = false
 

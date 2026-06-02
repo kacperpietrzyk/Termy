@@ -161,9 +161,9 @@ private struct FileExplorerPanel: View {
         VStack(spacing: 0) {
             HStack {
                 TextField("Search files", text: $store.fileSearchQuery)
-                    .textFieldStyle(.roundedBorder)
+                    .textFieldStyle(GlassTextFieldStyle())
                 TextField("Name or path", text: $store.fileDraftName)
-                    .textFieldStyle(.roundedBorder)
+                    .textFieldStyle(GlassTextFieldStyle())
                 Button("File") {
                     store.createFileFromDraft()
                 }
@@ -177,9 +177,9 @@ private struct FileExplorerPanel: View {
 
             HStack {
                 TextField("Rename selected to", text: $store.fileRenameName)
-                    .textFieldStyle(.roundedBorder)
+                    .textFieldStyle(GlassTextFieldStyle())
                 TextField("Move to folder", text: $store.fileMoveDestination)
-                    .textFieldStyle(.roundedBorder)
+                    .textFieldStyle(GlassTextFieldStyle())
                 Button("Open") {
                     store.openSelectedFileInEditor()
                 }
@@ -204,7 +204,7 @@ private struct FileExplorerPanel: View {
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
                     TextField("SFTP path", text: $store.sftpRemotePath)
-                        .textFieldStyle(.roundedBorder)
+                        .textFieldStyle(GlassTextFieldStyle())
                     if let profile = store.profiles.first(where: { $0.kind == .ssh }) {
                         Button("Browse SFTP") {
                             store.refreshSFTPFiles(profile: profile)
@@ -268,17 +268,33 @@ private struct FileExplorerPanel: View {
 
             Divider()
 
-            List(store.visibleFileTreeItems, selection: $store.selectedFilePath) { treeItem in
-                HStack(spacing: 6) {
-                    Spacer()
-                        .frame(width: CGFloat(treeItem.depth) * 14)
-                    Image(systemName: treeItem.iconName)
-                        .foregroundStyle(treeItem.item.isDirectory ? Color(DesignTokens.fg2) : Color(DesignTokens.fg3))
-                    Text(treeItem.item.name)
-                    Spacer(minLength: 0)
+            ScrollView {
+                LazyVStack(spacing: 1) {
+                    ForEach(store.visibleFileTreeItems) { treeItem in
+                        let selected = store.selectedFilePath == treeItem.item.relativePath
+                        Button {
+                            store.selectedFilePath = treeItem.item.relativePath
+                        } label: {
+                            HStack(spacing: 6) {
+                                Spacer().frame(width: CGFloat(treeItem.depth) * 14)
+                                Image(systemName: treeItem.iconName)
+                                    .foregroundStyle(treeItem.item.isDirectory ? Color(DesignTokens.fg2) : Color(DesignTokens.fg3))
+                                Text(treeItem.item.name).foregroundStyle(Color(DesignTokens.fg1))
+                                Spacer(minLength: 0)
+                            }
+                            .font(Typography.ui(13))
+                            .padding(.horizontal, 8).padding(.vertical, 4)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            // Neutral translucent selection bar — never a colored fill (DESIGN.md).
+                            .background(selected ? DesignTokens.Glass.fillSelection : Color.clear,
+                                        in: RoundedRectangle(cornerRadius: DesignTokens.Radius.row))
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .help(treeItem.item.relativePath)
+                    }
                 }
-                .help(treeItem.item.relativePath)
-                .tag(treeItem.item.relativePath)
+                .padding(.horizontal, 8).padding(.vertical, 6)
             }
             .overlay {
                 if store.visibleFileTreeItems.isEmpty {
@@ -369,7 +385,7 @@ private struct GitPanel: View {
 
             HStack {
                 TextField("New branch", text: $store.gitBranchDraft)
-                    .textFieldStyle(.roundedBorder)
+                    .textFieldStyle(GlassTextFieldStyle())
                 Button("Create") {
                     store.createGitBranch()
                 }
@@ -377,7 +393,7 @@ private struct GitPanel: View {
             }
 
             TextField("Commit message", text: $store.gitCommitMessage)
-                .textFieldStyle(.roundedBorder)
+                .textFieldStyle(GlassTextFieldStyle())
 
             Button("Commit") {
                 store.commitGitChanges()
@@ -421,7 +437,7 @@ private struct EditorPanel: View {
                     .lineLimit(1)
                 Spacer()
                 TextField("AI edit instruction", text: $store.editorAIInstruction)
-                    .textFieldStyle(.roundedBorder)
+                    .textFieldStyle(GlassTextFieldStyle())
                     .frame(maxWidth: 240)
                 Button("Propose Edit") {
                     store.suggestEditorEditWithLocalAI()
@@ -710,7 +726,7 @@ private struct ConnectionsPanel: View {
                         TextField(store.tunnelKind == .remote ? "Local port" : "Remote port", text: $store.tunnelRemotePort)
                     }
                 }
-                .textFieldStyle(.roundedBorder)
+                .textFieldStyle(GlassTextFieldStyle())
                 if let sshProfile = store.profiles.first(where: { $0.kind == .ssh }) {
                     HStack {
                         Button("Save Tunnel") {
@@ -779,7 +795,7 @@ private struct ConnectionsPanel: View {
                     store.createSSHProfileFromDraft()
                 }
             }
-            .textFieldStyle(.roundedBorder)
+            .textFieldStyle(GlassTextFieldStyle())
             .padding()
 
             Divider()
@@ -812,9 +828,9 @@ private struct ConnectionsPanel: View {
                 Text("SSH Keys")
                     .font(Typography.ui(15, weight: .semibold))
                 TextField("Key path", text: $store.sshKeyPath)
-                    .textFieldStyle(.roundedBorder)
+                    .textFieldStyle(GlassTextFieldStyle())
                 TextField("Comment", text: $store.sshKeyComment)
-                    .textFieldStyle(.roundedBorder)
+                    .textFieldStyle(GlassTextFieldStyle())
                 HStack {
                     Button("Generate Key") {
                         store.generateSSHKey()
@@ -855,9 +871,9 @@ private struct ConnectionsPanel: View {
                     TextField("Height", text: $store.rdpHeight)
                     TextField("Scale", text: $store.rdpScale)
                 }
-                .textFieldStyle(.roundedBorder)
+                .textFieldStyle(GlassTextFieldStyle())
                 TextField("Local folder redirect", text: $store.rdpLocalFolderPath)
-                    .textFieldStyle(.roundedBorder)
+                    .textFieldStyle(GlassTextFieldStyle())
             }
             .padding()
 
