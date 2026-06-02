@@ -17,10 +17,6 @@ struct StatusBarView: View {
             .foregroundStyle(Color(DesignTokens.git.base))
 
             divider
-            // Shell info (static this slice — no shell-info model yet)
-            Label("zsh · UTF-8", systemImage: "terminal").labelStyle(.titleAndIcon)
-
-            divider
             // Sync
             HStack(spacing: 6) {
                 Circle().fill(Color(DesignTokens.sync.base)).frame(width: 6, height: 6)
@@ -46,8 +42,8 @@ struct StatusBarView: View {
             Spacer(minLength: 12)
 
             HStack(spacing: 12) {
-                Text("⌘0 desktop")
-                Text("⌘K cmd")
+                Text("⌘0 home")
+                Text("⌘K run")
                 Text("⌘P switch")
             }
             .foregroundStyle(Color(DesignTokens.fg4))

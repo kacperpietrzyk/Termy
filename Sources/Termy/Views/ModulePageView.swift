@@ -10,7 +10,7 @@ struct ModulePageView<Content: View, Actions: View>: View {
     @ObservedObject var store: TermyStore
     let module: ShellNavigationModel.Module
     var alert: Bool = false
-    /// Optional mono third segment (DESIGN.md §4.1 trail): `Desktop / Shell / termy`.
+    /// Optional mono third breadcrumb segment, e.g. `Home / Shell / termy`.
     /// Omitted when nil/empty so a blank `/` segment never renders.
     var trailingCrumb: String? = nil
     @ViewBuilder var actions: () -> Actions
@@ -44,14 +44,14 @@ struct ModulePageView<Content: View, Actions: View>: View {
 
     private var breadcrumb: some View {
         HStack(spacing: 10) {
-            Button { store.goToDesktop() } label: {
-                Image(systemName: "chevron.left").font(.system(size: 13, weight: .semibold))
+            Button { store.goToHome() } label: {
+                Image(systemName: "house").font(.system(size: 12, weight: .semibold))
             }
             .buttonStyle(.plain)
             .foregroundStyle(Color(DesignTokens.fg3))
             .frame(width: 30, height: 30)
             .background(Color(DesignTokens.bg2), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.sm))
-            .help("Back to Desktop (⌘0)")
+            .help("Home (⌘0)")
 
             Image(systemName: module.systemImage)
                 .font(.system(size: 14))
@@ -61,7 +61,7 @@ struct ModulePageView<Content: View, Actions: View>: View {
                             in: RoundedRectangle(cornerRadius: DesignTokens.Radius.sm))
 
             HStack(spacing: 6) {
-                Text("Desktop").foregroundStyle(Color(DesignTokens.fg4))
+                Text("Home").foregroundStyle(Color(DesignTokens.fg4))
                 Text("/").foregroundStyle(Color(DesignTokens.fg5))
                 Text(module.title).foregroundStyle(Color(DesignTokens.fg1)).fontWeight(.medium)
                 if let trailingCrumb, !trailingCrumb.isEmpty {

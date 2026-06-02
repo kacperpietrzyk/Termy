@@ -17,6 +17,11 @@ final class GitModel {
     var selectedGitBranch: String?
     var gitDivergence: GitDivergence?
     var gitBranches: [String] = []
+    var gitRecentCommits: [GitLogEntry] = []
+    var gitChanges: [GitChange] = []
+    /// false → the working root is not a git repo; the UI shows a calm empty state
+    /// instead of a raw error string.
+    var gitIsRepository = true
 
     init() {}
 }

@@ -52,12 +52,12 @@ final class TermyStore: ObservableObject {
         get { appModel.terminal.commandQuery }
         set { objectWillChange.send(); appModel.terminal.commandQuery = newValue }
     }
-    // v3 shell navigation (Phase 2) → `appModel.shellNav`. Computed forwarders
-    // + nav methods that `objectWillChange.send()` so the ObservableObject
-    // views re-render (M2c-3 strangler-facade pattern).
+    // Raycast-v2 glass shell navigation → `appModel.shellNav`. Fixed left rail of
+    // all modules + a permanent Home. Computed forwarders + nav methods that
+    // `objectWillChange.send()` so the ObservableObject views re-render.
     var activeTab: ShellNavigationModel.ActiveTab { appModel.shellNav.activeTab }
-    var openTabs: [ShellNavigationModel.Module] { appModel.shellNav.openTabs }
     var activeTabKey: String { appModel.shellNav.activeTabKey }
+    var activeModule: ShellNavigationModel.Module? { appModel.shellNav.activeModule }
 
     func openModuleTab(_ m: ShellNavigationModel.Module) {
         objectWillChange.send()
@@ -69,37 +69,42 @@ final class TermyStore: ObservableObject {
         appModel.shellNav.goTo(tab)
     }
 
-    func goToDesktop() { goToTab(.desktop) }
+    func goToHome() {
+        objectWillChange.send()
+        appModel.shellNav.goHome()
+    }
 
-    /// v3 Shell §6.1: spawn a new local zsh session (selects it + starts its PTY,
-    /// via the shared `addSession` path). Backs the breadcrumb "New session" button.
+    /// Shell §6.1: spawn a new local zsh session (selects it + starts its PTY,
+    /// via the shared `addSession` path). Backs the "New session" affordance.
     func newLocalShellSession() {
         addSession(profile: .local(name: "Local Shell \(sessions.count + 1)", terminalOutputMode: .blocks))
     }
 
-    /// Context-aware ⌘T (author decision 2026-05-26): in the Shell module a new
-    /// local shell session; everywhere else, the existing "go to Desktop".
+    /// Context-aware ⌘T: in the Shell module a new local shell session; everywhere
+    /// else, jump to Home.
     func handleNewTabShortcut() {
         if activeTab == .module(.shell) {
             newLocalShellSession()
         } else {
-            goToDesktop()
+            goToHome()
         }
     }
 
+    /// ⌘1..8 — select a module on the fixed rail (stable order).
     func goToTab(index: Int) {
-        guard let m = appModel.shellNav.tab(at: index) else { return }
+        guard let m = appModel.shellNav.module(at: index) else { return }
         goToTab(.module(m))
     }
 
-    func closeModuleTab(_ m: ShellNavigationModel.Module) {
-        objectWillChange.send()
-        appModel.shellNav.close(m)
-    }
-
+    /// ⌘W — the rail is fixed (no closeable module tabs): close the active session
+    /// inside a session-bearing module, otherwise return to Home.
     func closeActiveTab() {
-        objectWillChange.send()
-        appModel.shellNav.closeActive()
+        switch appModel.shellNav.activeTab {
+        case .module(.shell), .module(.agents), .module(.connections):
+            perform("close-session")
+        default:
+            goToHome()
+        }
     }
 
     // M2c-1 strangler facade → `appModel.editor`. Computed forwarders; the
@@ -241,6 +246,18 @@ final class TermyStore: ObservableObject {
     var gitDivergence: GitDivergence? {
         get { appModel.git.gitDivergence }
         set { objectWillChange.send(); appModel.git.gitDivergence = newValue }
+    }
+    var gitRecentCommits: [GitLogEntry] {
+        get { appModel.git.gitRecentCommits }
+        set { objectWillChange.send(); appModel.git.gitRecentCommits = newValue }
+    }
+    var gitChanges: [GitChange] {
+        get { appModel.git.gitChanges }
+        set { objectWillChange.send(); appModel.git.gitChanges = newValue }
+    }
+    var gitIsRepository: Bool {
+        get { appModel.git.gitIsRepository }
+        set { objectWillChange.send(); appModel.git.gitIsRepository = newValue }
     }
     // M2c-2 strangler facade → `appModel.files`. Computed forwarders; the
     // canonical bypass invariant + rationale is at the `let appModel`
@@ -1414,6 +1431,29 @@ final class TermyStore: ObservableObject {
         }
     }
 
+    /// Frecency-ranked commands for the active cwd — backs the Home "Frequent
+    /// commands" section (real history, no fabrication).
+    func frequentCommands(limit: Int = 6) -> [String] {
+        historyStore.rankedSnapshot(forCwd: currentSessionCwd(), limit: limit)
+    }
+
+    /// Run a command from Home: focus a live local shell, open the Shell module,
+    /// and submit it via the session's input sink. The sink call is a safe no-op
+    /// if no terminal is mounted yet, so this never crashes or misfires.
+    func runCommandInShell(_ command: String) {
+        let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        if let local = sessions.first(where: { $0.profile.kind == .local }) {
+            selectedSessionID = local.id
+        } else if selectedSessionID == nil {
+            newLocalShellSession()
+        }
+        openModuleTab(.shell)
+        if let id = selectedSessionID {
+            terminalInputSinks[id]?(trimmed + "\r")
+        }
+    }
+
     func runCommand(_ command: String) {
         guard !command.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               let selectedSessionID,
@@ -1516,18 +1556,31 @@ final class TermyStore: ObservableObject {
     }
 
     func refreshGitStatus() {
-        let repository = GitRepository(root: URL(fileURLWithPath: FileManager.default.currentDirectoryPath))
+        let repository = GitRepository(root: gitWorkingRoot)
         DispatchQueue.global(qos: .userInitiated).async {
-            let result = Result { try repository.statusShort() }
+            // Not a repo → a calm empty state, never a raw error string.
+            guard repository.isRepository() else {
+                DispatchQueue.main.async {
+                    self.gitIsRepository = false
+                    self.gitStatus = "Not a git repository."
+                    self.gitRecentCommits = []
+                    self.gitChanges = []
+                    self.gitDivergence = nil
+                }
+                return
+            }
+            let status = Result { try repository.statusShort() }
+            let changes = (try? repository.changes()) ?? []
+            let commits = (try? repository.recentCommits()) ?? []
             let divergence = try? repository.aheadBehind()
             DispatchQueue.main.async {
-                switch result {
-                case .success(let status):
-                    self.gitStatus = self.format(status)
-                    self.gitDivergence = divergence
-                case .failure(let error):
-                    self.gitStatus = error.localizedDescription
-                    self.gitDivergence = nil
+                self.gitIsRepository = true
+                self.gitChanges = changes
+                self.gitRecentCommits = commits
+                self.gitDivergence = divergence
+                switch status {
+                case .success(let s): self.gitStatus = self.format(s)
+                case .failure: self.gitStatus = "Working tree clean."
                 }
             }
         }
@@ -1535,7 +1588,7 @@ final class TermyStore: ObservableObject {
     }
 
     func stageAllGitChanges() {
-        let repository = GitRepository(root: URL(fileURLWithPath: FileManager.default.currentDirectoryPath))
+        let repository = GitRepository(root: gitWorkingRoot)
         DispatchQueue.global(qos: .userInitiated).async {
             let result = Result { try repository.stageAll() }
             DispatchQueue.main.async {
@@ -1552,7 +1605,7 @@ final class TermyStore: ObservableObject {
 
     func commitGitChanges() {
         let message = gitCommitMessage
-        let repository = GitRepository(root: URL(fileURLWithPath: FileManager.default.currentDirectoryPath))
+        let repository = GitRepository(root: gitWorkingRoot)
         DispatchQueue.global(qos: .userInitiated).async {
             let result = Result { try repository.commit(message: message) }
             DispatchQueue.main.async {
@@ -1570,7 +1623,7 @@ final class TermyStore: ObservableObject {
     }
 
     func refreshGitDiff() {
-        let repository = GitRepository(root: projectRoot)
+        let repository = GitRepository(root: gitWorkingRoot)
         DispatchQueue.global(qos: .userInitiated).async {
             let result = Result { try repository.diff() }
             DispatchQueue.main.async {
@@ -1586,7 +1639,7 @@ final class TermyStore: ObservableObject {
     }
 
     func suggestGitCommitMessageWithLocalAI() {
-        let repository = GitRepository(root: projectRoot)
+        let repository = GitRepository(root: gitWorkingRoot)
         Task {
             do {
                 let diff = try await Task.detached(priority: .userInitiated) {
@@ -1608,7 +1661,7 @@ final class TermyStore: ObservableObject {
     }
 
     func explainGitConflictsWithLocalAI() {
-        let repository = GitRepository(root: projectRoot)
+        let repository = GitRepository(root: gitWorkingRoot)
         Task {
             do {
                 let hunks = try await Task.detached(priority: .userInitiated) {
@@ -1638,7 +1691,7 @@ final class TermyStore: ObservableObject {
     func createGitBranch() {
         let name = gitBranchDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { return }
-        let repository = GitRepository(root: projectRoot)
+        let repository = GitRepository(root: gitWorkingRoot)
         DispatchQueue.global(qos: .userInitiated).async {
             let result = Result { try repository.createBranch(named: name, checkout: true) }
             DispatchQueue.main.async {
@@ -1657,7 +1710,7 @@ final class TermyStore: ObservableObject {
 
     func checkoutSelectedGitBranch() {
         guard let selectedGitBranch else { return }
-        let repository = GitRepository(root: projectRoot)
+        let repository = GitRepository(root: gitWorkingRoot)
         DispatchQueue.global(qos: .userInitiated).async {
             let result = Result { try repository.checkoutBranch(selectedGitBranch) }
             DispatchQueue.main.async {
@@ -1673,7 +1726,7 @@ final class TermyStore: ObservableObject {
     }
 
     func pushCurrentGitBranch() {
-        let repository = GitRepository(root: projectRoot)
+        let repository = GitRepository(root: gitWorkingRoot)
         DispatchQueue.global(qos: .userInitiated).async {
             let result = Result { try repository.pushCurrentBranch() }
             DispatchQueue.main.async {
@@ -1689,7 +1742,7 @@ final class TermyStore: ObservableObject {
     }
 
     func pullCurrentGitBranch() {
-        let repository = GitRepository(root: projectRoot)
+        let repository = GitRepository(root: gitWorkingRoot)
         DispatchQueue.global(qos: .userInitiated).async {
             let result = Result { try repository.pullCurrentBranch() }
             DispatchQueue.main.async {
@@ -4121,7 +4174,7 @@ final class TermyStore: ObservableObject {
     }
 
     private func refreshGitBranches() {
-        let repository = GitRepository(root: URL(fileURLWithPath: FileManager.default.currentDirectoryPath))
+        let repository = GitRepository(root: gitWorkingRoot)
         DispatchQueue.global(qos: .utility).async {
             let result = Result { (try repository.localBranches(), try? repository.currentBranch()) }
             DispatchQueue.main.async {
@@ -4139,6 +4192,35 @@ final class TermyStore: ObservableObject {
 
     private var projectRoot: URL {
         projectRootURL
+    }
+
+    /// The repository git operations act on: the selected session's working
+    /// directory when it sits inside a git repo, otherwise the static project
+    /// root (prior behavior). This makes the Git module + Home Git card follow
+    /// the session you're actually in, without erroring when a session's cwd
+    /// isn't a repo. Used by every git-module read/write op for consistency.
+    private var gitWorkingRoot: URL {
+        if let cwd = selectedSessionWorkingDirectory {
+            let url = URL(fileURLWithPath: cwd)
+            var isDir: ObjCBool = false
+            if FileManager.default.fileExists(atPath: cwd, isDirectory: &isDir), isDir.boolValue,
+               Self.enclosingGitRoot(of: url) != nil {
+                return url
+            }
+        }
+        return projectRootURL
+    }
+
+    /// Walk up from `url` looking for a `.git` entry; returns the repo root or nil.
+    private static func enclosingGitRoot(of url: URL) -> URL? {
+        var dir = url.standardizedFileURL
+        while dir.path != "/" {
+            if FileManager.default.fileExists(atPath: dir.appendingPathComponent(".git").path) {
+                return dir
+            }
+            dir = dir.deletingLastPathComponent()
+        }
+        return nil
     }
 
     private func localAIClient(endpoint: LocalAIEndpoint) -> LocalAIClient {
@@ -5424,13 +5506,19 @@ final class TermyStore: ObservableObject {
         // descriptor's workingDirectory is nil (e.g. local zsh inheriting
         // FileManager.currentDirectoryPath), the session's cwd stays nil
         // and HistoryStore.record(cwd: nil) records without cwd until D fires.
-        if let index = sessions.firstIndex(where: { $0.id == id }),
-           sessions[index].currentWorkingDirectory == nil {
-            sessions[index].currentWorkingDirectory = descriptor.workingDirectory
+        if let index = sessions.firstIndex(where: { $0.id == id }) {
+            // A (re)launch means the child is live again — clear any prior exit.
+            sessions[index].processExited = false
+            if sessions[index].currentWorkingDirectory == nil {
+                sessions[index].currentWorkingDirectory = descriptor.workingDirectory
+            }
         }
     }
     func bumpTerminalLaunchGeneration(for id: UUID) {
         terminalLaunchGenerations[id, default: 0] += 1
+        if let index = sessions.firstIndex(where: { $0.id == id }) {
+            sessions[index].processExited = false   // restart re-spawns → live again
+        }
     }
 
     /// SwiftTerm-owned screen text for the "Copy Visible Terminal Screen"
@@ -5533,6 +5621,7 @@ final class TermyStore: ObservableObject {
         }
         guard let index = sessions.firstIndex(where: { $0.id == sessionID }) else { return }
         if let exitCode { sessions[index].lastExitCode = exitCode }
+        sessions[index].processExited = true
         let detail = exitCode.map { "status \($0)" } ?? "I/O error"
         appendLine(TerminalLine(role: .system, text: "Process exited (\(detail))."), to: sessionID)
         if let context = tunnelReconnectContexts[sessionID] {

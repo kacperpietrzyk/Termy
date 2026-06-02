@@ -4,60 +4,41 @@ import TermyCore
 
 @MainActor
 final class ShellNavigationModelTests: XCTestCase {
-    func testStartsOnDesktopWithNoOpenTabs() {
+    func testStartsOnHome() {
         let nav = ShellNavigationModel()
-        XCTAssertEqual(nav.activeTab, .desktop)
-        XCTAssertTrue(nav.openTabs.isEmpty)
+        XCTAssertEqual(nav.activeTab, .home)
+        XCTAssertNil(nav.activeModule)
     }
 
-    func testOpenAppendsAndActivates() {
+    func testOpenActivatesModule() {
         let nav = ShellNavigationModel()
         nav.open(.git)
-        XCTAssertEqual(nav.openTabs, [.git])
         XCTAssertEqual(nav.activeTab, .module(.git))
+        XCTAssertEqual(nav.activeModule, .git)
     }
 
-    func testReopenDoesNotDuplicateButActivates() {
+    func testGoHomeReturnsToHome() {
         let nav = ShellNavigationModel()
         nav.open(.git)
+        nav.goHome()
+        XCTAssertEqual(nav.activeTab, .home)
+        XCTAssertNil(nav.activeModule)
+    }
+
+    func testModuleAtIsOneBasedFixedRailOrder() {
+        let nav = ShellNavigationModel()
+        XCTAssertEqual(nav.module(at: 1), .shell)     // fixed rail order, not insertion order
+        XCTAssertEqual(nav.module(at: 2), .agents)
+        XCTAssertEqual(nav.module(at: 8), .settings)
+        XCTAssertNil(nav.module(at: 9))
+        XCTAssertNil(nav.module(at: 0))
+    }
+
+    func testActiveTabKey() {
+        let nav = ShellNavigationModel()
+        XCTAssertEqual(nav.activeTabKey, "home")
         nav.open(.files)
-        nav.open(.git)
-        XCTAssertEqual(nav.openTabs, [.git, .files])   // no duplicate
-        XCTAssertEqual(nav.activeTab, .module(.git))     // re-activated
-    }
-
-    func testCloseActiveFallsBackToDesktop() {
-        let nav = ShellNavigationModel()
-        nav.open(.git)
-        nav.close(.git)
-        XCTAssertTrue(nav.openTabs.isEmpty)
-        XCTAssertEqual(nav.activeTab, .desktop)
-    }
-
-    func testCloseBackgroundTabPreservesActive() {
-        let nav = ShellNavigationModel()
-        nav.open(.git)
-        nav.open(.files)              // files now active
-        nav.close(.git)               // close the background one
-        XCTAssertEqual(nav.openTabs, [.files])
-        XCTAssertEqual(nav.activeTab, .module(.files))
-    }
-
-    func testTabAtIsOneBased() {
-        let nav = ShellNavigationModel()
-        nav.open(.shell)
-        nav.open(.git)
-        XCTAssertEqual(nav.tab(at: 1), .shell)
-        XCTAssertEqual(nav.tab(at: 2), .git)
-        XCTAssertNil(nav.tab(at: 3))
-        XCTAssertNil(nav.tab(at: 0))
-    }
-
-    func testCloseNonOpenModuleIsNoop() {
-        let nav = ShellNavigationModel()
-        nav.close(.editor)
-        XCTAssertTrue(nav.openTabs.isEmpty)
-        XCTAssertEqual(nav.activeTab, .desktop)
+        XCTAssertEqual(nav.activeTabKey, "files")
     }
 
     func testModuleCarriesTitleIconArea() {
@@ -71,27 +52,18 @@ final class ShellNavigationModelTests: XCTestCase {
 
     func testStoreForwardersReflectShellNav() {
         let store = TermyStore(startInitialPTY: false)
-        XCTAssertEqual(store.activeTab, .desktop)
-        XCTAssertTrue(store.openTabs.isEmpty)
+        XCTAssertEqual(store.activeTab, .home)
+        XCTAssertNil(store.activeModule)
 
         store.openModuleTab(.git)
-        XCTAssertEqual(store.openTabs, [.git])
         XCTAssertEqual(store.activeTab, .module(.git))
+        XCTAssertEqual(store.activeModule, .git)
         XCTAssertEqual(store.activeTabKey, "git")
 
-        store.openModuleTab(.files)
-        store.goToTab(index: 1)                       // 1-based → .git
-        XCTAssertEqual(store.activeTab, .module(.git))
+        store.goToTab(index: 1)                        // 1-based fixed rail → .shell
+        XCTAssertEqual(store.activeTab, .module(.shell))
 
-        store.closeModuleTab(.files)                  // close the background tab
-        XCTAssertEqual(store.openTabs, [.git])        // .files removed
-        XCTAssertEqual(store.activeTab, .module(.git))// active preserved
-
-        store.goToDesktop()
-        XCTAssertEqual(store.activeTab, .desktop)
-
-        store.openModuleTab(.git)
-        store.closeActiveTab()
-        XCTAssertEqual(store.activeTab, .desktop)
+        store.goToHome()
+        XCTAssertEqual(store.activeTab, .home)
     }
 }

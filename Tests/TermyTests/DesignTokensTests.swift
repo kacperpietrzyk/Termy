@@ -33,14 +33,14 @@ final class DesignTokensTests: XCTestCase {
 
     func testChipBackgroundsAreTranslucent() {
         XCTAssertLessThan(DesignTokens.ai.bg.alpha, 1.0)
-        XCTAssertEqual(DesignTokens.ai.bg.alpha, 0.22, accuracy: 1e-9)
+        XCTAssertEqual(DesignTokens.ai.bg.alpha, 0.20, accuracy: 1e-9)
     }
 
-    func testPrimaryAndAiAreVioletNotAmber() {   // h=295: blue & red > green
+    func testPrimaryAndAiAreSystemBlue() {   // Raycast v2 accent: blue dominant
         for c in [DesignTokens.primary, DesignTokens.ai.base] {
             let p = c.displayP3Components()
+            XCTAssertGreaterThan(p.blue, p.red)
             XCTAssertGreaterThan(p.blue, p.green)
-            XCTAssertGreaterThan(p.red, p.green)
         }
     }
 

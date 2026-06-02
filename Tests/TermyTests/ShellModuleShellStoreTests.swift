@@ -15,13 +15,13 @@ final class ShellModuleShellStoreTests: XCTestCase {
         XCTAssertEqual(store.sessions.last?.profile.kind, .local)
     }
 
-    func testNewTabShortcutOutsideShellGoesToDesktop() {
+    func testNewTabShortcutOutsideShellGoesToHome() {
         let store = TermyStore(startInitialPTY: false)
         store.openModuleTab(.git)
         let before = store.sessions.count
         store.handleNewTabShortcut()
         XCTAssertEqual(store.sessions.count, before, "no session spawned outside Shell")
-        XCTAssertEqual(store.activeTab, .desktop)
+        XCTAssertEqual(store.activeTab, .home)
     }
 
     func testNewLocalShellSessionSelectsTheNewSession() {

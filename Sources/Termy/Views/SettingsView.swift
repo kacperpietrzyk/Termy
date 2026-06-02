@@ -30,7 +30,7 @@ struct SettingsView: View {
                 }
 
                 TextField("Key", text: $store.keymapKey)
-                    .textFieldStyle(.roundedBorder)
+                    .textFieldStyle(GlassTextFieldStyle())
 
                 HStack {
                     Button("Apply Shortcut") {
@@ -68,7 +68,7 @@ struct SettingsView: View {
                     in: 9...32
                 )
                 TextField("Font Family", text: $store.terminalFontFamily)
-                    .textFieldStyle(.roundedBorder)
+                    .textFieldStyle(GlassTextFieldStyle())
                 Toggle("Ligatures", isOn: $store.terminalUsesLigatures)
                 Toggle("Increased Contrast", isOn: $store.terminalIncreasedContrast)
                 Picker("Interface Text", selection: $store.interfaceTextScaleRawValue) {
@@ -95,13 +95,13 @@ struct SettingsView: View {
                 }
                 if store.terminalShellKind == "custom" {
                     TextField("Shell Path", text: $store.terminalCustomShellPath)
-                        .textFieldStyle(.roundedBorder)
+                        .textFieldStyle(GlassTextFieldStyle())
                     TextField("Arguments", text: $store.terminalCustomShellArguments)
-                        .textFieldStyle(.roundedBorder)
+                        .textFieldStyle(GlassTextFieldStyle())
                 }
                 Divider()
                 TextField("Custom Theme Name", text: $store.customThemeName)
-                    .textFieldStyle(.roundedBorder)
+                    .textFieldStyle(GlassTextFieldStyle())
                 Grid(alignment: .leading, horizontalSpacing: 8, verticalSpacing: 6) {
                     GridRow {
                         TextField("Background", text: $store.customThemeBackgroundHex)
@@ -118,7 +118,7 @@ struct SettingsView: View {
                         }
                     }
                 }
-                .textFieldStyle(.roundedBorder)
+                .textFieldStyle(GlassTextFieldStyle())
             }
 
             Section("Private Sync") {

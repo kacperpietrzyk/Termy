@@ -1,9 +1,9 @@
 import SwiftUI
 import TermyCore
 
-/// DESIGN.md §6.1 Shell module — Phase-3 Slice-3 body. Single-session layout:
-/// dt-header → ShellTermWindow → ShellSessionStatsCard + ShellAIContextCard.
-/// The Phase-2 bridge (ShellTabBodyView + pane-tree) is retired.
+/// Shell module — terminal-first. A sessions sub-rail beside a full-height live
+/// terminal; the breadcrumb carries the session actions. No decorative metadata
+/// cards — the terminal is the surface.
 struct ShellModuleView: View {
     @ObservedObject var store: TermyStore
     @State private var showHistory = false
@@ -18,20 +18,14 @@ struct ShellModuleView: View {
                 }
                 Group {
                     if let session = store.selectedSession {
-                        ScrollView {
-                            VStack(spacing: 16) {
-                                dtHeader(session)
-                                ShellTermWindow(store: store, session: session)
-                                HStack(alignment: .top, spacing: 16) {
-                                    ShellSessionStatsCard(store: store, session: session)
-                                    ShellAIContextCard(store: store)
-                                }
-                            }
-                            .padding(.horizontal, 24).padding(.top, 20).padding(.bottom, 18)
-                        }
+                        ShellTermWindow(store: store, session: session)
+                            .padding(16)
                     } else {
-                        Text("No session").font(Typography.ui(13)).foregroundStyle(Color(DesignTokens.fg3))
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        ContentUnavailableView {
+                            Label("No session", systemImage: "terminal")
+                        } description: {
+                            Text("Press ⌘T to start a local shell.")
+                        }
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -48,34 +42,22 @@ struct ShellModuleView: View {
         store.selectedSessionID = local.first?.id ?? store.sessions.first?.id
     }
 
-    // MARK: dt-header (§4.3)
-    private func dtHeader(_ session: TermySession) -> some View {
-        ModuleDetailHeaderView(
-            icon: "terminal",
-            hue: DesignTokens.fg2,
-            title: session.title,
-            chip: { ShellLiveChip(label: ShellModuleModel.liveChipLabel(
-                kind: session.profile.kind,
-                zshVersion: store.shellVersion(forSession: session.id))) },
-            subtitle: { subtitle(session) },
-            actions: { headerActions(session) }
-        )
-    }
-
-    private func subtitle(_ session: TermySession) -> some View {
-        ShellModuleModel.headerSubtitle(session, commandsToday: store.commandsToday())
-            .reduce(Text("")) { acc, span in
-                acc + Text(span.text).foregroundStyle(
-                    span.accent == .dim ? Color(DesignTokens.fg5) : Color(DesignTokens.fg3))
-            }
-    }
-
-    // MARK: actions
+    // MARK: breadcrumb actions (session-level: search, history, new, close)
     @ViewBuilder private var crumbActions: some View {
         Button { store.requestTerminalSearchFocus() } label: {
             Label("Find", systemImage: "magnifyingglass")
         }
         .buttonStyle(TermyCommandButtonStyle())
+
+        Button { showHistory.toggle() } label: {
+            Label("History", systemImage: "clock.arrow.circlepath")
+        }
+        .buttonStyle(TermyCommandButtonStyle())
+        .popover(isPresented: $showHistory, arrowEdge: .bottom) {
+            ShellHistoryPopover(store: store, cwd: store.selectedSession?.currentWorkingDirectory) {
+                showHistory = false
+            }
+        }
 
         Button { store.openModuleTab(.settings) } label: {
             Image(systemName: "slider.horizontal.3")
@@ -92,23 +74,13 @@ struct ShellModuleView: View {
         }
         .buttonStyle(TermyCommandButtonStyle(emphasized: true))
         .help("New local shell (⌘T)")
-    }
 
-    @ViewBuilder private func headerActions(_ session: TermySession) -> some View {
-        Button { showHistory.toggle() } label: {
-            Label("History", systemImage: "clock.arrow.circlepath")
-        }
-        .buttonStyle(TermyCommandButtonStyle())
-        .popover(isPresented: $showHistory, arrowEdge: .bottom) {
-            ShellHistoryPopover(store: store, cwd: session.currentWorkingDirectory) {
-                showHistory = false
+        if let session = store.selectedSession {
+            Button { store.closeSession(sessionID: session.id) } label: {
+                Image(systemName: "xmark")
             }
+            .buttonStyle(TermyCommandButtonStyle())
+            .help("Close session (⌘W)")
         }
-
-        Button { store.closeSession(sessionID: session.id) } label: {
-            Image(systemName: "xmark")
-        }
-        .buttonStyle(TermyCommandButtonStyle())
-        .help("Close session")
     }
 }

@@ -1,8 +1,8 @@
 import SwiftUI
 import TermyCore
 
-/// The stage (DESIGN.md §1.3): Desktop (Tab 0) or a module page, with the §7
-/// declarative transition. Reduce Motion disables it.
+/// The stage: the live-card Home or a module page, with a declarative transition.
+/// Reduce Motion disables it.
 struct StageView: View {
     @ObservedObject var store: TermyStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -10,9 +10,9 @@ struct StageView: View {
     var body: some View {
         ZStack {
             switch store.activeTab {
-            case .desktop:
-                DesktopSceneView(store: store)
-                    .transition(.opacity.combined(with: .scale(scale: 1.04)))
+            case .home:
+                HomeView(store: store)
+                    .transition(.opacity.combined(with: .scale(scale: 1.02)))
             case .module(.agents):
                 AgentsModuleView(store: store)
                     .transition(.opacity.combined(with: .scale(scale: 0.985)))

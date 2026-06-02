@@ -103,13 +103,13 @@ struct TermyApp: App {
                 .termyKeyboardShortcut(store.shortcut(for: "toggle-editor") ?? .commandShift("e"))
             }
 
-            CommandMenu("Tabs") {
-                Button("Desktop") { store.goToDesktop() }
+            CommandMenu("Navigate") {
+                Button("Home") { store.goToHome() }
                     .keyboardShortcut("0", modifiers: .command)
 
-                ForEach(1...9, id: \.self) { n in
-                    Button("Tab \(n)") { store.goToTab(index: n) }
-                        .keyboardShortcut(KeyEquivalent(Character("\(n)")), modifiers: .command)
+                ForEach(Array(ShellNavigationModel.Module.allCases.enumerated()), id: \.element) { index, module in
+                    Button(module.title) { store.goToTab(index: index + 1) }
+                        .keyboardShortcut(KeyEquivalent(Character("\(index + 1)")), modifiers: .command)
                 }
 
                 Divider()
@@ -120,7 +120,7 @@ struct TermyApp: App {
                 .keyboardShortcut("t", modifiers: .command)
                 Button("Quick Switcher") { store.perform("open-command-center") }
                     .keyboardShortcut("p", modifiers: .command)
-                Button("Close Tab") { store.closeActiveTab() }
+                Button("Close Session") { store.closeActiveTab() }
                     .keyboardShortcut("w", modifiers: .command)
             }
 
@@ -177,10 +177,11 @@ struct TermyApp: App {
                 .disabled(!store.appModel.update.canCheckForUpdates)
             }
 
-            // v3: Settings is an in-shell module tab (DESIGN.md §3.2 orb), not a
-            // separate macOS Settings window. Route ⌘, to the Settings tab so the
-            // user lands inside the shell (with the tab bar / Desktop back) instead
-            // of a chrome-less standalone window they can't navigate out of.
+            // Settings is an in-shell module reached via the fixed glass rail
+            // (DESIGN.md "Raycast v2" redesign), not a separate macOS Settings
+            // window. Route ⌘, to openModuleTab(.settings) so the user stays inside
+            // the shell — the sidebar still navigates back to Home — instead of a
+            // chrome-less standalone window they can't navigate out of.
             CommandGroup(replacing: .appSettings) {
                 Button("Settings…") { store.openModuleTab(.settings) }
                     .keyboardShortcut(",", modifiers: .command)

@@ -43,6 +43,40 @@ enum TermyDesign {
     static func agentActivityColor(_ state: AgentActivityState) -> Color { Color(activityToken(state)) }
 }
 
+/// Compact glass action button (DESIGN.md control): translucent `fill-control`
+/// fill + flat hairline, system-blue text on press. Sized for dense panel rows.
+/// Applied at panel roots; buttons with an explicit style override it.
+struct TermyCompactButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(Typography.ui(12, weight: .medium))
+            .foregroundStyle(configuration.isPressed ? DesignTokens.Glass.accent : Color(DesignTokens.fg2))
+            .padding(.horizontal, 9)
+            .padding(.vertical, 5)
+            .background(DesignTokens.Glass.fillControl, in: RoundedRectangle(cornerRadius: DesignTokens.Radius.control))
+            .overlay(RoundedRectangle(cornerRadius: DesignTokens.Radius.control)
+                .stroke(DesignTokens.Glass.hairline, lineWidth: 1))
+            .contentShape(Rectangle())
+            .opacity(configuration.isPressed ? 0.8 : 1)
+    }
+}
+
+/// Glass text input (DESIGN.md): translucent `fill-control` fill, flat hairline
+/// (no system bezel), system blue focus is carried by AppKit's focus ring.
+struct GlassTextFieldStyle: TextFieldStyle {
+    // swiftlint:disable:next identifier_name
+    func _body(configuration: TextField<Self._Label>) -> some View {
+        configuration
+            .textFieldStyle(.plain)
+            .font(Typography.ui(13))
+            .padding(.horizontal, 9)
+            .padding(.vertical, 6)
+            .background(DesignTokens.Glass.fillControl, in: RoundedRectangle(cornerRadius: DesignTokens.Radius.control))
+            .overlay(RoundedRectangle(cornerRadius: DesignTokens.Radius.control)
+                .stroke(DesignTokens.Glass.hairline, lineWidth: 1))
+    }
+}
+
 struct TermyIconButtonStyle: ButtonStyle {
     var emphasized = false
 
@@ -114,9 +148,9 @@ struct TermyPill: View {
     }
 }
 
-/// Keyboard-hint chip (`styles.css` `.btn kbd` / `.sub-rail-search kbd`): dark
-/// bg0 fill, fg3 glyph, hair border, radius 4. Same on emphasized buttons —
-/// the handoff uses one kbd treatment everywhere.
+/// Keyboard-hint keycap (DESIGN.md): a flat, thin-bordered rounded square —
+/// translucent `fill-chip` fill, `fg3` glyph, light hairline border, radius 6
+/// (`--radius-keycap`). No pressable bevel.
 struct TermyKbd: View {
     let key: String
     var size: CGFloat = 11
@@ -127,8 +161,9 @@ struct TermyKbd: View {
             .font(Typography.ui(size, weight: .medium))
             .foregroundStyle(Color(DesignTokens.fg3))
             .padding(.horizontal, 5).padding(.vertical, 1)
-            .background(Color(DesignTokens.bg0), in: RoundedRectangle(cornerRadius: 4))
-            .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color(DesignTokens.hair), lineWidth: 1))
+            .background(DesignTokens.Glass.fillChip, in: RoundedRectangle(cornerRadius: DesignTokens.Radius.sm))
+            .overlay(RoundedRectangle(cornerRadius: DesignTokens.Radius.sm)
+                .stroke(DesignTokens.Glass.hairlineStrong, lineWidth: 1))
     }
 }
 

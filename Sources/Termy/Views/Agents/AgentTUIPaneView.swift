@@ -75,11 +75,7 @@ struct AgentTUIPaneView: View {
             if vitals.agentType != .codex {
                 footTag("Notification hook", on: true)
             }
-            Text("OSC 133 prompt-return").foregroundStyle(Color(DesignTokens.fg4))
-            Text("OSC 7 cwd").foregroundStyle(Color(DesignTokens.fg4))
             Spacer()
-            Text("chrome driven by the signals — no TUI re-render")
-                .foregroundStyle(Color(DesignTokens.fg5))
         }
         .font(Typography.mono(10)).padding(.horizontal, 12).frame(height: 30)
     }

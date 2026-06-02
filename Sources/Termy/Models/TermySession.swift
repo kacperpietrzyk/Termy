@@ -15,6 +15,11 @@ struct TermySession: Identifiable {
     var lastExitCode: Int32?
     var interactionMode: InteractionMode
     var agentType: CLIAgent?
+    /// True once this session's child process has exited (set in
+    /// `noteSessionProcessExited`, reset on every (re)launch). Drives the honest
+    /// live/dead status dot in the Shell rail and term-window header — replaces
+    /// the old always-green "live" placeholder.
+    var processExited: Bool = false
     /// FB-3-2 activity state. Default `.idle`; set to `.working` at agent launch.
     /// Only meaningful when `agentType != nil`.
     var agentActivity: AgentActivityState = .idle

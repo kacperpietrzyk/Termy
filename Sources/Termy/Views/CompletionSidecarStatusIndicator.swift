@@ -12,7 +12,7 @@ struct CompletionSidecarStatusIndicator: View {
     var body: some View {
         if disabled {
             Image(systemName: "exclamationmark.triangle")
-                .foregroundColor(.secondary.opacity(0.55))
+                .foregroundStyle(DesignTokens.Glass.warningGold.opacity(0.7))
                 .font(.caption2)
                 .help("zsh features (completions, command syntax highlighting) unavailable — restart session or use zsh to retry")
                 .accessibilityLabel("zsh completion and syntax highlighting unavailable")

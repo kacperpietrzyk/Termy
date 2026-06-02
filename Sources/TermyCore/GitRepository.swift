@@ -31,6 +31,45 @@ public struct GitCommandResult: Equatable, Sendable {
     public let output: String
 }
 
+/// One commit in the history list (drives the Git module's graph rail).
+public struct GitLogEntry: Equatable, Sendable, Identifiable {
+    public let hash: String
+    public let shortHash: String
+    public let parents: [String]
+    public let refNames: [String]   // decoded `%D`: "HEAD -> main", "origin/main", "tag: v1"
+    public let author: String
+    public let relativeDate: String
+    public let subject: String
+
+    public var id: String { hash }
+    public var isMerge: Bool { parents.count > 1 }
+
+    public init(hash: String, shortHash: String, parents: [String], refNames: [String],
+                author: String, relativeDate: String, subject: String) {
+        self.hash = hash; self.shortHash = shortHash; self.parents = parents
+        self.refNames = refNames; self.author = author
+        self.relativeDate = relativeDate; self.subject = subject
+    }
+}
+
+/// A working-tree change with its raw porcelain XY code preserved, so the UI can
+/// split staged (index, X) from unstaged (worktree, Y).
+public struct GitChange: Equatable, Sendable, Identifiable {
+    public let x: Character   // index / staged column
+    public let y: Character   // worktree / unstaged column
+    public let path: String
+
+    public var id: String { path }
+    public var isStaged: Bool { x != " " && x != "?" }
+    public var isUnstaged: Bool { y != " " }
+    public var isUntracked: Bool { x == "?" && y == "?" }
+    public var isConflicted: Bool { x == "U" || y == "U" || (x == "A" && y == "A") || (x == "D" && y == "D") }
+
+    public init(x: Character, y: Character, path: String) {
+        self.x = x; self.y = y; self.path = path
+    }
+}
+
 public struct GitDivergence: Equatable, Sendable {
     public let ahead: Int
     public let behind: Int
@@ -58,6 +97,36 @@ public struct GitRepository: Sendable {
 
     public func stageAll() throws {
         _ = try runGit(["add", "--all"])
+    }
+
+    /// Working-tree changes with raw XY porcelain codes preserved (staged vs unstaged).
+    public func changes() throws -> [GitChange] {
+        let out = try runGit(["status", "--porcelain"]).stdout
+        return out.split(whereSeparator: \.isNewline).compactMap { line in
+            let chars = Array(String(line))
+            guard chars.count >= 4 else { return nil }
+            let path = String(chars[3...])
+            guard !path.isEmpty else { return nil }
+            return GitChange(x: chars[0], y: chars[1], path: path)
+        }
+    }
+
+    /// Recent commits for the history/graph view. Fields are unit-separated (US,
+    /// 0x1f) and records newline-separated; `%D` ref decoration is split on commas.
+    public func recentCommits(limit: Int = 60) throws -> [GitLogEntry] {
+        let unit = "\u{1f}"
+        let fields = ["%H", "%h", "%P", "%D", "%an", "%ar", "%s"].joined(separator: unit)
+        let out = try runGit(["log", "--pretty=format:\(fields)", "-n", "\(limit)"]).stdout
+        return out.split(whereSeparator: \.isNewline).compactMap { line in
+            let f = String(line).components(separatedBy: unit)
+            guard f.count == 7 else { return nil }
+            let parents = f[2].split(separator: " ").map(String.init)
+            let refs = f[3].split(separator: ",")
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+                .filter { !$0.isEmpty }
+            return GitLogEntry(hash: f[0], shortHash: f[1], parents: parents,
+                               refNames: refs, author: f[4], relativeDate: f[5], subject: f[6])
+        }
     }
 
     public func localBranches() throws -> [String] {
