@@ -30,6 +30,10 @@ struct HomeView: View {
             .padding(.bottom, 40)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // Load real git status promptly so the Git card reflects the repo instead
+        // of the unqueried sentinel (the metric/empty-state still guard on a
+        // confirmed-clean marker, so there is no false "clean" before this lands).
+        .task { store.refreshGitStatus() }
     }
 
     // MARK: greeting + subline
@@ -40,7 +44,7 @@ struct HomeView: View {
             (Text(g.lead + ", ").foregroundStyle(DesignTokens.Glass.textPrimary)
              + Text(g.name).foregroundStyle(DesignTokens.Glass.accent))
                 .font(.system(size: 28, weight: .semibold))
-                .tracking(-0.4)
+                .tracking(-0.2)   // neutral range per DESIGN.md (no marketing-site compression)
 
             subline
         }
@@ -125,23 +129,31 @@ struct HomeView: View {
     }
 
     private var gitCard: some View {
-        let rows = DesktopModel.gitMiniRows(from: store.gitStatus, limit: 3)
-        let dirty = DesktopModel.gitDirtyCount(store.gitStatus)
+        let status = store.gitStatus
+        let rows = DesktopModel.gitMiniRows(from: status, limit: 3)
+        let dirty = DesktopModel.gitDirtyCount(status)
+        let confirmedClean = DesktopModel.gitIsConfirmedClean(status)
+        // Three honest states: dirty (real count), confirmed clean, or not-yet-loaded
+        // (unqueried sentinel / not-a-repo / error). Only a confirmed clean tree may
+        // show "0 / Working tree clean"; unknown shows a neutral em dash.
+        let metric = dirty > 0 ? "\(dirty)" : (confirmedClean ? "0" : "—")
         return HomeCard(
             title: "Git",
             systemImage: "point.3.connected.trianglepath.dotted",
             hue: DesignTokens.git.base,
-            metric: "\(dirty)",
+            metric: metric,
             metricLabel: dirty == 1 ? "dirty file" : "dirty files",
             trailing: store.selectedGitBranch,
             action: { store.openModuleTab(.git) }
         ) {
-            if rows.isEmpty {
-                HomeCardEmpty(dirty == 0 ? "Working tree clean" : "No file details")
-            } else {
+            if !rows.isEmpty {
                 ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
                     HomeCardLine(text: row.path, monoBadge: row.code.trimmingCharacters(in: .whitespaces))
                 }
+            } else if confirmedClean {
+                HomeCardEmpty("Working tree clean")
+            } else {
+                HomeCardEmpty("Git status not loaded yet")
             }
         }
     }
@@ -244,8 +256,10 @@ private struct HomeCard<Body: View>: View {
             .background(DesignTokens.Glass.raised.opacity(0.55),
                         in: RoundedRectangle(cornerRadius: DesignTokens.Radius.lg))
             .overlay(
+                // Neutral hover edge — chroma stays in the icon/content, never the
+                // chrome surface (DESIGN.md). Hover lift is carried by the shadow.
                 RoundedRectangle(cornerRadius: DesignTokens.Radius.lg)
-                    .stroke(hovering ? Color(hue).opacity(0.5) : DesignTokens.Glass.hairline, lineWidth: 1)
+                    .stroke(hovering ? DesignTokens.Glass.hairlineStrong : DesignTokens.Glass.hairline, lineWidth: 1)
             )
             .shadow(color: DesignTokens.Shadow.cardColor,
                     radius: hovering ? DesignTokens.Shadow.cardRadius : 8, y: 6)

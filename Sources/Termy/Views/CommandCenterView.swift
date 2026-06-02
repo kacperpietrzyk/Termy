@@ -28,7 +28,7 @@ struct CommandCenterView: View {
                             .foregroundStyle(.secondary)
                             .padding(.horizontal, 7)
                             .padding(.vertical, 4)
-                            .background(.quaternary, in: RoundedRectangle(cornerRadius: 5))
+                            .background(DesignTokens.Glass.fillChip, in: RoundedRectangle(cornerRadius: DesignTokens.Radius.sm))
                     }
 
                     HStack(spacing: 10) {
@@ -76,12 +76,16 @@ struct CommandCenterView: View {
                 }
             }
             .frame(width: 700)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+            .background {
+                GlassMaterial(material: .hudWindow)
+                    .overlay(DesignTokens.Glass.base.opacity(0.82))
+                    .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.panel))
+            }
             .overlay(
-                RoundedRectangle(cornerRadius: 8)
-                    .stroke(TermyDesign.border, lineWidth: 1)
+                RoundedRectangle(cornerRadius: DesignTokens.Radius.panel)
+                    .stroke(DesignTokens.Glass.hairline, lineWidth: 1)
             )
-            .shadow(color: .black.opacity(0.28), radius: 34, y: 18)
+            .shadow(color: DesignTokens.Shadow.popColor, radius: DesignTokens.Shadow.popRadius, y: DesignTokens.Shadow.popY)
 
             Spacer()
         }
@@ -126,7 +130,7 @@ private struct CommandCenterItemRow: View {
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 6)
                     .padding(.vertical, 3)
-                    .background(.quaternary, in: RoundedRectangle(cornerRadius: 5))
+                    .background(DesignTokens.Glass.fillChip, in: RoundedRectangle(cornerRadius: DesignTokens.Radius.sm))
             }
         }
         .padding(.vertical, 7)

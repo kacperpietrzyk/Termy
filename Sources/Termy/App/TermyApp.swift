@@ -177,10 +177,11 @@ struct TermyApp: App {
                 .disabled(!store.appModel.update.canCheckForUpdates)
             }
 
-            // v3: Settings is an in-shell module tab (DESIGN.md §3.2 orb), not a
-            // separate macOS Settings window. Route ⌘, to the Settings tab so the
-            // user lands inside the shell (with the tab bar / Desktop back) instead
-            // of a chrome-less standalone window they can't navigate out of.
+            // Settings is an in-shell module reached via the fixed glass rail
+            // (DESIGN.md "Raycast v2" redesign), not a separate macOS Settings
+            // window. Route ⌘, to openModuleTab(.settings) so the user stays inside
+            // the shell — the sidebar still navigates back to Home — instead of a
+            // chrome-less standalone window they can't navigate out of.
             CommandGroup(replacing: .appSettings) {
                 Button("Settings…") { store.openModuleTab(.settings) }
                     .keyboardShortcut(",", modifiers: .command)

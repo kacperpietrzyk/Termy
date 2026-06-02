@@ -56,11 +56,22 @@ enum DesktopModel {
             }
         }
         guard !spans.isEmpty else {
-            return [.init(text: "All clear — pick a module below, or press ⌘K to jump.",
+            // Neutral fallback. Never assert "all clear" here: `gitDirty == 0`
+            // also covers the unqueried sentinel and not-a-repo/error states, so a
+            // positive cleanliness claim would be fabricated (never-fabricate rule).
+            return [.init(text: "Pick a module below, or press ⌘K to jump.",
                           accent: .plain)]
         }
         spans.append(.init(text: ".", accent: .plain))
         return spans
+    }
+
+    /// The literal marker `TermyStore.format()` emits only after a successful
+    /// `git status --short` that returned zero entries. Distinguishes a genuinely
+    /// clean tree from the unqueried sentinel and from error/not-a-repo text (both
+    /// of which also yield `gitDirtyCount == 0`). Only this should render "clean".
+    static func gitIsConfirmedClean(_ status: String) -> Bool {
+        status == "Working tree clean."
     }
 
     // MARK: §3.3 git card / Git badge — porcelain parsing (pure).

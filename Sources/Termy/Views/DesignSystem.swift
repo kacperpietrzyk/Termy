@@ -114,9 +114,9 @@ struct TermyPill: View {
     }
 }
 
-/// Keyboard-hint chip (`styles.css` `.btn kbd` / `.sub-rail-search kbd`): dark
-/// bg0 fill, fg3 glyph, hair border, radius 4. Same on emphasized buttons —
-/// the handoff uses one kbd treatment everywhere.
+/// Keyboard-hint keycap (DESIGN.md): a flat, thin-bordered rounded square —
+/// translucent `fill-chip` fill, `fg3` glyph, light hairline border, radius 6
+/// (`--radius-keycap`). No pressable bevel.
 struct TermyKbd: View {
     let key: String
     var size: CGFloat = 11
@@ -127,8 +127,9 @@ struct TermyKbd: View {
             .font(Typography.ui(size, weight: .medium))
             .foregroundStyle(Color(DesignTokens.fg3))
             .padding(.horizontal, 5).padding(.vertical, 1)
-            .background(Color(DesignTokens.bg0), in: RoundedRectangle(cornerRadius: 4))
-            .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color(DesignTokens.hair), lineWidth: 1))
+            .background(DesignTokens.Glass.fillChip, in: RoundedRectangle(cornerRadius: DesignTokens.Radius.sm))
+            .overlay(RoundedRectangle(cornerRadius: DesignTokens.Radius.sm)
+                .stroke(DesignTokens.Glass.hairlineStrong, lineWidth: 1))
     }
 }
 

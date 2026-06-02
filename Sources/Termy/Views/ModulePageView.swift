@@ -10,7 +10,7 @@ struct ModulePageView<Content: View, Actions: View>: View {
     @ObservedObject var store: TermyStore
     let module: ShellNavigationModel.Module
     var alert: Bool = false
-    /// Optional mono third segment (DESIGN.md §4.1 trail): `Desktop / Shell / termy`.
+    /// Optional mono third breadcrumb segment, e.g. `Home / Shell / termy`.
     /// Omitted when nil/empty so a blank `/` segment never renders.
     var trailingCrumb: String? = nil
     @ViewBuilder var actions: () -> Actions
