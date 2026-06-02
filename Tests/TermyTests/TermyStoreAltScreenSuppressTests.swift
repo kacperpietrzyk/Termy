@@ -42,4 +42,52 @@ final class TermyStoreAltScreenSuppressTests: XCTestCase {
         XCTAssertTrue(store.sessions[0].lines.map(\.text).contains("hello"),
                       "plain output (no alt-screen) is captured normally")
     }
+
+    // MARK: - End-to-end ordering (residue fix, PRODUCT_DIAGNOSIS §9)
+
+    /// Drive the store exactly as the fixed `dataReceived` does: for each PTY
+    /// slice, run `AltScreenTapDecision`, arm alt-state on a change, THEN ingest.
+    /// The `claude` exit timeline is: enter → repaint → exit → orphan-fragment
+    /// slice. Because the exit slice reports the change (arming suppression)
+    /// BEFORE the orphan slice is ingested, the `78`-style residue is swallowed.
+    func test_altExit_armsSuppression_beforeOrphanSlice_isCaptured() {
+        let (store, id) = makeStore()
+        let before = store.sessions[0].lines.count
+
+        // (was, now, outputThisSliceWouldCarry)
+        let slices: [(Bool, Bool, String?)] = [
+            (false, true, nil),         // ESC[?1049h — enter alt (dropped)
+            (true, true, nil),          // TUI repaint (dropped)
+            (true, false, nil),         // ESC[?1049l — EXIT (dropped, but reported)
+            (false, false, "78"),       // orphaned escape tail — ingestable, must be suppressed
+        ]
+        for (was, now, carried) in slices {
+            let d = AltScreenTapDecision.decide(wasAlternate: was, nowAlternate: now)
+            if d.altScreenChanged { store.setTerminalAltScreen(now, for: id) }
+            if d.ingest, let carried {
+                store.ingestShellIntegrationEvents([.output(carried)], for: id)
+            }
+        }
+        XCTAssertEqual(store.sessions[0].lines.count, before,
+                       "alt-exit residue is suppressed — arming preceded the orphan ingest")
+
+        // A fresh command resumes capture.
+        store.ingestShellIntegrationEvents([.commandStarted("ls")], for: id)
+        store.ingestShellIntegrationEvents([.output("real")], for: id)
+        XCTAssertTrue(store.sessions[0].lines.map(\.text).contains("real"))
+        XCTAssertFalse(store.sessions[0].lines.map(\.text).contains("78"))
+    }
+
+    /// Documents the defect the fix removes: if the orphan slice is ingested
+    /// BEFORE the alt-exit arms suppression (the old render-callback lag), the
+    /// residue leaks into the block. The fix makes this ordering impossible by
+    /// deriving the arm + ingest from one synchronous per-slice decision.
+    func test_laggingArm_leaksResidue_regressionWitness() {
+        let (store, id) = makeStore()
+        store.setTerminalAltScreen(true, for: id)                  // entered alt
+        store.ingestShellIntegrationEvents([.output("78")], for: id)  // orphan ingested FIRST (lag)
+        store.setTerminalAltScreen(false, for: id)                 // render callback arms LATE
+        XCTAssertTrue(store.sessions[0].lines.map(\.text).contains("78"),
+                      "with lagging arm the residue leaks — exactly what the synchronous fix prevents")
+    }
 }

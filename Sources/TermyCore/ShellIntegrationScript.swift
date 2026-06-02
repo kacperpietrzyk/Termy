@@ -41,6 +41,13 @@ public enum ShellIntegrationScript {
         # SwiftTerm prompt reads the same as the rendered command-block cards.
         # `❯` replaces `%#` (purely visual; OSC 133 C/D marks drive parsing).
         PROMPT='%n@%m:%~ ❯ '
+        # Block-model fix: zsh's PROMPT_SP "preserve partial line" feature always
+        # emits PROMPT_EOL_MARK (`%`) + pad + CR before each prompt. On a raw
+        # terminal the prompt overwrites it, but Termy's command-block tap captures
+        # the `%` literally as trailing output of the just-finished block (the CR +
+        # overwrite lands in the next block). Disable it so blocks stay clean.
+        unsetopt PROMPT_SP 2>/dev/null
+        PROMPT_EOL_MARK=''
         # FB-1: Warp-style command syntax highlighting via vendored zsh-syntax-highlighting
         # (zsh-only). Styles derive from the active Termy theme. The source is guarded so a
         # missing resource never blocks shell start (fail-open).

@@ -147,6 +147,63 @@ final class TermyStoreCompletionSidecarTests: XCTestCase {
         XCTAssertEqual(store.terminalMenuAcceptedSuffix(for: sid), "README.md")
     }
 
+    // MARK: - 3c. B4 path completion: `cd Projects/` → `cd Projects/Nexus`
+
+    /// The reported bug: typing `cd Projects/`, selecting `Nexus`, and pressing
+    /// Enter collapsed back to `cd Projects`. Root cause was the sidecar reporting
+    /// `replacement = "Nexus"` (bare segment) while the accept logic matches the
+    /// replacement against the whitespace token `Projects/`. The sidecar fix now
+    /// reports the FULL word `Projects/Nexus`; the existing accept logic then
+    /// completes correctly with NO Swift change.
+    func test_acceptSuffix_pathCompletion_appendsAfterSlash() {
+        let store = makeStore()
+        let sid = store.testAddRawPtySession(cwd: "/tmp")
+        store.testMarkDebounceElapsed(sid)
+        store.ingestShellIntegrationEvents(
+            [.inputBufferChanged(text: "cd Projects/", cursor: 12, length: 12)], for: sid)
+        // Post-fix candidate: title is the bare segment (menu display), replacement
+        // is the full inserted word.
+        store.applySidecarEventForTesting(.result(id: 1, items: [
+            CompletionCandidate(title: "Nexus", replacement: "Projects/Nexus", kind: .directory)
+        ]), sessionID: sid)
+        XCTAssertTrue(store.testMenuIsOpen(for: sid))
+        store.terminalMenuMoveSelection(for: sid, by: 1)   // -1 → row 0 ("Nexus")
+        // Suffix appended after the slash → `cd Projects/Nexus`, NOT a collapse.
+        XCTAssertEqual(store.terminalMenuAcceptedSuffix(for: sid), "Nexus")
+    }
+
+    /// Same fix on the inline ghost path. Uses a synthetic path that cannot match
+    /// real on-disk history (which would otherwise win and suppress the sidecar
+    /// ghost) so the test isolates the path-segment suffix logic.
+    func test_sidecarGhost_pathCompletion_suffixAfterSlash() {
+        let store = makeStore()
+        let sid = store.testAddRawPtySession(cwd: "/tmp")
+        store.testSetInputBuffer(sid, text: "cd Xyzzy42/", cursor: 11)
+        store.applySidecarEventForTesting(.result(id: 1, items: [
+            CompletionCandidate(title: "Plugh", replacement: "Xyzzy42/Plugh", kind: .directory)
+        ]), sessionID: sid)
+        XCTAssertFalse(store.testMenuIsOpen(for: sid))
+        XCTAssertEqual(store.terminalSidecarGhost(for: sid), "Plugh",
+            "Ghost completes the path segment after the slash.")
+    }
+
+    /// Regression guard documenting WHY the bug happened: a bare-segment
+    /// replacement (the pre-fix sidecar output) yields no usable suffix, so
+    /// Enter/Tab silently failed to insert `/Nexus`.
+    func test_acceptSuffix_bareSegmentReplacement_failsToComplete() {
+        let store = makeStore()
+        let sid = store.testAddRawPtySession(cwd: "/tmp")
+        store.testMarkDebounceElapsed(sid)
+        store.ingestShellIntegrationEvents(
+            [.inputBufferChanged(text: "cd Projects/", cursor: 12, length: 12)], for: sid)
+        store.applySidecarEventForTesting(.result(id: 1, items: [
+            CompletionCandidate(title: "Nexus", replacement: "Nexus", kind: .directory)  // pre-fix shape
+        ]), sessionID: sid)
+        store.terminalMenuMoveSelection(for: sid, by: 1)
+        XCTAssertNil(store.terminalMenuAcceptedSuffix(for: sid),
+            "Bare-segment replacement cannot match the `Projects/` token — the original defect.")
+    }
+
     func test_lastWhitespaceToken() {
         XCTAssertEqual(TermyStore.lastWhitespaceToken("git s"), "s")
         XCTAssertEqual(TermyStore.lastWhitespaceToken("git status "), "")

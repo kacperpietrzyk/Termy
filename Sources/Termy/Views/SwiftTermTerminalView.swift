@@ -129,13 +129,16 @@ struct SwiftTermTerminalView: NSViewRepresentable {
         }
         view.installInlineAcceptMonitor()   // nil-guarded internally
         view.notifyUpdateChanges = true
-        view.onRenderChanged = { [weak storeRef, weak view] in
+        view.onRenderChanged = { [weak storeRef] in
             storeRef?.terminalRenderChanged(for: sessionID)
-            // v3 block terminal: keep the alt-screen flag in sync so the block
-            // view hands the whole area to a TUI (vim/htop) and back.
-            if let view {
-                storeRef?.setTerminalAltScreen(view.getTerminal().isCurrentBufferAlternate, for: sessionID)
-            }
+        }
+        // v3 block terminal: keep the alt-screen flag in sync so the block view
+        // hands the whole area to a TUI (vim/htop) and back. Driven from
+        // `dataReceived` (synchronous with the PTY bytes) rather than the render
+        // callback, so the alt-exit output suppression arms before the next
+        // slice is ingested (residue fix — see AltScreenTapDecision).
+        view.onAltScreenChanged = { [weak storeRef] active in
+            storeRef?.setTerminalAltScreen(active, for: sessionID)
         }
         // v3 block terminal: render-only clear of THIS view's emulator (NOT the PTY).
         storeRef.registerTerminalLocalClear({ [weak view] in
@@ -333,18 +336,29 @@ final class TappedLocalProcessTerminalView: LocalProcessTerminalView {
     /// Verified verbatim against SwiftTerm 1.13.0:
     ///   MacLocalTerminalView.swift:183
     ///     open func dataReceived(slice: ArraySlice<UInt8>) { feed (byteArray: slice) }
+    /// Synchronous alt-screen state notification, wired to
+    /// `store.setTerminalAltScreen`. Pushed from `dataReceived` (NOT the render
+    /// callback) so the store's alt-exit output-suppression window opens in the
+    /// same call that gates ingest — see `AltScreenTapDecision`.
+    var onAltScreenChanged: ((Bool) -> Void)?
+
     override func dataReceived(slice: ArraySlice<UInt8>) {
-        // B2: never ingest ALTERNATE-SCREEN output into the Warp-style block
-        // transcript. A full-screen TUI (vim/htop/`claude`) repaints the same
-        // cells many times; the block renderer strips CSI/OSC positioning but
-        // keeps the text between, so those frames concatenate into garbled
-        // overlapping lines that surface after the program exits. Sample the
-        // terminal's own alt-screen flag BEFORE and AFTER `super` so both the
-        // enter chunk (`ESC[?1049h`) and the exit chunk (final TUI frame +
-        // `ESC[?1049l`) are skipped — only genuine shell output is captured.
+        // B2/residue: never ingest ALTERNATE-SCREEN output into the Warp-style
+        // block transcript. A full-screen TUI (vim/htop/`claude`) repaints the
+        // same cells many times; capturing those frames produces garbled
+        // overlapping lines (`787878%`) after the program exits. Sample the
+        // terminal's own alt-screen flag BEFORE and AFTER `super`, then derive
+        // ingest + alt-change from the SAME sample so the alt-exit suppression
+        // arms synchronously with the bytes (the render callback armed it too
+        // late — PRODUCT_DIAGNOSIS §9).
         let wasAlternate = getTerminal().isCurrentBufferAlternate
         super.dataReceived(slice: slice)   // SwiftTerm renders, unchanged
-        if !wasAlternate && !getTerminal().isCurrentBufferAlternate {
+        let nowAlternate = getTerminal().isCurrentBufferAlternate
+        let decision = AltScreenTapDecision.decide(wasAlternate: wasAlternate, nowAlternate: nowAlternate)
+        if decision.altScreenChanged {
+            onAltScreenChanged?(nowAlternate)   // arm suppression BEFORE any later ingest
+        }
+        if decision.ingest {
             streamBridge?.ingest(slice)    // observe-only, non-alt output only
         }
     }
