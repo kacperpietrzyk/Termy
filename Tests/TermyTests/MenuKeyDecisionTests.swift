@@ -17,12 +17,14 @@ final class MenuKeyDecisionTests: XCTestCase {
         keyCode: UInt16,
         modifiers: NSEvent.ModifierFlags = [],
         menuOpen: Bool = false,
+        hasSelection: Bool = false,
         isAltScreen: Bool = false
     ) -> MenuKeyDecision {
         MenuKeyDecision.decide(
             keyCode: keyCode,
             modifiers: modifiers,
             menuOpen: menuOpen,
+            hasSelection: hasSelection,
             isAltScreen: isAltScreen
         )
     }
@@ -75,16 +77,38 @@ final class MenuKeyDecisionTests: XCTestCase {
         )
     }
 
-    func test_open_bareTab_accept() {
-        XCTAssertEqual(decide(keyCode: kTab, menuOpen: true), .accept)
+    // B4 (Warp parity): being OPEN no longer means accept-on-Return. With
+    // NOTHING selected (the default after auto-open), Return submits the typed
+    // line verbatim and → accepts the inline ghost — neither hijacks the menu.
+    // Tab always ENTERS the list (never accepts). Only after an explicit
+    // selection (↓/Tab) do Return / → accept the highlighted candidate.
+
+    func test_open_noSelection_bareTab_entersList() {
+        // Tab enters the list (move forward to row 0), never accepts.
+        XCTAssertEqual(decide(keyCode: kTab, menuOpen: true, hasSelection: false), .move(by: 1))
     }
 
-    func test_open_return_accept() {
-        XCTAssertEqual(decide(keyCode: kReturn, menuOpen: true), .accept)
+    func test_open_hasSelection_bareTab_entersList() {
+        // Tab keeps navigating even with a selection (Warp: Tab != accept).
+        XCTAssertEqual(decide(keyCode: kTab, menuOpen: true, hasSelection: true), .move(by: 1))
     }
 
-    func test_open_rightArrow_accept() {
-        XCTAssertEqual(decide(keyCode: kRight, menuOpen: true), .accept)
+    func test_open_noSelection_return_passthrough() {
+        // THE B4 FIX: Return with nothing selected runs the typed text verbatim.
+        XCTAssertEqual(decide(keyCode: kReturn, menuOpen: true, hasSelection: false), .passthrough)
+    }
+
+    func test_open_hasSelection_return_accept() {
+        XCTAssertEqual(decide(keyCode: kReturn, menuOpen: true, hasSelection: true), .accept)
+    }
+
+    func test_open_noSelection_rightArrow_passthrough() {
+        // → with nothing selected falls through to F-1 inline-ghost accept.
+        XCTAssertEqual(decide(keyCode: kRight, menuOpen: true, hasSelection: false), .passthrough)
+    }
+
+    func test_open_hasSelection_rightArrow_accept() {
+        XCTAssertEqual(decide(keyCode: kRight, menuOpen: true, hasSelection: true), .accept)
     }
 
     func test_open_esc_cancel() {

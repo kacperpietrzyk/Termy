@@ -49,7 +49,8 @@ final class TermyStoreMenuStateTests: XCTestCase {
         XCTAssertTrue(store.terminalMenuOpen(for: id))
         let snap = try? XCTUnwrap(store.terminalMenuSnapshot(for: id))
         XCTAssertGreaterThanOrEqual(snap?.items.count ?? 0, 1)
-        XCTAssertEqual(snap?.selection, 0)
+        // B4 (Warp parity): the menu opens with NOTHING selected (sentinel -1).
+        XCTAssertEqual(snap?.selection, -1)
     }
 
     func test_open_twice_idempotent() {
@@ -60,7 +61,7 @@ final class TermyStoreMenuStateTests: XCTestCase {
         let firstCount = store.terminalMenuSnapshot(for: id)?.items.count ?? 0
         _ = store.terminalMenuOpen(for: id)
         XCTAssertEqual(store.terminalMenuSnapshot(for: id)?.items.count, firstCount)
-        XCTAssertEqual(store.terminalMenuSnapshot(for: id)?.selection, 0)
+        XCTAssertEqual(store.terminalMenuSnapshot(for: id)?.selection, -1)
     }
 
     func test_moveSelection_wrapsAtEnds() {
@@ -69,14 +70,29 @@ final class TermyStoreMenuStateTests: XCTestCase {
         XCTAssertTrue(store.terminalMenuOpen(for: id))
         let count = store.terminalMenuSnapshot(for: id)?.items.count ?? 0
         XCTAssertGreaterThanOrEqual(count, 2)
+        // B4 (Warp parity): opens with nothing selected.
+        XCTAssertEqual(store.terminalMenuSnapshot(for: id)?.selection, -1)
 
-        // Jump from 0 to the last item in one step.
+        // First forward move ENTERS the list at row 0 (delta magnitude ignored
+        // when coming from the -1 sentinel).
         store.terminalMenuMoveSelection(for: id, by: count - 1)
+        XCTAssertEqual(store.terminalMenuSnapshot(for: id)?.selection, 0)
+        // Wrap backward from 0 → last item.
+        store.terminalMenuMoveSelection(for: id, by: -1)
         XCTAssertEqual(store.terminalMenuSnapshot(for: id)?.selection, count - 1)
-        // Wrap forward: last item + 1 → 0.
+        // Wrap forward from last item → 0.
         store.terminalMenuMoveSelection(for: id, by: 1)
         XCTAssertEqual(store.terminalMenuSnapshot(for: id)?.selection, 0)
-        // Wrap backward: 0 - 1 → last item.
+    }
+
+    func test_moveSelection_fromNone_backward_entersAtLast() {
+        let (store, id) = makeStore()
+        injectBuffer(store, id, "c")
+        XCTAssertTrue(store.terminalMenuOpen(for: id))
+        let count = store.terminalMenuSnapshot(for: id)?.items.count ?? 0
+        XCTAssertGreaterThanOrEqual(count, 2)
+        // From the -1 sentinel, a backward move (↑ / Shift-Tab) enters at the
+        // last row.
         store.terminalMenuMoveSelection(for: id, by: -1)
         XCTAssertEqual(store.terminalMenuSnapshot(for: id)?.selection, count - 1)
     }
@@ -120,7 +136,21 @@ extension TermyStoreMenuStateTests {
         injectBuffer(store, id, "l")  // command-name branch; "l" hits "ls" (hasPrefix)
                                        // and "tail" (substring). Sorted hasPrefix-first → "ls" at 0.
         XCTAssertTrue(store.terminalMenuOpen(for: id))
+        // B4: must explicitly enter the list (↓/Tab) before accept yields anything.
+        store.terminalMenuMoveSelection(for: id, by: 1)   // -1 → row 0 ("ls")
         XCTAssertEqual(store.terminalMenuAcceptedSuffix(for: id), "s")
+    }
+
+    func test_accept_noExplicitSelection_returnsNil_verbatim() {
+        // THE B4 GUARANTEE (model-level): after auto-open with nothing selected,
+        // Enter must NOT inject any suffix — the typed text runs verbatim. The
+        // accept handler returns nil so the NSEvent monitor forwards Return to zsh.
+        let (store, id) = makeStore()
+        injectBuffer(store, id, "l")
+        XCTAssertTrue(store.terminalMenuOpen(for: id))
+        XCTAssertEqual(store.terminalMenuSnapshot(for: id)?.selection, -1)
+        XCTAssertNil(store.terminalMenuAcceptedSuffix(for: id),
+                     "With nothing selected, accept must yield nil so Enter runs the typed text verbatim.")
     }
 
     func test_accept_replaceLastToken_returnsTailOnly() throws {
@@ -129,6 +159,7 @@ extension TermyStoreMenuStateTests {
         guard store.terminalMenuOpen(for: id) else {
             throw XCTSkip("Fixture does not provide a flag candidate for the chosen prefix — adapt the buffer.")
         }
+        store.terminalMenuMoveSelection(for: id, by: 1)   // B4: enter list (-1 → row 0)
         let suffix = store.terminalMenuAcceptedSuffix(for: id)
         XCTAssertNotNil(suffix)
         XCTAssertFalse(suffix?.contains(" ") ?? true,
@@ -142,6 +173,7 @@ extension TermyStoreMenuStateTests {
         // exact candidate so suffix is the empty string.
         injectBuffer(store, id, "git")
         XCTAssertTrue(store.terminalMenuOpen(for: id))
+        store.terminalMenuMoveSelection(for: id, by: 1)   // B4: enter list (-1 → row 0)
         XCTAssertEqual(store.terminalMenuAcceptedSuffix(for: id), "")
     }
 
@@ -182,12 +214,28 @@ extension TermyStoreMenuStateTests {
         injectBuffer(store, id, "g")    // 2 candidates: git[0], grep[1]
         _ = store.terminalMenuOpen(for: id)
         let initial = store.terminalMenuSnapshot(for: id)?.items.count ?? 0
-        store.terminalMenuMoveSelection(for: id, by: initial - 1)  // walk to last (index 1)
-        injectBuffer(store, id, "gr")   // narrows to 1; selection clamped from 1 → 0
+        // B4: first move enters the list at row 0; walk forward to the last row.
+        store.terminalMenuMoveSelection(for: id, by: 1)             // -1 → row 0
+        store.terminalMenuMoveSelection(for: id, by: initial - 1)  // walk to last
+        XCTAssertEqual(store.terminalMenuSnapshot(for: id)?.selection, initial - 1)
+        injectBuffer(store, id, "gr")   // narrows to 1; selection clamped from last → 0
         let snap = store.terminalMenuSnapshot(for: id)
         XCTAssertNotNil(snap)
         XCTAssertGreaterThanOrEqual(snap?.selection ?? -1, 0)
         XCTAssertLessThan(snap?.selection ?? Int.max, snap?.items.count ?? 0)
+    }
+
+    /// B4 regression: the "nothing selected" sentinel must survive a live-narrow
+    /// refresh — a naive max(0,…) clamp would reset -1 → 0 mid-typing and
+    /// reintroduce the hijack.
+    func test_refresh_typing_preservesNoSelectionSentinel() {
+        let (store, id) = makeStore()
+        injectBuffer(store, id, "g")
+        _ = store.terminalMenuOpen(for: id)
+        XCTAssertEqual(store.terminalMenuSnapshot(for: id)?.selection, -1)
+        injectBuffer(store, id, "gr")   // narrows but user never entered the list
+        XCTAssertEqual(store.terminalMenuSnapshot(for: id)?.selection, -1,
+                       "Live-narrow must preserve the -1 sentinel; a 0 here would re-hijack Enter.")
     }
 
     func test_refresh_typing_toEmpty_closesMenu() {

@@ -4,6 +4,11 @@ import TermyCore
 import TermySync
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    /// Invoked by the File›Close menu item (⌘W) so it closes the active Termy
+    /// session/tab instead of the AppKit window. Registered by the WindowGroup once
+    /// the store exists. See `repointCloseMenuItem()`.
+    var onCloseSession: (() -> Void)?
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
         if CaptureMode.isActive {
@@ -16,6 +21,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             NSApp.activate(ignoringOtherApps: true)
         }
         NativeRemoteNotificationCenter.shared.requestAuthorization()
+    }
+
+    /// SwiftUI auto-generates a File›Close item bound to ⌘W (`performClose:`) that,
+    /// because Termy is a single-window app, closes the only window and quits. The app
+    /// wants ⌘W to close the active *session* (Navigate › Close Session), but SwiftUI
+    /// dedups duplicate ⌘W bindings and the system Close wins, suppressing the custom
+    /// one. No `CommandGroupPlacement` owns File›Close, so we can't replace it from
+    /// SwiftUI. Instead, repoint the AppKit menu item: keep its ⌘W shortcut but route
+    /// its action to `onCloseSession`. ⌘Q (Quit) is untouched.
+    @objc func performCloseSession(_ sender: Any?) {
+        onCloseSession?()
+    }
+
+    /// Find the File›Close item (action `performClose:`, ⌘W) and repoint it to
+    /// `performCloseSession:`. Idempotent. Deferred to the next run-loop tick because
+    /// the menu bar is populated by SwiftUI after `applicationDidFinishLaunching`.
+    func repointCloseMenuItem() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self, let mainMenu = NSApp.mainMenu else { return }
+            for topItem in mainMenu.items {
+                guard let submenu = topItem.submenu else { continue }
+                for item in submenu.items
+                where item.action == #selector(NSWindow.performClose(_:))
+                    && item.keyEquivalent == "w"
+                    && item.keyEquivalentModifierMask == .command {
+                    item.target = self
+                    item.action = #selector(AppDelegate.performCloseSession(_:))
+                }
+            }
+        }
     }
 }
 
@@ -38,6 +73,8 @@ struct TermyApp: App {
                     NativeRemoteNotificationCenter.shared.onAgentNotificationActivated = { [store] sessionID in
                         store.focusAgentSession(sessionID)
                     }
+                    appDelegate.onCloseSession = { [store] in store.closeActiveTab() }
+                    appDelegate.repointCloseMenuItem()
                     privateSyncBackgroundScheduler.register(store: store)
                     privateSyncBackgroundScheduler.scheduleAppRefresh()
                     store.startPrivateSyncAppLaunch()

@@ -124,4 +124,52 @@ final class CompletionSidecarTransportTests: XCTestCase {
     func test_mapZshTagToKind_unknown_fallsBackToCommand() {
         XCTAssertEqual(CompletionSidecarTransport.kindFromZshTag("anything-else"), .command)
     }
+
+    // ----- B3: suppress the broad PATH-binary fallback group -----
+
+    func test_decodeTSVBody_gitSubcommands_dropsAllCommandsFallback() {
+        // Mirrors the real `_git` sidecar batch: a curated `common-commands`
+        // group (porcelain subcommands) plus a broad `all-commands` fallback
+        // (every git-* PATH executable). The interactive zsh menu shows the
+        // curated group on the first Tab; the sidecar's compadd shadow captures
+        // BOTH in one pass, so we must suppress the broad group (B3).
+        let body = """
+        common-commands\tstatus\tstatus\tShow the working tree status
+        common-commands\tadd\tadd\tAdd file contents to the index
+        common-commands\tcommit\tcommit\tRecord changes to the repository
+        all-commands\tgit-cvsserver\tgit-cvsserver\t
+        all-commands\tgit-upload-pack\tgit-upload-pack\t
+        all-commands\tgit-shell\tgit-shell\t
+        """ + "\n"
+        let items = CompletionSidecarTransport.decodeTSVBody(body)
+        let titles = Set(items.map { $0.title })
+        XCTAssertTrue(titles.contains("status"))
+        XCTAssertTrue(titles.contains("add"))
+        XCTAssertTrue(titles.contains("commit"))
+        XCTAssertFalse(titles.contains("git-cvsserver"),
+            "B3: broad all-commands PATH binaries must be suppressed when curated subcommands are present.")
+        XCTAssertFalse(titles.contains("git-upload-pack"))
+        XCTAssertFalse(titles.contains("git-shell"))
+    }
+
+    func test_decodeTSVBody_allCommandsAlone_isKept() {
+        // When ONLY the broad group fired (no curated group in the batch), the
+        // all-commands entries are all the user has — keep them rather than
+        // returning an empty menu.
+        let body = """
+        all-commands\tgit-cvsserver\tgit-cvsserver\t
+        all-commands\tgit-upload-pack\tgit-upload-pack\t
+        """ + "\n"
+        let items = CompletionSidecarTransport.decodeTSVBody(body)
+        XCTAssertEqual(items.count, 2)
+        XCTAssertTrue(items.contains { $0.title == "git-cvsserver" })
+    }
+
+    func test_decodeTSVBody_commonCommandsAlone_unaffected() {
+        // No broad group present → curated group passes through untouched.
+        let body = "common-commands\tstatus\tstatus\tShow the working tree status\n"
+        let items = CompletionSidecarTransport.decodeTSVBody(body)
+        XCTAssertEqual(items.count, 1)
+        XCTAssertEqual(items[0].title, "status")
+    }
 }

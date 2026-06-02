@@ -174,7 +174,7 @@ private struct FileExplorerPanel: View {
             }
         }
         .buttonStyle(TermyCompactButtonStyle())
-        .onAppear { store.refreshFiles() }
+        .onAppear { store.refreshFilesAsync() }
         .sheet(isPresented: $showSFTP) {
             if let profile = sshProfile { FileSFTPSheet(store: store, profile: profile) { showSFTP = false } }
         }
@@ -192,7 +192,7 @@ private struct FileExplorerPanel: View {
 
             Button { showNewItem = true } label: { Label("New", systemImage: "plus") }
                 .popover(isPresented: $showNewItem, arrowEdge: .bottom) { newItemPopover }
-            Button { store.refreshFiles() } label: { Image(systemName: "arrow.clockwise") }.help("Refresh")
+            Button { store.refreshFilesAsync() } label: { Image(systemName: "arrow.clockwise") }.help("Refresh")
             Spacer()
             if sshProfile != nil {
                 Button { showSFTP = true } label: { Label("SFTP", systemImage: "externaldrive.connected.to.line.below") }

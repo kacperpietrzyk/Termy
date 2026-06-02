@@ -112,6 +112,9 @@ struct SwiftTermTerminalView: NSViewRepresentable {
         view.menuOpenSnapshot = { [weak storeRef] in
             storeRef?.terminalMenuSnapshot(for: sessionID) != nil
         }
+        view.menuHasSelectionSnapshot = { [weak storeRef] in
+            (storeRef?.terminalMenuSnapshot(for: sessionID)?.selection ?? -1) >= 0
+        }
         view.menuOpenHandler = { [weak storeRef] in
             storeRef?.terminalMenuOpen(for: sessionID) ?? false
         }
@@ -210,6 +213,7 @@ enum MenuKeyDecision: Equatable {
         keyCode: UInt16,
         modifiers: NSEvent.ModifierFlags,
         menuOpen: Bool,
+        hasSelection: Bool,
         isAltScreen: Bool
     ) -> MenuKeyDecision {
         // TUI apps never host the menu (no OSC 133 T fires in alt-screen) —
@@ -222,11 +226,22 @@ enum MenuKeyDecision: Equatable {
 
         if menuOpen {
             // Modal subset while menu is open.
+            //
+            // B4 (Warp parity): being OPEN no longer means "accept on Return".
+            // The menu is "be aggressive in offering, never in hijacking": with
+            // NOTHING selected (the default), Return submits the typed line
+            // verbatim and → accepts the inline ghost — neither touches the
+            // menu. Only after the user explicitly enters the list (↓ / Tab)
+            // do Return / → accept the highlighted candidate.
             if bare {
                 switch keyCode {
-                case 126: return .move(by: -1)   // Up
-                case 125: return .move(by: 1)    // Down
-                case 48, 124, 36: return .accept // Tab / Right / Return
+                case 126: return .move(by: -1)   // Up — enter list / move up
+                case 125: return .move(by: 1)    // Down — enter list / move down
+                case 48: return .move(by: 1)     // Tab — ENTER/advance list (never accept)
+                case 124, 36:                     // Right / Return
+                    // Accept ONLY when an explicit selection exists; otherwise
+                    // pass through (Return → verbatim submit, → → F-1 ghost).
+                    return hasSelection ? .accept : .passthrough
                 case 53: return .cancel           // Esc
                 default: return .passthrough     // live-narrow path
                 }
@@ -277,6 +292,12 @@ final class TappedLocalProcessTerminalView: LocalProcessTerminalView {
     /// monitor needs this BEFORE deciding whether to swallow keys. Wired from
     /// `makeNSView` to `store.terminalMenuSnapshot(for: sessionID) != nil`.
     var menuOpenSnapshot: (() -> Bool)?
+
+    /// B4: synchronous "does the open menu have an EXPLICIT selection?" lookup
+    /// (selection >= 0). Wired to `store.terminalMenuSnapshot(...).selection >= 0`.
+    /// `decide` needs it to distinguish "nothing selected" (Return → verbatim
+    /// submit) from "row N selected" (Return → accept).
+    var menuHasSelectionSnapshot: (() -> Bool)?
 
     /// F-3: returns `true` if the menu opened (the engine had ≥1 candidate).
     /// Monitor swallows the event when `true`; passes through (zsh native Tab)
@@ -355,6 +376,7 @@ final class TappedLocalProcessTerminalView: LocalProcessTerminalView {
                 keyCode: event.keyCode,
                 modifiers: modifiers,
                 menuOpen: self.menuOpenSnapshot?() ?? false,
+                hasSelection: self.menuHasSelectionSnapshot?() ?? false,
                 isAltScreen: isAltScreen
             )
             switch decision {
@@ -373,11 +395,19 @@ final class TappedLocalProcessTerminalView: LocalProcessTerminalView {
                 return nil
 
             case .accept:
+                // B4: `.accept` only reaches here with an EXPLICIT selection
+                // (decide gates it on hasSelection). Inject the diff-suffix and
+                // swallow the key so the completion doesn't also submit. When
+                // the suffix is empty/nil (user selected the exact text already
+                // typed), close the menu but FORWARD the event so Return still
+                // runs the command verbatim — never silently eat the newline.
                 if let suffix = self.menuAcceptHandler?(), !suffix.isEmpty {
                     self.send(txt: suffix)
+                    self.menuCancelHandler?()
+                    return nil
                 }
-                self.menuCancelHandler?()    // close in either case (incl. empty suffix)
-                return nil
+                self.menuCancelHandler?()
+                return event
 
             case .cancel:
                 self.menuCancelHandler?()

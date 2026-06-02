@@ -211,7 +211,11 @@ public struct LocalFileService {
         for item in try list(relativePath: relativePath).sorted(by: fileTreeSort) {
             result.append(LocalFileTreeItem(item: item, depth: depth))
             if item.isDirectory {
-                result.append(contentsOf: try treeItems(relativePath: item.relativePath, depth: depth + 1))
+                // One unreadable subtree (permissions / broken symlink) must not
+                // discard the whole tree — skip it but keep the folder node.
+                if let children = try? treeItems(relativePath: item.relativePath, depth: depth + 1) {
+                    result.append(contentsOf: children)
+                }
             }
         }
         return result

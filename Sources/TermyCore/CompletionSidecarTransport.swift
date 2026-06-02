@@ -20,7 +20,9 @@ public enum CompletionSidecarTransport {
     // ----- TSV body decoding (post-spike) -----
 
     public static func decodeTSVBody(_ body: String) -> [CompletionCandidate] {
-        var items: [CompletionCandidate] = []
+        // Decode every well-formed line, retaining the raw zsh tag so the B3
+        // filter below can reason about completion groups.
+        var rows: [(tag: String, candidate: CompletionCandidate)] = []
         // Normalize CRLF → LF first; Swift's Character-level split treats \r\n as a
         // single grapheme cluster and won't split on \n alone inside a CRLF pair.
         let normalized = body.replacingOccurrences(of: "\r\n", with: "\n")
@@ -40,14 +42,47 @@ public enum CompletionSidecarTransport {
             // First two columns must be non-empty for a well-formed candidate.
             guard !kindRaw.isEmpty, !title.isEmpty else { continue }
             let description = descriptionRaw.isEmpty ? nil : descriptionRaw
-            items.append(CompletionCandidate(
+            rows.append((tag: kindRaw, candidate: CompletionCandidate(
                 title: title,
                 replacement: replacement,
                 kind: kindFromZshTag(kindRaw),
                 description: description
-            ))
+            )))
         }
-        return items
+        return suppressBroadCommandFallback(rows)
+    }
+
+    /// Tags that the sidecar's `compadd` shadow captures from a single
+    /// `_main_complete` pass but which zsh's interactive `_requested`/tag-order
+    /// gate would only reveal on a *later* Tab. The classic offender is `_git`,
+    /// whose subcommand position registers `common-commands` (porcelain:
+    /// status/add/commit) AND `all-commands` (every `git-*` PATH executable:
+    /// git-cvsserver/git-upload-pack/…). Because the shadow ignores tag-order,
+    /// it surfaces the broad fallback group indiscriminately (B3).
+    ///
+    /// Fix: when a NARROW group fired for the batch, drop the BROAD fallback
+    /// group's candidates so the menu shows the curated subcommands the user
+    /// expects — matching the interactive zsh menu's first-Tab behaviour. This
+    /// generalises to any completer that pairs a curated group with an
+    /// `*-all-*` / "all" fallback.
+    private static let broadFallbackTags: Set<String> = ["all-commands", "all-files"]
+    private static let narrowGroupTags: Set<String> = [
+        "common-commands", "alias-commands", "aliases", "commands", "builtins"
+    ]
+
+    private static func suppressBroadCommandFallback(
+        _ rows: [(tag: String, candidate: CompletionCandidate)]
+    ) -> [CompletionCandidate] {
+        let tags = Set(rows.map { $0.tag })
+        // Only suppress the broad group when a narrower curated group is present
+        // in the SAME batch — otherwise the broad group is all the user has.
+        guard !tags.isDisjoint(with: narrowGroupTags),
+              !tags.isDisjoint(with: broadFallbackTags) else {
+            return rows.map { $0.candidate }
+        }
+        return rows
+            .filter { !broadFallbackTags.contains($0.tag) }
+            .map { $0.candidate }
     }
 
     // ----- Err body decoding -----

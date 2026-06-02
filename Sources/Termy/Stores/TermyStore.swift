@@ -1769,6 +1769,27 @@ final class TermyStore: ObservableObject {
         }
     }
 
+    /// Background variant for UI entry points (e.g. opening the Files module):
+    /// the recursive directory walk can enumerate thousands of entries in a
+    /// large project tree and must not block the main thread. Mirrors
+    /// `pullCurrentGitBranch` — capture the Sendable root, walk off the main
+    /// actor, publish results back on main.
+    func refreshFilesAsync() {
+        let root = projectRoot
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = Result { try LocalFileService(root: root).tree() }
+            DispatchQueue.main.async {
+                switch result {
+                case .success(let tree):
+                    self.fileTreeItems = tree
+                    self.fileItems = tree.map(\.item)
+                case .failure(let error):
+                    self.statusMessage = "File refresh failed: \(error.localizedDescription)"
+                }
+            }
+        }
+    }
+
     var filteredFileItems: [LocalFileItem] {
         LocalFileSearch(items: fileItems).search(fileSearchQuery)
     }
@@ -2527,6 +2548,13 @@ final class TermyStore: ObservableObject {
         var selection: Int
     }
 
+    /// B4 (Warp parity): the menu opens with NO highlighted row. A sentinel of
+    /// -1 means "nothing selected" — `CompletionMenuRow` renders `idx == -1` as
+    /// unselected for every row, Return passes through to zsh verbatim, and
+    /// `terminalMenuAcceptedSuffix` returns nil (its `selection >= 0` guard).
+    /// ↓ (or Tab) is what first enters the list and lands on row 0.
+    static let menuNoSelection = -1
+
     private var terminalMenuStates: [UUID: MenuState] = [:]
 
     // MARK: - v3 block terminal: per-command timing
@@ -2612,7 +2640,9 @@ final class TermyStore: ObservableObject {
         // false (no engine for local sessions), letting Tab pass through to zsh.
         let items = completionSuggestionsForMenu(text: buf.text, sessionID: sessionID)
         guard !items.isEmpty else { return false }
-        terminalMenuStates[sessionID] = MenuState(items: items, selection: 0)
+        // B4 (Warp parity): open with NOTHING selected (sentinel -1). Return then
+        // submits the typed line verbatim; ↓/Tab is what first enters the list.
+        terminalMenuStates[sessionID] = MenuState(items: items, selection: Self.menuNoSelection)
         objectWillChange.send()
         return true
     }
@@ -2620,9 +2650,16 @@ final class TermyStore: ObservableObject {
     func terminalMenuMoveSelection(for sessionID: UUID, by delta: Int) {
         guard var s = terminalMenuStates[sessionID], !s.items.isEmpty else { return }
         let n = s.items.count
-        // Wrap arithmetic that handles arbitrary positive/negative delta.
-        let raw = (s.selection + delta) % n
-        s.selection = raw < 0 ? raw + n : raw
+        // B4 (Warp parity): from the "nothing selected" sentinel (-1), the first
+        // move ENTERS the list — forward (↓/Tab) lands on row 0, backward
+        // (↑/Shift-Tab) lands on the last row. Thereafter it wraps normally.
+        if s.selection < 0 {
+            s.selection = delta >= 0 ? 0 : n - 1
+        } else {
+            // Wrap arithmetic that handles arbitrary positive/negative delta.
+            let raw = (s.selection + delta) % n
+            s.selection = raw < 0 ? raw + n : raw
+        }
         terminalMenuStates[sessionID] = s
         objectWillChange.send()
     }
@@ -5226,13 +5263,18 @@ final class TermyStore: ObservableObject {
         } else {
             let debounceReady = sidecarDebounceElapsed.contains(sessionID)
             if let prev = terminalMenuStates[sessionID] {
-                // Refresh an already-open menu.
-                let clamped = max(0, min(prev.selection, items.count - 1))
+                // Refresh an already-open menu. B4: preserve the "nothing
+                // selected" sentinel across refreshes — a naive max(0,…) would
+                // reset -1 back to 0 on the next sidecar result and reintroduce
+                // the hijack mid-typing.
+                let clamped = prev.selection < 0
+                    ? Self.menuNoSelection
+                    : max(0, min(prev.selection, items.count - 1))
                 terminalMenuStates[sessionID] = MenuState(items: items, selection: clamped)
                 objectWillChange.send()
             } else if debounceReady {
-                // Auto-open when debounce elapsed.
-                terminalMenuStates[sessionID] = MenuState(items: items, selection: 0)
+                // Auto-open when debounce elapsed — Warp parity: NOTHING selected.
+                terminalMenuStates[sessionID] = MenuState(items: items, selection: Self.menuNoSelection)
                 objectWillChange.send()
             }
             // If debounce not yet elapsed, items cached above; menu opens on next debounce.
@@ -5457,7 +5499,11 @@ final class TermyStore: ObservableObject {
                         if fresh.isEmpty {
                             terminalMenuStates[sessionID] = nil
                         } else {
-                            let clamped = max(0, min(prev.selection, fresh.count - 1))
+                            // B4: preserve the "nothing selected" sentinel across
+                            // live-narrow refreshes (see applyCompletionResponse).
+                            let clamped = prev.selection < 0
+                                ? Self.menuNoSelection
+                                : max(0, min(prev.selection, fresh.count - 1))
                             terminalMenuStates[sessionID] = MenuState(items: fresh, selection: clamped)
                         }
                         objectWillChange.send()
@@ -5637,12 +5683,23 @@ final class TermyStore: ObservableObject {
         try? FileManager.default.removeItem(
             at: agentStateRoot.appendingPathComponent("\(sessionID.uuidString).state"))
         cleanupAgentWorktreeIfNeeded(for: sessionID)
+        // v3 block terminal: the child is gone, so SwiftTerm will never switch
+        // back from the alternate screen on its own. Clear the alt-screen flag
+        // (mirrors closeSession) so `ShellTermWindow` re-reveals the block
+        // transcript instead of leaving the now-stale raw SwiftTerm buffer
+        // exposed (which renders as garbled overlapping text).
+        terminalAltScreen[sessionID] = nil
         // Slice 5: the child is already gone — evict its surface (frees the launch
         // temp; the processIsDead guard skips a re-kill). No-op for non-pooled
         // (.commandLine SSH/tunnel) sessions, and a no-op in the restart case
         // (the generation guard above returns before reaching here).
         let exitedGeneration = generation ?? (terminalLaunchGenerations[sessionID] ?? 0)
-        terminalSurfacePool.terminate(forKey: "\(sessionID.uuidString)#\(exitedGeneration)")
+        let exitedKey = "\(sessionID.uuidString)#\(exitedGeneration)"
+        // Drain any partial OSC 133 marker still buffered in the stream bridge
+        // before the surface is torn down, so the final command block parses
+        // cleanly rather than leaving a dangling unterminated block.
+        terminalSurfacePool.surface(forKey: exitedKey)?.view?.streamBridge?.flush()
+        terminalSurfacePool.terminate(forKey: exitedKey)
     }
 
     // MARK: - FB-3-2 agent state machine driving
