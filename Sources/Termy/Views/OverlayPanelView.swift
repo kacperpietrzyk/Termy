@@ -346,85 +346,259 @@ private struct FileExplorerPanel: View {
 
 private struct GitPanel: View {
     @ObservedObject var store: TermyStore
+    @State private var showDiff = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Button("Refresh") {
-                    store.refreshGitStatus()
-                }
-                Button("Diff") {
-                    store.refreshGitDiff()
-                }
-                Button("Stage All") {
-                    store.stageAllGitChanges()
-                }
-                Button("Pull") {
-                    store.pullCurrentGitBranch()
-                }
-                Button("Push") {
-                    store.pushCurrentGitBranch()
-                }
-                Spacer()
-            }
-
-            HStack {
-                Picker("Branch", selection: $store.selectedGitBranch) {
-                    ForEach(store.gitBranches, id: \.self) { branch in
-                        Text(branch).tag(Optional(branch))
+        Group {
+            if store.gitIsRepository {
+                VStack(spacing: 0) {
+                    header
+                    Divider().overlay(Color(DesignTokens.hair))
+                    HStack(spacing: 0) {
+                        GitChangesPane(store: store)
+                            .frame(width: 340)
+                        Divider().overlay(Color(DesignTokens.hair))
+                        GitHistoryView(commits: store.gitRecentCommits)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
                 }
-                if let divergence = store.gitDivergence {
-                    Text("Ahead \(divergence.ahead) / Behind \(divergence.behind)")
-                        .foregroundStyle(.secondary)
+            } else {
+                ContentUnavailableView {
+                    Label("Not a git repository", systemImage: "point.3.connected.trianglepath.dotted")
+                } description: {
+                    Text("Open a shell session inside a repository, then return here.")
                 }
-                Button("Checkout") {
-                    store.checkoutSelectedGitBranch()
-                }
-                .disabled(store.selectedGitBranch == nil)
-            }
-
-            HStack {
-                TextField("New branch", text: $store.gitBranchDraft)
-                    .textFieldStyle(GlassTextFieldStyle())
-                Button("Create") {
-                    store.createGitBranch()
-                }
-                .disabled(store.gitBranchDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            }
-
-            TextField("Commit message", text: $store.gitCommitMessage)
-                .textFieldStyle(GlassTextFieldStyle())
-
-            Button("Commit") {
-                store.commitGitChanges()
-            }
-            .disabled(store.gitCommitMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-
-            Button("AI Message") {
-                store.suggestGitCommitMessageWithLocalAI()
-            }
-
-            Button("Explain Conflicts") {
-                store.explainGitConflictsWithLocalAI()
-            }
-
-            ScrollView {
-                Text(gitOutput)
-                    .font(.system(.body, design: .monospaced))
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
-        .padding()
         .buttonStyle(TermyCompactButtonStyle())
+        .onAppear { store.refreshGitStatus() }
+        .sheet(isPresented: $showDiff) {
+            GitDiffSheet(store: store) { showDiff = false }
+        }
     }
 
-    private var gitOutput: String {
-        if !store.gitConflictExplanation.isEmpty {
-            return store.gitConflictExplanation
+    private var header: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "arrow.triangle.branch").font(.system(size: 12))
+                .foregroundStyle(Color(DesignTokens.git.base))
+            Picker("", selection: $store.selectedGitBranch) {
+                ForEach(store.gitBranches, id: \.self) { Text($0).tag(Optional($0)) }
+            }
+            .labelsHidden().fixedSize()
+            Button("Checkout") { store.checkoutSelectedGitBranch() }
+                .disabled(store.selectedGitBranch == nil)
+            if let d = store.gitDivergence, d.ahead > 0 || d.behind > 0 {
+                HStack(spacing: 6) {
+                    if d.ahead > 0 { Label("\(d.ahead)", systemImage: "arrow.up").labelStyle(.titleAndIcon) }
+                    if d.behind > 0 { Label("\(d.behind)", systemImage: "arrow.down").labelStyle(.titleAndIcon) }
+                }
+                .font(Typography.mono(11)).foregroundStyle(Color(DesignTokens.fg3))
+            }
+            Spacer()
+            Button { store.refreshGitDiff(); showDiff = true } label: { Label("Diff", systemImage: "plusminus") }
+            Button { store.pullCurrentGitBranch() } label: { Label("Pull", systemImage: "arrow.down") }
+            Button { store.pushCurrentGitBranch() } label: { Label("Push", systemImage: "arrow.up") }
+            Button { store.refreshGitStatus() } label: { Image(systemName: "arrow.clockwise") }
         }
-        return store.gitDiff.isEmpty ? store.gitStatus : store.gitDiff
+        .padding(.horizontal, 16).padding(.vertical, 10)
+    }
+}
+
+/// Left pane: working-tree changes (staged/unstaged/untracked) + commit box.
+private struct GitChangesPane: View {
+    @ObservedObject var store: TermyStore
+
+    private var staged: [GitChange] { store.gitChanges.filter { $0.isStaged && !$0.isUntracked } }
+    private var unstaged: [GitChange] { store.gitChanges.filter { $0.isUnstaged && !$0.isStaged && !$0.isUntracked } }
+    private var untracked: [GitChange] { store.gitChanges.filter { $0.isUntracked } }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Text("CHANGES").font(.system(size: 11, weight: .semibold)).tracking(0.5)
+                    .foregroundStyle(DesignTokens.Glass.textTertiary)
+                Spacer()
+                if !store.gitChanges.isEmpty {
+                    Button("Stage All") { store.stageAllGitChanges() }
+                }
+            }
+            .padding(.horizontal, 16).padding(.vertical, 10)
+
+            if store.gitChanges.isEmpty {
+                VStack(spacing: 4) {
+                    Image(systemName: "checkmark.circle").font(.system(size: 20))
+                        .foregroundStyle(Color(DesignTokens.sync.base))
+                    Text("Working tree clean").font(Typography.ui(12))
+                        .foregroundStyle(DesignTokens.Glass.textTertiary)
+                }
+                .frame(maxWidth: .infinity).padding(.vertical, 28)
+            } else {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 1) {
+                        changeSection("Staged", staged, tint: DesignTokens.sync.base)
+                        changeSection("Changed", unstaged, tint: DesignTokens.agent.base)
+                        changeSection("Untracked", untracked, tint: DesignTokens.fg4)
+                    }
+                    .padding(.horizontal, 8)
+                }
+            }
+
+            Divider().overlay(Color(DesignTokens.hair))
+            VStack(spacing: 8) {
+                TextField("Commit message", text: $store.gitCommitMessage, axis: .vertical)
+                    .textFieldStyle(GlassTextFieldStyle()).lineLimit(1...3)
+                HStack {
+                    Button { store.commitGitChanges() } label: { Label("Commit", systemImage: "checkmark") }
+                        .disabled(store.gitCommitMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    Button { store.suggestGitCommitMessageWithLocalAI() } label: { Label("AI", systemImage: "sparkles") }
+                    Spacer()
+                }
+                HStack {
+                    TextField("New branch", text: $store.gitBranchDraft).textFieldStyle(GlassTextFieldStyle())
+                    Button("Create") { store.createGitBranch() }
+                        .disabled(store.gitBranchDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+            .padding(16)
+        }
+    }
+
+    @ViewBuilder private func changeSection(_ title: String, _ items: [GitChange], tint: OKLCH) -> some View {
+        if !items.isEmpty {
+            Text(title.uppercased()).font(.system(size: 10, weight: .semibold)).tracking(0.5)
+                .foregroundStyle(DesignTokens.Glass.textQuaternary)
+                .padding(.horizontal, 8).padding(.top, 8).padding(.bottom, 2)
+            ForEach(items) { change in
+                HStack(spacing: 8) {
+                    Text(String([change.x, change.y]).trimmingCharacters(in: .whitespaces))
+                        .font(.system(size: 10, weight: .bold, design: .monospaced))
+                        .foregroundStyle(Color(tint)).frame(width: 18, alignment: .leading)
+                    Text(change.path).font(Typography.ui(12)).foregroundStyle(Color(DesignTokens.fg2))
+                        .lineLimit(1).truncationMode(.middle)
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 8).padding(.vertical, 3)
+            }
+        }
+    }
+}
+
+/// Right pane: commit history with a graph rail (node + spine) and ref chips.
+private struct GitHistoryView: View {
+    let commits: [GitLogEntry]
+
+    var body: some View {
+        if commits.isEmpty {
+            ContentUnavailableView("No commits", systemImage: "clock")
+        } else {
+            ScrollView {
+                LazyVStack(spacing: 0) {
+                    ForEach(Array(commits.enumerated()), id: \.element.id) { index, commit in
+                        GitHistoryRow(commit: commit, isFirst: index == 0, isLast: index == commits.count - 1)
+                    }
+                }
+                .padding(.vertical, 8).padding(.trailing, 16)
+            }
+        }
+    }
+}
+
+private struct GitHistoryRow: View {
+    let commit: GitLogEntry
+    let isFirst: Bool
+    let isLast: Bool
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            GraphRail(isMerge: commit.isMerge, isFirst: isFirst, isLast: isLast)
+                .frame(width: 22)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    ForEach(refChips, id: \.self) { ref in
+                        Text(ref)
+                            .font(.system(size: 10, weight: .medium, design: .monospaced))
+                            .foregroundStyle(DesignTokens.Glass.accent)
+                            .padding(.horizontal, 5).padding(.vertical, 1)
+                            .background(DesignTokens.Glass.fillChip, in: Capsule())
+                    }
+                    Text(commit.subject).font(Typography.ui(13)).foregroundStyle(Color(DesignTokens.fg1))
+                        .lineLimit(1).truncationMode(.tail)
+                }
+                HStack(spacing: 6) {
+                    Text(commit.shortHash).font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(Color(DesignTokens.git.base))
+                    Text(commit.author).font(Typography.ui(11)).foregroundStyle(DesignTokens.Glass.textTertiary)
+                    Text("· \(commit.relativeDate)").font(Typography.ui(11)).foregroundStyle(DesignTokens.Glass.textQuaternary)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.leading, 16).padding(.vertical, 7)
+    }
+
+    /// Decoded ref names without the "HEAD -> " prefix noise; tags shown bare.
+    private var refChips: [String] {
+        commit.refNames.compactMap { raw in
+            if raw.hasPrefix("HEAD -> ") { return String(raw.dropFirst("HEAD -> ".count)) }
+            if raw == "HEAD" { return "HEAD" }
+            if raw.hasPrefix("tag: ") { return String(raw.dropFirst("tag: ".count)) }
+            return raw
+        }
+    }
+}
+
+/// The graph spine + commit node for one history row.
+private struct GraphRail: View {
+    let isMerge: Bool
+    let isFirst: Bool
+    let isLast: Bool
+
+    var body: some View {
+        GeometryReader { geo in
+            let cx = geo.size.width / 2
+            let cy: CGFloat = 18
+            Path { p in
+                if !isFirst { p.move(to: CGPoint(x: cx, y: 0)); p.addLine(to: CGPoint(x: cx, y: cy)) }
+                if !isLast { p.move(to: CGPoint(x: cx, y: cy)); p.addLine(to: CGPoint(x: cx, y: geo.size.height)) }
+            }
+            .stroke(Color(DesignTokens.hairStrong), lineWidth: 1.5)
+            Circle()
+                .fill(isMerge ? DesignTokens.Glass.accent : Color(DesignTokens.git.base))
+                .frame(width: 9, height: 9)
+                .overlay(Circle().stroke(Color(DesignTokens.bg0), lineWidth: 2).frame(width: 13, height: 13))
+                .position(x: cx, y: cy)
+        }
+    }
+}
+
+/// Full diff in a sheet (kept off the main two-column view).
+private struct GitDiffSheet: View {
+    @ObservedObject var store: TermyStore
+    let onClose: () -> Void
+
+    private var text: String {
+        if !store.gitConflictExplanation.isEmpty { return store.gitConflictExplanation }
+        return store.gitDiff.isEmpty ? "No diff — working tree clean or nothing staged." : store.gitDiff
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text("Diff").font(Typography.ui(14, weight: .semibold))
+                Spacer()
+                Button { store.explainGitConflictsWithLocalAI() } label: { Label("Explain Conflicts", systemImage: "sparkles") }
+                    .buttonStyle(TermyCompactButtonStyle())
+                Button("Done", action: onClose).buttonStyle(TermyCompactButtonStyle())
+            }
+            .padding(12)
+            Divider()
+            ScrollView {
+                Text(text).font(.system(.body, design: .monospaced)).textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading).padding(12)
+            }
+        }
+        .frame(minWidth: 640, minHeight: 480)
+        .background(Color(DesignTokens.bg1))
     }
 }
 

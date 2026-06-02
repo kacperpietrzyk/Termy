@@ -247,6 +247,18 @@ final class TermyStore: ObservableObject {
         get { appModel.git.gitDivergence }
         set { objectWillChange.send(); appModel.git.gitDivergence = newValue }
     }
+    var gitRecentCommits: [GitLogEntry] {
+        get { appModel.git.gitRecentCommits }
+        set { objectWillChange.send(); appModel.git.gitRecentCommits = newValue }
+    }
+    var gitChanges: [GitChange] {
+        get { appModel.git.gitChanges }
+        set { objectWillChange.send(); appModel.git.gitChanges = newValue }
+    }
+    var gitIsRepository: Bool {
+        get { appModel.git.gitIsRepository }
+        set { objectWillChange.send(); appModel.git.gitIsRepository = newValue }
+    }
     // M2c-2 strangler facade → `appModel.files`. Computed forwarders; the
     // canonical bypass invariant + rationale is at the `let appModel`
     // comment below. Transient — deleted in the final M2c sub-plan.
@@ -1523,16 +1535,29 @@ final class TermyStore: ObservableObject {
     func refreshGitStatus() {
         let repository = GitRepository(root: gitWorkingRoot)
         DispatchQueue.global(qos: .userInitiated).async {
-            let result = Result { try repository.statusShort() }
+            // Not a repo → a calm empty state, never a raw error string.
+            guard repository.isRepository() else {
+                DispatchQueue.main.async {
+                    self.gitIsRepository = false
+                    self.gitStatus = "Not a git repository."
+                    self.gitRecentCommits = []
+                    self.gitChanges = []
+                    self.gitDivergence = nil
+                }
+                return
+            }
+            let status = Result { try repository.statusShort() }
+            let changes = (try? repository.changes()) ?? []
+            let commits = (try? repository.recentCommits()) ?? []
             let divergence = try? repository.aheadBehind()
             DispatchQueue.main.async {
-                switch result {
-                case .success(let status):
-                    self.gitStatus = self.format(status)
-                    self.gitDivergence = divergence
-                case .failure(let error):
-                    self.gitStatus = error.localizedDescription
-                    self.gitDivergence = nil
+                self.gitIsRepository = true
+                self.gitChanges = changes
+                self.gitRecentCommits = commits
+                self.gitDivergence = divergence
+                switch status {
+                case .success(let s): self.gitStatus = self.format(s)
+                case .failure: self.gitStatus = "Working tree clean."
                 }
             }
         }

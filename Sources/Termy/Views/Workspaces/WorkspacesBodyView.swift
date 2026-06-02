@@ -1,45 +1,27 @@
 import SwiftUI
 import TermyCore
 
-/// §6.7 body: hero card → 2-col (pane-tree viz 1fr · summary/persistence/saved cards 280pt).
+/// §6.7 body: a slim hero header over the live pane layout, which fills the pane.
+/// The old metadata side-cards (summary/persistence/saved) are gone — they were
+/// redundant with the hero summary and the sub-rail's saved-layouts list.
 struct WorkspacesBodyView: View {
     @ObservedObject var store: TermyStore
 
-    private var liveAgents: Int {
-        let grouped = groupAgentVitals(store.agentVitals)
-        return grouped.waiting.count + grouped.running.count
-    }
-    private var liveSSH: Int {
-        store.sessions.filter { s in store.profiles.contains { $0.name == s.profile.name && $0.kind == .ssh } }.count
-    }
-
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                WorkspaceHeroCardView(store: store)
-                HStack(alignment: .top, spacing: 16) {
-                    WorkspacePaneTreeVizView(
-                        node: store.paneLayout.renderPlan.root,
-                        focused: store.paneLayout.focusedPane,
-                        store: store
-                    )
-                    .frame(minHeight: 420)
-                    .frame(maxWidth: .infinity)
-                    .padding(12)
-                    .background(Color(DesignTokens.bg1), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.lg))
-                    .overlay(RoundedRectangle(cornerRadius: DesignTokens.Radius.lg)
-                        .stroke(Color(DesignTokens.hair), lineWidth: 1))
-
-                    VStack(spacing: 12) {
-                        WorkspaceSummaryCardView(store: store, liveAgents: liveAgents, liveSSH: liveSSH)
-                        WorkspacePersistenceCardView()
-                        WorkspaceSavedLayoutsCardView(store: store)
-                    }
-                    .frame(width: 280)
-                }
-            }
-            .padding(.horizontal, 28).padding(.top, 24).padding(.bottom, 48)
+        VStack(alignment: .leading, spacing: 16) {
+            WorkspaceHeroCardView(store: store)
+            WorkspacePaneTreeVizView(
+                node: store.paneLayout.renderPlan.root,
+                focused: store.paneLayout.focusedPane,
+                store: store
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .padding(12)
+            .background(Color(DesignTokens.bg1), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.lg))
+            .overlay(RoundedRectangle(cornerRadius: DesignTokens.Radius.lg)
+                .stroke(Color(DesignTokens.hair), lineWidth: 1))
         }
+        .padding(.horizontal, 28).padding(.top, 24).padding(.bottom, 24)
     }
 }
 

@@ -9,10 +9,6 @@ struct ShellTermWindow: View {
     @ObservedObject var store: TermyStore
     let session: TermySession
 
-    /// Fixed height of the whole §6.1 term-window pane (bounds the internal
-    /// transcript scroll; ShellModuleView embeds this in a ScrollView).
-    private static let paneHeight: CGFloat = 480
-
     private var shellLabel: String {
         ShellModuleModel.liveChipLabel(kind: session.profile.kind,
                                        zshVersion: store.shellVersion(forSession: session.id))
@@ -44,12 +40,10 @@ struct ShellTermWindow: View {
                 }
             }
         }
-        // Fixed pane height. ShellModuleView hosts this inside a ScrollView, so
-        // an unbounded frame let the transcript's ScrollView expand to its
-        // content (no internal scroll) and the pane grew without limit after each
-        // command. A definite height makes the transcript scroll internally and
-        // bounds the vim takeover.
-        .frame(height: Self.paneHeight)
+        // Fill the available pane height — the terminal is the focus, not a
+        // boxed card. The parent gives a definite size, so the transcript's
+        // ScrollView scrolls internally and the vim takeover stays bounded.
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         // §6.1 term-window surface = the handoff's `oklch(10% 0.01 285)` ≈ bg1
         // (the design system's dark), not the per-user terminal theme bg.
         .background(Color(DesignTokens.bg1),
