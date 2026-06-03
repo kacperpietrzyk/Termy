@@ -22,25 +22,47 @@ final class BufferSnapshotProbeTests: XCTestCase {
         XCTAssertEqual(line, "hello world")
     }
 
-    // A command's output, anchored by scroll-invariant indices captured right
-    // after it printed, must read back IDENTICALLY after lots more output scrolls
-    // it down — using only public scroll-invariant API.
-    func testScrollInvariantRangeSurvivesScrolling() {
+    // A command's footprint, armed with clearUpdateRange() at "command start",
+    // is exactly its output rows (no empty-viewport tail) and re-reads
+    // IDENTICALLY after lots more output scrolls it down — proving scroll-
+    // invariant indices are stable for real content.
+    func testScrollInvariantRangeIsStableAcrossScrolling() {
         let view = makeView()
         let term = view.getTerminal()
-        feed(view, "MARKER-START\r\n")
-        feed(view, "line-A\r\nline-B\r\nline-C\r\n")
+        feed(view, "boot\r\n")
+        term.clearUpdateRange()                          // arm: "command start"
+        feed(view, "MARKER-START\r\nline-A\r\nline-B\r\nline-C\r\n")
         guard let range = term.getScrollInvariantUpdateRange() else {
             return XCTFail("no scroll-invariant update range after output")
         }
         let before = BufferSnapshot.lines(term, scrollInvariantRows: range.startY...range.endY)
-        XCTAssertTrue(before.contains { $0.contains("line-B") }, "captured region must include the output")
+            .filter { !$0.isEmpty }
+        XCTAssertEqual(before, ["MARKER-START", "line-A", "line-B", "line-C"],
+                       "armed range should be exactly the command's output rows")
 
-        // Push the command well below the viewport.
         for i in 0..<200 { feed(view, "filler-\(i)\r\n") }
 
         let after = BufferSnapshot.lines(term, scrollInvariantRows: range.startY...range.endY)
+            .filter { !$0.isEmpty }
         XCTAssertEqual(before, after, "scroll-invariant indices drifted after scrolling")
+    }
+
+    // The real reason scroll-invariant anchoring matters: a command whose output
+    // EXCEEDS the viewport pushes its top into scrollback. We must still recover
+    // the FULL output (incl. scrolled-off rows) at finish via public API.
+    func testRecoversFullOutputThatExceededViewport() {
+        let view = makeView()
+        let term = view.getTerminal()
+        feed(view, "boot\r\n")
+        term.clearUpdateRange()                          // arm: "command start"
+        for i in 0..<100 { feed(view, "out-\(i)\r\n") }  // far more than the ~30-row viewport
+        guard let range = term.getScrollInvariantUpdateRange() else {
+            return XCTFail("no scroll-invariant update range")
+        }
+        let captured = BufferSnapshot.lines(term, scrollInvariantRows: range.startY...range.endY)
+            .filter { !$0.isEmpty }
+        XCTAssertEqual(captured, (0..<100).map { "out-\($0)" },
+                       "must recover all 100 output lines incl. those scrolled into scrollback")
     }
 
     // Reproduces screenshot #6: run `claude`, it enters alt-screen and paints an
