@@ -1251,6 +1251,20 @@ final class TermyStore: ObservableObject {
         statusMessage = "Copied terminal screen."
     }
 
+    /// Slice-3b: the clean, displayed output of a finished command block —
+    /// the Slice-1 buffer snapshot (residue-free by construction) stripped through
+    /// the SAME parser the card renders with, so copy/explain == what's on screen.
+    /// Falls back to the re-parse `block.output` ONLY when no snapshot exists yet
+    /// (a still-running / unsnapshotted block); an empty snapshot (a clean
+    /// alt-screen block) correctly returns "".
+    func cleanBlockOutput(forBlock block: TerminalCommandBlock) -> String {
+        guard let selectedSession,
+              let snapshot = terminalBlockSnapshots[selectedSession.id]?[block.startLine] else {
+            return block.output
+        }
+        return ANSITextParser().parse(snapshot).map(\.text).joined()
+    }
+
     private func copyCommandOutput(_ block: TerminalCommandBlock) {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(block.output, forType: .string)

@@ -188,6 +188,31 @@ final class BlockSnapshotStoreTests: XCTestCase {
                      "old unshifted key must be gone after trim")
     }
 
+    func testCleanBlockOutputStripsSnapshotAndFallsBackWhenAbsent() {
+        let (store, id) = makeStore()
+        store.registerTerminalBlockArmHandler({}, for: id)
+        // SGR-colored snapshot (what the card renders): yellow "hi" + reset.
+        store.registerTerminalBlockSnapshotProvider({ "\u{1B}[33mhi\u{1B}[0m" }, for: id)
+        store.ingestShellIntegrationEvents([
+            .commandStarted("echo hi"),
+            .output("RAW-REPARSE\n"),
+            .commandFinished(exitCode: 0, workingDirectory: "/tmp"),
+        ], for: id)
+
+        let block = try! XCTUnwrap(store.terminalCommandBlocks().first { $0.command == "echo hi" })
+        // Snapshot present → clean, ANSI-stripped, NOT the re-parse.
+        XCTAssertEqual(store.cleanBlockOutput(forBlock: block), "hi",
+                       "must return the snapshot text with SGR escapes stripped")
+        XCTAssertFalse(store.cleanBlockOutput(forBlock: block).contains("RAW-REPARSE"),
+                       "must not fall back to the re-parse when a snapshot exists")
+
+        // A block with no snapshot entry → falls back to block.output.
+        let synthetic = TerminalCommandBlock(command: "x", startLine: 9_999, endLine: 9_999,
+                                             exitCode: 0, output: "FALLBACK")
+        XCTAssertEqual(store.cleanBlockOutput(forBlock: synthetic), "FALLBACK",
+                       "no snapshot → re-parse fallback")
+    }
+
     /// Slice-3a: while a command is still running (started, no finish) its block is
     /// drawn by SwiftTerm (full-reveal), so it must NOT appear as a re-parse card in
     /// the SwiftUI history list. A finished command stays a frozen history block.
