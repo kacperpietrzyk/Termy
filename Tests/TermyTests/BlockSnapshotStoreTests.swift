@@ -229,6 +229,22 @@ final class BlockSnapshotStoreTests: XCTestCase {
                        "Copy must not paste re-parse residue for a clean alt-screen block")
     }
 
+    func testExplainUsesCleanOutputForFailedBlock() {
+        let (store, id) = makeStore()
+        store.registerTerminalBlockArmHandler({}, for: id)
+        store.registerTerminalBlockSnapshotProvider({ "\u{1B}[31merror: nope\u{1B}[0m" }, for: id)
+        store.ingestShellIntegrationEvents([
+            .commandStarted("build"),
+            .output("RESIDUE-78\n"),
+            .commandFinished(exitCode: 2, workingDirectory: "/tmp"),
+        ], for: id)
+        let failed = try! XCTUnwrap(
+            store.terminalCommandBlocks().last { ($0.exitCode ?? 0) != 0 })
+        let outputForAI = store.cleanBlockOutput(forBlock: failed)
+        XCTAssertEqual(outputForAI, "error: nope", "explain must send the clean snapshot output")
+        XCTAssertFalse(outputForAI.contains("RESIDUE-78"))
+    }
+
     /// Slice-3a: while a command is still running (started, no finish) its block is
     /// drawn by SwiftTerm (full-reveal), so it must NOT appear as a re-parse card in
     /// the SwiftUI history list. A finished command stays a frozen history block.

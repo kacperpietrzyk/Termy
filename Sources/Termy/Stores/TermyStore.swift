@@ -3262,7 +3262,7 @@ final class TermyStore: ObservableObject {
                 let client = localAIClient(endpoint: endpoint)
                 let explanation = try await client.explainFailedCommand(
                     command: failedBlock.command,
-                    output: failedBlock.output,
+                    output: cleanBlockOutput(forBlock: failedBlock),
                     projectGuidance: aiGuidanceContext
                 )
                 aiExplanation = explanation.text
