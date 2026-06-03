@@ -95,5 +95,19 @@ final class BufferSnapshotProbeTests: XCTestCase {
         XCTAssertFalse(dump.contains("obsidian"), "alt-screen picker leaked into main buffer")
         XCTAssertFalse(dump.contains("code-review-graph"), "alt-screen picker leaked")
     }
+
+    func testCapturesForegroundColorPerCell() {
+        let view = makeView()
+        let term = view.getTerminal()
+        // "AB" default, "CD" in ANSI yellow (SGR 33), back to default.
+        feed(view, "AB\u{1B}[33mCD\u{1B}[0m\r\n")
+        let cells = BufferSnapshot.coloredCells(term, viewportRow: 0)
+        XCTAssertGreaterThanOrEqual(cells.count, 4)
+        // The 'A' (default) and 'C' (yellow) foregrounds must differ.
+        let a = cells.first { $0.character == "A" }
+        let c = cells.first { $0.character == "C" }
+        XCTAssertNotNil(a); XCTAssertNotNil(c)
+        XCTAssertNotEqual(a!.fg, c!.fg, "yellow cell should differ from default cell")
+    }
 }
 #endif

@@ -26,6 +26,26 @@ enum BufferSnapshot {
         return out
     }
 
+    struct Cell: Equatable {
+        let character: Character
+        let fg: Attribute.Color
+    }
+
+    /// One viewport row as cells with per-cell foreground color. Trailing
+    /// space/null-filled cells are dropped (match `lineText` trimming).
+    static func coloredCells(_ terminal: Terminal, viewportRow row: Int) -> [Cell] {
+        guard let line = terminal.getLine(row: row) else { return [] }
+        var cells: [Cell] = []
+        for col in 0..<line.count {
+            let cd = line[col]
+            cells.append(Cell(character: cd.getCharacter(), fg: cd.attribute.fg))
+        }
+        while let last = cells.last, last.character == " " || last.character == "\0" {
+            cells.removeLast()
+        }
+        return cells
+    }
+
     static func trimmedText(of line: BufferLine) -> String {
         var chars: [Character] = []
         for col in 0..<line.count { chars.append(line[col].getCharacter()) }
