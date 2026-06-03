@@ -5481,6 +5481,9 @@ final class TermyStore: ObservableObject {
         if let durations = commandDurations[sessionID] {
             commandDurations[sessionID] = Self.shiftLineKeys(durations, by: overflow)
         }
+        if let snaps = terminalBlockSnapshots[sessionID] {
+            terminalBlockSnapshots[sessionID] = Self.shiftLineKeys(snaps, by: overflow)
+        }
         if let pending = pendingCommandPromptIndex[sessionID] {
             pendingCommandPromptIndex[sessionID] = pending >= overflow ? pending - overflow : nil
         }

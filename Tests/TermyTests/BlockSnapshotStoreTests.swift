@@ -1,5 +1,6 @@
 import XCTest
 @testable import Termy
+import TermyCore
 
 @MainActor
 final class BlockSnapshotStoreTests: XCTestCase {
@@ -130,5 +131,60 @@ final class BlockSnapshotStoreTests: XCTestCase {
         XCTAssertEqual(snap.count, 2, "two commands → two snapshot entries keyed by different prompt indices")
         XCTAssertTrue(snap.values.contains("first output"))
         XCTAssertTrue(snap.values.contains("second output"))
+    }
+
+    /// When leading lines are trimmed from the transcript, `terminalBlockSnapshots`
+    /// must be re-keyed by the same drop count so finished blocks keep their output.
+    ///
+    /// Strategy (mirrors TermyStoreTerminalTests approach):
+    /// 1. Pre-fill the session to 9,998 lines so the next appends don't yet overflow.
+    /// 2. Run one command (commandStarted + commandFinished) — this appends 2 lines
+    ///    (prompt at index 9,998, exit at 9,999 but we only care about the snapshot key
+    ///    = promptIndex = 9,998) and stores a snapshot at that key. Total = 10,000.
+    /// 3. Append one more output line via ingestShellIntegrationEvents([.output(…)]).
+    ///    This pushes the count to 10,001 → trim drops 1 line (overflow = 1).
+    ///    The snapshot key must shift from 9,998 → 9,997; the old key must be nil.
+    func testSnapshotKeysSurviveTranscriptTrim() throws {
+        let localProfile = try XCTUnwrap(ConnectionProfile.local())
+        let store = TermyStore(startInitialPTY: false)
+
+        // Pre-fill to 9,998 so two more lines (prompt + exit from commandStarted/Finished)
+        // bring us to exactly 10,000 without triggering a trim yet.
+        let session = TermySession(
+            title: "Local Shell",
+            profile: localProfile,
+            lines: (0..<9_998).map { TerminalLine(role: .stdout, text: "line \($0)") },
+            interactionMode: .rawPTY
+        )
+        store.sessions = [session]
+        store.selectedSessionID = session.id
+
+        // Register a snapshot provider so a snapshot is stored at commandFinished.
+        store.registerTerminalBlockArmHandler({}, for: session.id)
+        store.registerTerminalBlockSnapshotProvider({ "trimmed-snapshot" }, for: session.id)
+
+        // Run a command: appends prompt line (index 9,998) + exit line (index 9,999).
+        // Snapshot is stored keyed by promptIndex = 9,998. No trim yet (count = 10,000).
+        store.ingestShellIntegrationEvents([
+            .commandStarted("echo hi"),
+            .commandFinished(exitCode: 0, workingDirectory: "/tmp"),
+        ], for: session.id)
+
+        // Confirm the snapshot key before trim.
+        let snapsBefore = try XCTUnwrap(store.terminalBlockSnapshotForTesting(sessionID: session.id),
+                                        "snapshot must be stored after commandFinished")
+        let originalKey = try XCTUnwrap(snapsBefore.keys.first,
+                                        "snapshot dict must have one entry")
+        XCTAssertEqual(snapsBefore[originalKey], "trimmed-snapshot", "snapshot value before trim")
+
+        // Trigger trim: one more append → 10,001 lines → overflow = 1.
+        store.ingestShellIntegrationEvents([.output("trigger-trim\n")], for: session.id)
+
+        let snapsAfter = try XCTUnwrap(store.terminalBlockSnapshotForTesting(sessionID: session.id),
+                                       "snapshot dict must still exist after trim")
+        XCTAssertEqual(snapsAfter[originalKey - 1], "trimmed-snapshot",
+                       "snapshot key must shift down by 1 (the drop count)")
+        XCTAssertNil(snapsAfter[originalKey],
+                     "old unshifted key must be gone after trim")
     }
 }
