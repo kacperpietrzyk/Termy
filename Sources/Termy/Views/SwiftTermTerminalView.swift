@@ -342,6 +342,51 @@ final class TappedLocalProcessTerminalView: LocalProcessTerminalView {
     /// same call that gates ingest — see `AltScreenTapDecision`.
     var onAltScreenChanged: ((Bool) -> Void)?
 
+    /// Slice-1: accumulated scroll-invariant dirty range of the in-flight
+    /// command's output, merged per slice. We sample SwiftTerm's update range
+    /// AFTER `super.dataReceived` emulated this slice but never call
+    /// `clearUpdateRange()` — the view's own draw cycle clears it; we only union
+    /// each slice's contribution into our own range, so rendering is untouched.
+    private var pendingBlockRange: (start: Int, end: Int)?
+
+    /// Floor row set at arm time: scroll-invariant rows strictly BEFORE this
+    /// value belong to pre-arm output and must be excluded from the snapshot.
+    /// In the real app the draw cycle calls `clearUpdateRange()` between the
+    /// pre-arm and post-arm slices, so the floor is never needed; in headless
+    /// tests there is no draw cycle and the range keeps growing, so the floor is
+    /// the only guard against pre-arm leakage.
+    private var blockCaptureFloor: Int = 0
+
+    /// Reset the accumulator at command start (OSC 133 C).
+    /// Records a floor from the cursor's current scroll-invariant position so
+    /// pre-arm rows are excluded even in headless tests where no draw cycle
+    /// runs `clearUpdateRange()`. The floor is `yDisp + cursor.y` — the same
+    /// coordinate scheme `updateRange` uses (`effectiveY = buffer._yDisp + y`).
+    func armBlockCapture() {
+        pendingBlockRange = nil
+        let term = getTerminal()
+        blockCaptureFloor = term.getTopVisibleRow() + term.getCursorLocation().y
+    }
+
+    /// Read the accumulated command region from the authoritative buffer as an
+    /// SGR-colored string (OSC 133 D). nil if nothing was captured.
+    func captureBlockSnapshotANSI() -> String? {
+        guard let r = pendingBlockRange else { return nil }
+        return BufferSnapshot.ansiString(getTerminal(), scrollInvariantRows: r.start...r.end)
+    }
+
+    private func accumulateBlockRange() {
+        guard let r = getTerminal().getScrollInvariantUpdateRange() else { return }
+        // Clamp to the floor recorded at arm time: exclude pre-arm rows.
+        let clampedStart = max(r.startY, blockCaptureFloor)
+        guard clampedStart <= r.endY else { return }
+        if let cur = pendingBlockRange {
+            pendingBlockRange = (min(cur.start, clampedStart), max(cur.end, r.endY))
+        } else {
+            pendingBlockRange = (clampedStart, r.endY)
+        }
+    }
+
     override func dataReceived(slice: ArraySlice<UInt8>) {
         // B2/residue: never ingest ALTERNATE-SCREEN output into the Warp-style
         // block transcript. A full-screen TUI (vim/htop/`claude`) repaints the
@@ -353,6 +398,7 @@ final class TappedLocalProcessTerminalView: LocalProcessTerminalView {
         // late — PRODUCT_DIAGNOSIS §9).
         let wasAlternate = getTerminal().isCurrentBufferAlternate
         super.dataReceived(slice: slice)   // SwiftTerm renders, unchanged
+        accumulateBlockRange()             // Slice-1: union this slice's dirty range
         let nowAlternate = getTerminal().isCurrentBufferAlternate
         let decision = AltScreenTapDecision.decide(wasAlternate: wasAlternate, nowAlternate: nowAlternate)
         if decision.altScreenChanged {
