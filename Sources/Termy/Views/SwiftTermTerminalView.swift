@@ -23,6 +23,8 @@ struct SwiftTermTerminalView: NSViewRepresentable {
     let onScreenText: (@escaping () -> String) -> Void
     let storeRef: TermyStore
     let onCaretOrigin: (@escaping () -> (x: CGFloat, y: CGFloat)?) -> Void
+    let onBlockCaptureArm: (@escaping () -> Void) -> Void
+    let onBlockCaptureSnapshot: (@escaping () -> String?) -> Void
     let onSendInput: (@escaping (String) -> Void) -> Void
     let initialTranscriptReplay: String?
     let onInitialTranscriptReplayed: () -> Void
@@ -100,6 +102,8 @@ struct SwiftTermTerminalView: NSViewRepresentable {
             guard f != .zero else { return nil }
             return (x: f.maxX, y: view.frame.height - f.maxY)
         }
+        onBlockCaptureArm { [weak view] in view?.armBlockCapture() }
+        onBlockCaptureSnapshot { [weak view] in view?.captureBlockSnapshotANSI() }
         onSendInput { [weak view] text in
             view?.send(txt: text)
         }

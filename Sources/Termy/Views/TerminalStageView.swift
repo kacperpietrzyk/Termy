@@ -194,6 +194,8 @@ struct LiveTerminalSurface: View {
                 onScreenText: { provider in store.registerTerminalScreenTextProvider(provider, for: session.id) },
                 storeRef: store,
                 onCaretOrigin: { provider in store.registerTerminalCaretOriginProvider(provider, for: session.id) },
+                onBlockCaptureArm: { handler in store.registerTerminalBlockArmHandler(handler, for: session.id) },
+                onBlockCaptureSnapshot: { provider in store.registerTerminalBlockSnapshotProvider(provider, for: session.id) },
                 onSendInput: { sink in store.registerTerminalInputSink(sink, for: session.id) },
                 initialTranscriptReplay: store.initialTerminalTranscriptReplay(for: session.id),
                 onInitialTranscriptReplayed: { store.clearInitialTerminalTranscriptReplay(for: session.id) }

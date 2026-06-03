@@ -3944,6 +3944,9 @@ final class TermyStore: ObservableObject {
         terminalInputHighlights = [:]
         terminalCaretOriginProviders = [:]
         terminalInputSinks = [:]
+        terminalBlockSnapshots = [:]
+        terminalBlockSnapshotProviders = [:]
+        terminalBlockArmHandlers = [:]
         terminalMenuStates = [:]
         commandStartTimes = [:]
         commandDurations = [:]
@@ -4816,6 +4819,8 @@ final class TermyStore: ObservableObject {
         terminalInputHighlights[sessionID] = nil
         terminalCaretOriginProviders[sessionID] = nil
         terminalInputSinks[sessionID] = nil
+        terminalBlockSnapshots[sessionID] = nil
+        clearTerminalBlockProviders(for: sessionID)
 
         // F-4: tear down per-session sidecar.
         sidecarDebounceTasks[sessionID]?.cancel()
@@ -5507,6 +5512,7 @@ final class TermyStore: ObservableObject {
                     pendingCommandPromptIndex[sessionID] = promptIndex
                     commandStartTimes[sessionID, default: [:]][promptIndex] = Date()
                 }
+                terminalBlockArmHandlers[sessionID]?()   // Slice-1: arm buffer capture at OSC 133 C
                 statusMessage = "Running \(command)"
                 // F-2: history is now the persistent HistoryStore; cwd is the
                 // session's currentWorkingDirectory at command-start time (last
@@ -5531,6 +5537,16 @@ final class TermyStore: ObservableObject {
                 guard let index = sessions.firstIndex(where: { $0.id == sessionID }) else { return }
                 sessions[index].lastExitCode = exitCode
                 sessions[index].currentWorkingDirectory = workingDirectory
+                // Slice-1: snapshot finished output from the authoritative SwiftTerm buffer.
+                // ALWAYS store when a provider exists (coalesce nil → ""): a pure TUI command
+                // (`claude`) leaves no captured range after alt-screen gating, and an EMPTY
+                // snapshot is the correct CLEAN result — it must NOT fall back to the
+                // residue-prone re-parse. Independent `if let` (not folded into the duration
+                // block): a commandFinished without a recorded start must still capture.
+                if let promptIndex = pendingCommandPromptIndex[sessionID],
+                   let provider = terminalBlockSnapshotProviders[sessionID] {
+                    terminalBlockSnapshots[sessionID, default: [:]][promptIndex] = provider() ?? ""
+                }
                 // v3 block terminal: finalize duration for the pending prompt index.
                 if let promptIndex = pendingCommandPromptIndex[sessionID],
                    let start = commandStartTimes[sessionID]?[promptIndex] {
@@ -5695,6 +5711,27 @@ final class TermyStore: ObservableObject {
     }
     func terminalCaretOrigin(for id: UUID) -> (x: CGFloat, y: CGFloat)? {
         terminalCaretOriginProviders[id]?()
+    }
+
+    // Slice-1: SwiftTerm-buffer snapshots of finished command blocks, keyed by
+    // the block's start line (the prompt line index). Replaces re-parsed output
+    // for finished blocks in `renderedTerminalCommandBlocks()`.
+    private var terminalBlockSnapshots: [UUID: [Int: String]] = [:]
+    private var terminalBlockSnapshotProviders: [UUID: () -> String?] = [:]
+    private var terminalBlockArmHandlers: [UUID: () -> Void] = [:]
+
+    func registerTerminalBlockSnapshotProvider(_ provider: @escaping () -> String?, for id: UUID) {
+        terminalBlockSnapshotProviders[id] = provider
+    }
+    func registerTerminalBlockArmHandler(_ handler: @escaping () -> Void, for id: UUID) {
+        terminalBlockArmHandlers[id] = handler
+    }
+    func clearTerminalBlockProviders(for id: UUID) {
+        terminalBlockSnapshotProviders[id] = nil
+        terminalBlockArmHandlers[id] = nil
+    }
+    func terminalBlockSnapshotForTesting(sessionID: UUID) -> [Int: String]? {
+        terminalBlockSnapshots[sessionID]
     }
 
     /// F-1: SwiftTerm finished rendering a visual change. Refresh the ghost
