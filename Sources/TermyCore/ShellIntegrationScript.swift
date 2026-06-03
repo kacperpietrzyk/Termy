@@ -13,13 +13,11 @@ public enum ShellIntegrationScript {
         let specBlock = specStylesBlock.isEmpty ? "" : specStylesBlock + "\n"
         return """
         autoload -Uz add-zsh-hook add-zle-hook-widget
-        termy_preexec() {
-          # Slice-2c: per-command context for the Warp block header. Real fields go
-          # FIRST and the command LAST so a command containing `;branch=…`/`;cmd=…`
-          # can't shadow a legit field (parser is first-wins). Every probe is cheap,
-          # quiet, and fail-open — a missing/slow git or node never blocks the prompt
-          # beyond its own call. `--no-optional-locks` avoids index-lock contention.
-          local termy_branch termy_gitstatus
+        # Slice-2c / Bug 1+3: probe the Warp context fields for the CURRENT $PWD into
+        # the caller's locals `termy_branch`/`termy_gitstatus`/`termy_node` (zsh
+        # dynamic scope — caller declares them `local`). Every probe is cheap, quiet,
+        # and fail-open; `--no-optional-locks` avoids index-lock contention.
+        termy_probe_context() {
           termy_branch="$(git --no-optional-locks symbolic-ref --short -q HEAD 2>/dev/null)"
           termy_gitstatus=''
           if [[ -n $termy_branch ]]; then
@@ -30,12 +28,39 @@ public enum ShellIntegrationScript {
             TERMY_NODE_PROBED=1
             command -v node >/dev/null 2>&1 && TERMY_NODE_VER="$(node --version 2>/dev/null)"
           fi
+          # Bug 3 / Warp parity: surface node ONLY inside a node-flavored project —
+          # a package.json found walking up to the git root. Other runtimes
+          # (Cargo.toml→Rust, requirements.txt→Python, …) = a separate multi-runtime
+          # feature, intentionally NOT built here. Version stays session-constant
+          # (nvm-per-dir unhandled, pre-existing limit).
+          termy_node=''
+          if [[ -n $TERMY_NODE_VER ]]; then
+            local termy_d="$PWD"
+            while [[ -n $termy_d && $termy_d != / ]]; do
+              if [[ -f $termy_d/package.json ]]; then termy_node="$TERMY_NODE_VER"; break; fi
+              [[ -e $termy_d/.git ]] && break   # stop at the repo root
+              termy_d="${termy_d:h}"
+            done
+          fi
+        }
+        termy_preexec() {
+          # Per-command context for the Warp block header. Real fields go FIRST and
+          # the command LAST so a command containing `;branch=…`/`;cmd=…` can't
+          # shadow a legit field (parser is first-wins).
+          local termy_branch termy_gitstatus termy_node
+          termy_probe_context
           printf '\\033]133;C;branch=%s;gitstatus=%s;node=%s;cmd=%s\\007' \\
-            "$termy_branch" "$termy_gitstatus" "$TERMY_NODE_VER" "$1"
+            "$termy_branch" "$termy_gitstatus" "$termy_node" "$1"
         }
         termy_precmd() {
           local termy_status=$?
-          printf '\\033]133;D;exit=%d;pwd=%s\\007' "$termy_status" "$PWD"
+          # Bug 1: carry LIVE prompt context on D too (precmd fires before EVERY
+          # prompt incl. the first), so the pinned input bar shows the branch right
+          # after a `cd` — and clears it on `cd` into a non-repo (empty fields).
+          local termy_branch termy_gitstatus termy_node
+          termy_probe_context
+          printf '\\033]133;D;exit=%d;pwd=%s;branch=%s;gitstatus=%s;node=%s\\007' \\
+            "$termy_status" "$PWD" "$termy_branch" "$termy_gitstatus" "$termy_node"
         }
         add-zsh-hook preexec termy_preexec
         add-zsh-hook precmd termy_precmd

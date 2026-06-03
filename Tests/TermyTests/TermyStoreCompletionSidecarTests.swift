@@ -357,4 +357,40 @@ final class TermyStoreCompletionSidecarTests: XCTestCase {
         XCTAssertNil(store.terminalSidecarGhost(for: sid),
             "commandStarted must clear the sidecar ghost.")
     }
+
+    // MARK: - 11. Bug 2: an accepted token is not re-suggested
+
+    /// After accepting "Projects" (the shell echoes it back → buffer "cd Projects"),
+    /// the sidecar re-queries and returns the EXACT token again. A candidate that
+    /// adds nothing to the current token must NOT re-surface the menu — mirroring
+    /// the ghost path, which already drops empty-suffix candidates.
+    func test_sidecarResult_exactMatchOfCurrentToken_doesNotResurfaceMenu() {
+        let store = makeStore()
+        let sid = store.testAddRawPtySession(cwd: "/tmp")
+        store.testMarkDebounceElapsed(sid)
+        store.ingestShellIntegrationEvents(
+            [.inputBufferChanged(text: "cd Projects", cursor: 11, length: 11)], for: sid)
+        store.applySidecarEventForTesting(.result(id: 1, items: [
+            CompletionCandidate(title: "Projects", replacement: "Projects", kind: .directory)
+        ]), sessionID: sid)
+        XCTAssertFalse(store.testMenuIsOpen(for: sid),
+            "an exact-match candidate adds nothing → menu must not reopen after accept")
+    }
+
+    /// The zero-contribution candidate is dropped, but a genuinely extending one
+    /// (descend into a subdir) still opens the menu and is the only row shown.
+    func test_sidecarResult_dropsZeroContributionKeepsExtending() {
+        let store = makeStore()
+        let sid = store.testAddRawPtySession(cwd: "/tmp")
+        store.testMarkDebounceElapsed(sid)
+        store.ingestShellIntegrationEvents(
+            [.inputBufferChanged(text: "cd Projects", cursor: 11, length: 11)], for: sid)
+        store.applySidecarEventForTesting(.result(id: 1, items: [
+            CompletionCandidate(title: "Projects", replacement: "Projects", kind: .directory),
+            CompletionCandidate(title: "Projects/Nexus", replacement: "Projects/Nexus", kind: .directory),
+        ]), sessionID: sid)
+        XCTAssertTrue(store.testMenuIsOpen(for: sid), "an extending candidate still opens the menu")
+        XCTAssertEqual(store.terminalMenuSnapshot(for: sid)?.items.map(\.replacement), ["Projects/Nexus"],
+            "the zero-contribution exact match is filtered out of the menu")
+    }
 }

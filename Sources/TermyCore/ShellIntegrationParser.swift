@@ -13,6 +13,11 @@ public enum ShellIntegrationEvent: Equatable, Sendable {
     /// `.commandStarted` so the store can key it to the same command. Each field
     /// is nil when the shell reported it empty (not in a repo, no node, etc).
     case commandContext(branch: String?, gitStatus: String?, node: String?)
+    /// Bug 1 (Slice-2): LIVE prompt context carried on the D marker (precmd, which
+    /// fires before EVERY prompt incl. the first). Reflects the CURRENT `$PWD`, so
+    /// the pinned input bar shows the branch right after a `cd` without waiting for
+    /// the next command. All-nil clears stale context (e.g. `cd` into a non-repo).
+    case promptContext(branch: String?, gitStatus: String?, node: String?)
 }
 
 /// FB-1: one `region_highlight` span over the live line-editor buffer —
@@ -166,7 +171,19 @@ public struct ShellIntegrationParser: Sendable {
             return events
         case "D":
             let exitCode = Int32(values["exit"] ?? "") ?? 0
-            return [.commandFinished(exitCode: exitCode, workingDirectory: values["pwd"])]
+            var events: [ShellIntegrationEvent] = [
+                .commandFinished(exitCode: exitCode, workingDirectory: values["pwd"]),
+            ]
+            // Bug 1: precmd carries live prompt context. Gate on KEY PRESENCE (not
+            // non-empty value) so an empty marker still emits a clearing
+            // `.promptContext(nil,nil,nil)`; a legacy D (no keys) stays unchanged.
+            if values["branch"] != nil || values["gitstatus"] != nil || values["node"] != nil {
+                events.append(.promptContext(
+                    branch: values["branch"].flatMap { $0.isEmpty ? nil : $0 },
+                    gitStatus: values["gitstatus"].flatMap { $0.isEmpty ? nil : $0 },
+                    node: values["node"].flatMap { $0.isEmpty ? nil : $0 }))
+            }
+            return events
         case "T":
             guard let b64 = values["b"],
                   let data = Data(base64Encoded: b64),

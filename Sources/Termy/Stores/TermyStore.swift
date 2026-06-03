@@ -2679,12 +2679,17 @@ final class TermyStore: ObservableObject {
         commandContext[id]?[startLine]
     }
 
-    /// Slice-2b: the most recent command's context, used as the LIVE pinned-input
-    /// header proxy (branch/node). Stale-until-next-command: a `cd` into another
-    /// repo won't refresh the live branch until a command runs — it is NOT a fresh
-    /// probe. Live cwd comes from the session directly (always current).
-    func latestCommandContext(for id: UUID) -> TerminalBlockContext? {
-        commandContext[id]?.max(by: { $0.key < $1.key })?.value
+    /// Bug 1 (Slice-2): LIVE prompt context fed by the precmd (D marker), which
+    /// fires before EVERY prompt incl. the first — so a `cd` into another repo
+    /// refreshes the pinned-bar branch/node WITHOUT waiting for a command, and a
+    /// `cd` into a non-repo clears it (the marker carries empty fields). Distinct
+    /// from per-block `commandContext` (captured at the command's own preexec).
+    private var livePromptContext: [UUID: TerminalBlockContext] = [:]
+
+    /// The pinned input bar's live header context. nil before the first precmd is
+    /// seen → the bar degrades to cwd-only, never a stale command's branch.
+    func livePromptContext(for id: UUID) -> TerminalBlockContext? {
+        livePromptContext[id]
     }
 
     func commandDuration(forSession id: UUID, startLine: Int) -> TimeInterval? {
@@ -2854,6 +2859,18 @@ final class TermyStore: ObservableObject {
     static func lastWhitespaceToken(_ text: String) -> String {
         guard let spaceIdx = text.lastIndex(of: " ") else { return text }
         return String(text[text.index(after: spaceIdx)...])
+    }
+
+    /// Bug 2: whether a candidate would insert ≥1 char at the current token — i.e.
+    /// it actually EXTENDS what the user typed. Handles both candidate shapes
+    /// (full-buffer "git status" and last-token "status"), mirroring
+    /// `terminalMenuAcceptedSuffix`. A candidate equal to the buffer/token adds
+    /// nothing and must not re-surface the menu (the just-accepted-token bug).
+    static func candidateExtendsCurrentToken(_ c: CompletionCandidate, buffer: String) -> Bool {
+        if c.replacement.hasPrefix(buffer) { return c.replacement.count > buffer.count }
+        let token = lastWhitespaceToken(buffer)
+        if c.replacement.hasPrefix(token) { return c.replacement.count > token.count }
+        return true   // different shape → assume it contributes
     }
 
     /// The ghost-text suffix to display/accept for `sessionID`, or nil when
@@ -4034,6 +4051,7 @@ final class TermyStore: ObservableObject {
         commandStartCwd = [:]
         commandUsedAltScreen = [:]
         commandContext = [:]
+        livePromptContext = [:]
         pendingCommandPromptIndex = [:]
         terminalLocalClearSinks = [:]
         terminalAltScreen = [:]
@@ -4925,6 +4943,7 @@ final class TermyStore: ObservableObject {
         commandStartCwd[sessionID] = nil
         commandUsedAltScreen[sessionID] = nil
         commandContext[sessionID] = nil
+        livePromptContext[sessionID] = nil
         pendingCommandPromptIndex[sessionID] = nil
         terminalLocalClearSinks[sessionID] = nil
         terminalAltScreen[sessionID] = nil
@@ -5422,11 +5441,19 @@ final class TermyStore: ObservableObject {
         sidecarLastAppliedId[sessionID] = id
 
         // Always cache the latest items so recomputeSidecarGhost has them even
-        // when the menu is closed (debounce not yet elapsed).
+        // when the menu is closed (debounce not yet elapsed). The ghost path drops
+        // its own empty-suffix candidate (recomputeSidecarGhost), so the cache stays
+        // unfiltered.
         sidecarLastCandidates[sessionID] = items
 
-        if items.isEmpty {
-            // Zero items: close menu if open.
+        // Bug 2: the MENU drops candidates that add nothing to the current token
+        // (an already-complete word, e.g. accepting "Projects" then the shell echoes
+        // it back). Without this the just-accepted token re-surfaces the menu.
+        let buffer = terminalInputBuffers[sessionID]?.text ?? ""
+        let menuItems = items.filter { Self.candidateExtendsCurrentToken($0, buffer: buffer) }
+
+        if menuItems.isEmpty {
+            // Nothing to add: close menu if open.
             if terminalMenuStates[sessionID] != nil {
                 terminalMenuStates[sessionID] = nil
                 objectWillChange.send()
@@ -5440,12 +5467,12 @@ final class TermyStore: ObservableObject {
                 // the hijack mid-typing.
                 let clamped = prev.selection < 0
                     ? Self.menuNoSelection
-                    : max(0, min(prev.selection, items.count - 1))
-                terminalMenuStates[sessionID] = MenuState(items: items, selection: clamped)
+                    : max(0, min(prev.selection, menuItems.count - 1))
+                terminalMenuStates[sessionID] = MenuState(items: menuItems, selection: clamped)
                 objectWillChange.send()
             } else if debounceReady {
                 // Auto-open when debounce elapsed — Warp parity: NOTHING selected.
-                terminalMenuStates[sessionID] = MenuState(items: items, selection: Self.menuNoSelection)
+                terminalMenuStates[sessionID] = MenuState(items: menuItems, selection: Self.menuNoSelection)
                 objectWillChange.send()
             }
             // If debounce not yet elapsed, items cached above; menu opens on next debounce.
@@ -5722,6 +5749,13 @@ final class TermyStore: ObservableObject {
                     commandContext[sessionID, default: [:]][promptIndex] =
                         TerminalBlockContext(branch: branch, gitStatus: gitStatus, node: node)
                 }
+            case .promptContext(let branch, let gitStatus, let node):
+                // Bug 1: precmd's live context for the CURRENT prompt — drives the
+                // pinned input bar's header. Always overwrite (incl. all-nil) so a
+                // `cd` into a non-repo clears a stale branch.
+                livePromptContext[sessionID] =
+                    TerminalBlockContext(branch: branch, gitStatus: gitStatus, node: node)
+                objectWillChange.send()
             }
         }
     }

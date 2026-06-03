@@ -260,34 +260,36 @@ final class Slice2aContextHeaderTests: XCTestCase {
                      "old unshifted context key must be gone")
     }
 
-    // MARK: - Slice-2b: live pinned-bar context proxy
+    // MARK: - Bug 1 (Slice-2): live pinned-bar context from precmd (.promptContext)
 
-    func testLatestCommandContextReturnsMostRecent() throws {
+    func testLivePromptContextRefreshesOnCdAndClearsInNonRepo() throws {
         let store = TermyStore(startInitialPTY: false)
         guard let id = store.selectedSessionID else { return XCTFail("expected a session") }
 
-        store.ingestShellIntegrationEvents([
-            .commandStarted("a"),
-            .commandContext(branch: "old", gitStatus: nil, node: "v20"),
-            .commandFinished(exitCode: 0, workingDirectory: "/repo"),
-            .commandStarted("b"),
-            .commandContext(branch: "new", gitStatus: "*", node: "v20"),
-            .commandFinished(exitCode: 0, workingDirectory: "/repo"),
-        ], for: id)
+        // Before the first precmd is seen → nil, so the bar is cwd-only (never a
+        // stale command's branch).
+        XCTAssertNil(store.livePromptContext(for: id),
+                     "no precmd yet → nil live context")
 
-        let latest = try XCTUnwrap(store.latestCommandContext(for: id))
-        XCTAssertEqual(latest.branch, "new", "live proxy reflects the most recent command's branch")
-        XCTAssertEqual(latest.gitStatus, "*")
-    }
+        // precmd in repo A.
+        store.ingestShellIntegrationEvents(
+            [.promptContext(branch: "main", gitStatus: "*", node: "v20")], for: id)
+        XCTAssertEqual(store.livePromptContext(for: id)?.branch, "main")
+        XCTAssertEqual(store.livePromptContext(for: id)?.gitStatus, "*")
 
-    func testLatestCommandContextNilWhenNoneCaptured() {
-        let store = TermyStore(startInitialPTY: false)
-        guard let id = store.selectedSessionID else { return XCTFail("expected a session") }
-        store.ingestShellIntegrationEvents([
-            .commandStarted("echo"),
-            .commandFinished(exitCode: 0, workingDirectory: "/tmp"),
-        ], for: id)
-        XCTAssertNil(store.latestCommandContext(for: id), "no context captured → nil live proxy")
+        // `cd` into repo B → the fresh precmd overwrites WITHOUT a command running.
+        store.ingestShellIntegrationEvents(
+            [.promptContext(branch: "dev", gitStatus: nil, node: nil)], for: id)
+        XCTAssertEqual(store.livePromptContext(for: id)?.branch, "dev",
+                       "live branch refreshes on `cd` before any command runs")
+        XCTAssertNil(store.livePromptContext(for: id)?.gitStatus)
+
+        // `cd` into a non-repo → all-nil precmd CLEARS the stale branch.
+        store.ingestShellIntegrationEvents(
+            [.promptContext(branch: nil, gitStatus: nil, node: nil)], for: id)
+        let cleared = try XCTUnwrap(store.livePromptContext(for: id))
+        XCTAssertNil(cleared.branch, "a non-repo prompt clears the stale branch")
+        XCTAssertNil(cleared.node)
     }
 
     // MARK: - pure header formatter

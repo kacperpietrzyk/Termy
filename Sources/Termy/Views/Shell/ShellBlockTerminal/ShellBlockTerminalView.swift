@@ -37,10 +37,11 @@ struct ShellBlockTranscript: View {
     private var ghost: String? { store.terminalInlineSuggestionSuffix(for: session.id) }
     private var highlights: [InputHighlightSpan] { store.terminalLiveHighlights(for: session.id) }
 
-    // §12.1 live pinned-input context header: real live cwd + the most-recent
-    // command's git/node as a proxy (stale-until-next-command, NOT a live probe).
+    // §12.1 live pinned-input context header: real live cwd + the precmd-fed
+    // live branch/node for the CURRENT prompt (Bug 1: refreshes on `cd`, clears
+    // in a non-repo; nil before the first precmd → cwd-only, never stale).
     private var liveContextHeader: String {
-        let ctx = store.latestCommandContext(for: session.id)
+        let ctx = store.livePromptContext(for: session.id)
         return ShellModuleModel.blockContextHeader(
             node: ctx?.node,
             cwd: session.currentWorkingDirectory,

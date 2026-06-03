@@ -72,6 +72,61 @@ final class ShellIntegrationParserContextTests: XCTestCase {
                        "parser keys must match the script's printf keys")
     }
 
+    // MARK: - Bug 1: precmd (D marker) carries LIVE prompt context
+
+    /// The D marker (precmd, fired before EVERY prompt incl. the first) now also
+    /// carries branch/gitstatus/node for the CURRENT $PWD, so the pinned input
+    /// bar reflects the branch right after a `cd` — without waiting for a command.
+    func testDMarkerCarriesPromptContext() {
+        var p = ShellIntegrationParser()
+        let events = p.consume(marker("D;exit=0;pwd=/repo;branch=main;gitstatus=*;node=v20.11.0"))
+        XCTAssertEqual(events, [
+            .commandFinished(exitCode: 0, workingDirectory: "/repo"),
+            .promptContext(branch: "main", gitStatus: "*", node: "v20.11.0"),
+        ])
+    }
+
+    /// `cd` into a non-repo emits the context KEYS but with empty values → a
+    /// `.promptContext(nil,nil,nil)` that CLEARS the stale pinned-bar context
+    /// (otherwise the previous repo's branch would linger).
+    func testDMarkerWithEmptyContextClearsPromptContext() {
+        var p = ShellIntegrationParser()
+        let events = p.consume(marker("D;exit=0;pwd=/home/me;branch=;gitstatus=;node="))
+        XCTAssertEqual(events, [
+            .commandFinished(exitCode: 0, workingDirectory: "/home/me"),
+            .promptContext(branch: nil, gitStatus: nil, node: nil),
+        ])
+    }
+
+    /// A legacy D marker (exit+pwd only, no context keys) must stay exactly
+    /// `.commandFinished` — no spurious promptContext.
+    func testLegacyDMarkerEmitsOnlyCommandFinished() {
+        var p = ShellIntegrationParser()
+        let events = p.consume(marker("D;exit=3;pwd=/tmp"))
+        XCTAssertEqual(events, [.commandFinished(exitCode: 3, workingDirectory: "/tmp")])
+    }
+
+    /// Bug 3 (Warp parity) + Bug 1: the generated script must gate the `node=`
+    /// field on a node-flavored project (package.json walk-up) and emit the live
+    /// prompt context on the precmd D marker. Behavioural verification needs a real
+    /// zsh; this asserts the load-bearing script shape (the most a unit test can do).
+    func testScriptGatesNodeOnProjectAndEmitsLivePromptContext() {
+        let script = ShellIntegrationScript.zsh()
+        XCTAssertTrue(script.contains("termy_probe_context"),
+                      "shared context probe must exist")
+        XCTAssertTrue(script.contains("package.json"),
+                      "Bug 3: node must be gated on a package.json walk-up, not probed unconditionally")
+        XCTAssertTrue(script.contains("D;exit=%d;pwd=%s;branch=%s;gitstatus=%s;node=%s"),
+                      "Bug 1: precmd D marker must carry live branch/gitstatus/node")
+        // The exact precmd-shaped D marker must parse to commandFinished + promptContext.
+        var p = ShellIntegrationParser()
+        let events = p.consume(marker("D;exit=0;pwd=/p/app;branch=main;gitstatus=;node=v20"))
+        XCTAssertEqual(events, [
+            .commandFinished(exitCode: 0, workingDirectory: "/p/app"),
+            .promptContext(branch: "main", gitStatus: nil, node: "v20"),
+        ])
+    }
+
     func testContextMarkerSplitAcrossChunksReassembles() {
         var p = ShellIntegrationParser()
         let full = marker("C;branch=dev;gitstatus=*;node=v18;cmd=make")
