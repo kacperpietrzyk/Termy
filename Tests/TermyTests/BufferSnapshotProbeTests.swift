@@ -22,6 +22,27 @@ final class BufferSnapshotProbeTests: XCTestCase {
         XCTAssertEqual(line, "hello world")
     }
 
+    // A command's output, anchored by scroll-invariant indices captured right
+    // after it printed, must read back IDENTICALLY after lots more output scrolls
+    // it down — using only public scroll-invariant API.
+    func testScrollInvariantRangeSurvivesScrolling() {
+        let view = makeView()
+        let term = view.getTerminal()
+        feed(view, "MARKER-START\r\n")
+        feed(view, "line-A\r\nline-B\r\nline-C\r\n")
+        guard let range = term.getScrollInvariantUpdateRange() else {
+            return XCTFail("no scroll-invariant update range after output")
+        }
+        let before = BufferSnapshot.lines(term, scrollInvariantRows: range.startY...range.endY)
+        XCTAssertTrue(before.contains { $0.contains("line-B") }, "captured region must include the output")
+
+        // Push the command well below the viewport.
+        for i in 0..<200 { feed(view, "filler-\(i)\r\n") }
+
+        let after = BufferSnapshot.lines(term, scrollInvariantRows: range.startY...range.endY)
+        XCTAssertEqual(before, after, "scroll-invariant indices drifted after scrolling")
+    }
+
     // Reproduces screenshot #6: run `claude`, it enters alt-screen and paints an
     // MCP picker (with CSI cursor moves incl. a split `ESC[78G`), then exits. The
     // MAIN buffer must show ONLY the clean prompt+command region — no `78`, no
