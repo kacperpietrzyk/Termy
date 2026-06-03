@@ -96,6 +96,28 @@ final class BufferSnapshotProbeTests: XCTestCase {
         XCTAssertFalse(dump.contains("code-review-graph"), "alt-screen picker leaked")
     }
 
+    // GAP 2: coordinate consistency between getScrollInvariantUpdateRange() and
+    // getScrollInvariantLine(_:) under scrollback eviction (linesTop > 0).
+    // Forces eviction by printing far more lines than scrollback capacity, then
+    // verifies the range's rows resolve to the correct content via BufferSnapshot.lines.
+    func testRangeAndLineAgreeUnderScrollbackEviction() {
+        let view = makeView()                       // BufferSnapshotProbeTests has makeView()/feed()
+        let term = view.getTerminal()
+        term.changeScrollback(20)                   // small scrollback so eviction happens
+        // Print a unique marker, then far more lines than scrollback+viewport so
+        // the marker is evicted-pressure / scrolled well above the viewport but
+        // still within the 20-line scrollback window... actually print the marker
+        // LAST-but-not-visible: print filler, then marker, then more filler that
+        // pushes marker above the viewport but keeps it within scrollback.
+        for i in 0..<40 { feed(view, "pre-\(i)\r\n") }     // force linesTop > 0
+        term.clearUpdateRange()
+        feed(view, "UNIQUE-MARKER\r\n")
+        guard let r = term.getScrollInvariantUpdateRange() else { return XCTFail("no range") }
+        let captured = BufferSnapshot.lines(term, scrollInvariantRows: r.startY...r.endY).filter { !$0.isEmpty }
+        XCTAssertTrue(captured.contains("UNIQUE-MARKER"),
+                      "range↔line coords disagree under eviction (linesTop>0): got \(captured)")
+    }
+
     func testAnsiStringReencodesColorRunsRoundTrippable() {
         let cells: [BufferSnapshot.Cell] = [
             .init(character: "A", fg: .defaultColor),

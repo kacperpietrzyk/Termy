@@ -25,5 +25,26 @@ final class BlockSnapshotCaptureTests: XCTestCase {
         XCTAssertTrue(snap!.contains("out-3"))
         XCTAssertFalse(snap!.contains("boot"), "pre-arm content must not be in the snapshot")
     }
+
+    // GAP 1: alt-screen accumulation bug. When a command (e.g. `claude`) enters
+    // alt-screen and exits (like `claude` launching its TUI picker), accumulation
+    // must be skipped while in alt-screen so pendingBlockRange stays nil — the
+    // command produced no main-buffer output, so the snapshot must be nil.
+    //
+    // Pre-fix: accumulateBlockRange() runs unconditionally → alt ranges accumulate
+    //          → captureBlockSnapshotANSI() returns non-nil (blank row padding).
+    // Post-fix: accumulation gated to non-alt slices → stays nil → returns nil.
+    func testAltScreenCommandProducesCleanSnapshot() {
+        let view = makeView()
+        feed(view, "prompt ❯ claude\r\n")
+        view.armBlockCapture()                                  // claude starts
+        feed(view, "\u{1B}[?1049h\u{1B}[2J2 new MCP servers\r\n[x] obsidian")
+        feed(view, "\u{1B}[78")                                 // split CSI inside alt
+        feed(view, "G\u{1B}[?1049l")                            // alt exit
+        // A pure alt-screen episode produces no main-buffer output.
+        // The snapshot must be nil (pendingBlockRange must remain nil).
+        XCTAssertNil(view.captureBlockSnapshotANSI(),
+            "alt-screen episode accumulated into pendingBlockRange — snapshot should be nil")
+    }
 }
 #endif

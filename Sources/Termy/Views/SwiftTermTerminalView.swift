@@ -398,9 +398,9 @@ final class TappedLocalProcessTerminalView: LocalProcessTerminalView {
         // late — PRODUCT_DIAGNOSIS §9).
         let wasAlternate = getTerminal().isCurrentBufferAlternate
         super.dataReceived(slice: slice)   // SwiftTerm renders, unchanged
-        accumulateBlockRange()             // Slice-1: union this slice's dirty range
         let nowAlternate = getTerminal().isCurrentBufferAlternate
         let decision = AltScreenTapDecision.decide(wasAlternate: wasAlternate, nowAlternate: nowAlternate)
+        if decision.ingest { accumulateBlockRange() }  // Slice-1: only non-alt output feeds the snapshot
         if decision.altScreenChanged {
             onAltScreenChanged?(nowAlternate)   // arm suppression BEFORE any later ingest
         }
