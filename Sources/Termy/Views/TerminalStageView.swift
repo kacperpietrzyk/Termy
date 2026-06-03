@@ -749,9 +749,20 @@ struct CompletionMenuOverlay: View {
     }
 
     private var menuContent: some View {
-        ScrollView(.vertical, showsIndicators: false) {
-            menuRows
-                .padding(.vertical, verticalInset)
+        ScrollViewReader { proxy in
+            ScrollView(.vertical, showsIndicators: false) {
+                menuRows
+                    .padding(.vertical, verticalInset)
+            }
+            // Bug 4: follow the selection when arrow-nav moves it past the visible
+            // window. Guard the B4 "nothing selected" sentinel (−1) — scrollTo(-1)
+            // targets no row. ForEach ids are the row offsets, so scrollTo(idx) hits.
+            .onChange(of: snapshot.selection) {
+                guard snapshot.selection >= 0 else { return }
+                withAnimation(.easeOut(duration: 0.12)) {
+                    proxy.scrollTo(snapshot.selection, anchor: .center)
+                }
+            }
         }
     }
 
