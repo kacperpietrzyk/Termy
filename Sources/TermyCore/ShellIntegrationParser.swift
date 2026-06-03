@@ -62,6 +62,10 @@ public struct ShellIntegrationParser: Sendable {
     private static let markerTerminator = "\u{7}"
 
     private var buffer = ""
+    /// Stateless; used only to detect an incomplete trailing escape sequence so
+    /// a CSI/OSC split across PTY read slices is reassembled instead of leaking
+    /// its tail as glyphs (the `claude`-exit `78` residue).
+    private let ansiParser = TerminalANSIParser()
 
     public init() {}
 
@@ -79,8 +83,23 @@ public struct ShellIntegrationParser: Sendable {
 
         while !buffer.isEmpty {
             guard let markerStart = buffer.range(of: Self.markerPrefix) else {
-                emitOutput(buffer, into: &events)
-                buffer.removeAll()
+                // No (complete) OSC 133 marker remains. The trailing bytes may be
+                // an escape sequence sliced by a PTY read boundary (e.g. `ESC[78`
+                // missing its final `G`, or a split `ESC]13`-prefixed marker). On
+                // `consume`, retain that fragment so the next chunk reassembles
+                // it; on `flush` (end of stream) it can never complete, so drop
+                // it rather than leak its tail as glyphs.
+                if let hold = ansiParser.indexOfIncompleteTrailingEscape(in: buffer) {
+                    emitOutput(String(buffer[..<hold]), into: &events)
+                    if allowIncompleteTrailingMarker {
+                        buffer.removeSubrange(..<hold)
+                    } else {
+                        buffer.removeAll()
+                    }
+                } else {
+                    emitOutput(buffer, into: &events)
+                    buffer.removeAll()
+                }
                 break
             }
 
