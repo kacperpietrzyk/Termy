@@ -227,6 +227,36 @@ final class Slice2aContextHeaderTests: XCTestCase {
                      "old unshifted context key must be gone")
     }
 
+    // MARK: - Slice-2b: live pinned-bar context proxy
+
+    func testLatestCommandContextReturnsMostRecent() throws {
+        let store = TermyStore(startInitialPTY: false)
+        guard let id = store.selectedSessionID else { return XCTFail("expected a session") }
+
+        store.ingestShellIntegrationEvents([
+            .commandStarted("a"),
+            .commandContext(branch: "old", gitStatus: nil, node: "v20"),
+            .commandFinished(exitCode: 0, workingDirectory: "/repo"),
+            .commandStarted("b"),
+            .commandContext(branch: "new", gitStatus: "*", node: "v20"),
+            .commandFinished(exitCode: 0, workingDirectory: "/repo"),
+        ], for: id)
+
+        let latest = try XCTUnwrap(store.latestCommandContext(for: id))
+        XCTAssertEqual(latest.branch, "new", "live proxy reflects the most recent command's branch")
+        XCTAssertEqual(latest.gitStatus, "*")
+    }
+
+    func testLatestCommandContextNilWhenNoneCaptured() {
+        let store = TermyStore(startInitialPTY: false)
+        guard let id = store.selectedSessionID else { return XCTFail("expected a session") }
+        store.ingestShellIntegrationEvents([
+            .commandStarted("echo"),
+            .commandFinished(exitCode: 0, workingDirectory: "/tmp"),
+        ], for: id)
+        XCTAssertNil(store.latestCommandContext(for: id), "no context captured → nil live proxy")
+    }
+
     // MARK: - pure header formatter
 
     func testHeaderAllFieldsPresent() {

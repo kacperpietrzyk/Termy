@@ -37,12 +37,16 @@ struct ShellBlockTranscript: View {
     private var ghost: String? { store.terminalInlineSuggestionSuffix(for: session.id) }
     private var highlights: [InputHighlightSpan] { store.terminalLiveHighlights(for: session.id) }
 
-    private var promptUserHost: String {
-        let host = session.profile.kind == .local ? ShellModuleModel.machineShortName : session.profile.host
-        return session.profile.user.map { "\($0)@\(host)" } ?? host
-    }
-    private var cwd: String? {
-        session.currentWorkingDirectory.map { ShellModuleModel.abbreviateTilde($0) }
+    // §12.1 live pinned-input context header: real live cwd + the most-recent
+    // command's git/node as a proxy (stale-until-next-command, NOT a live probe).
+    private var liveContextHeader: String {
+        let ctx = store.latestCommandContext(for: session.id)
+        return ShellModuleModel.blockContextHeader(
+            node: ctx?.node,
+            cwd: session.currentWorkingDirectory,
+            branch: ctx?.branch,
+            gitStatus: ctx?.gitStatus,
+            duration: nil)
     }
 
     // Slice-2a hover actions. Copy = command + its output; Copy cwd/branch copy the
@@ -59,48 +63,57 @@ struct ShellBlockTranscript: View {
     }
 
     var body: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 12) {
-                    ForEach(blocks) { block in
-                        ShellCommandBlockCard(
-                            block: block,
-                            theme: store.terminalTheme,
-                            monoFont: monoFont,
-                            onCopy: { copyBlock(block) },
-                            onRerun: { store.rerunCommand(block.command) },
-                            onCopyCwd: { copyToPasteboard(block.contextCwd) },
-                            onCopyBranch: { copyToPasteboard(block.branch) })
-                            .id(block.startLine)
+        // §12.1 pinned-input layout: history SCROLLS in the flexible top slot
+        // (bottom-aligned — short history sits low, void above, Warp-style); the
+        // live input is a permanently PINNED bar below, out of the scroll. The
+        // pinned bar stays INSIDE this transcript (the opaque overlay over the
+        // SwiftTerm host), so the covered host remains first responder and keys
+        // still reach the shell — the live bar only mirrors OSC 133 T.
+        VStack(spacing: 0) {
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 12) {
+                        ForEach(blocks) { block in
+                            ShellCommandBlockCard(
+                                block: block,
+                                theme: store.terminalTheme,
+                                monoFont: monoFont,
+                                onCopy: { copyBlock(block) },
+                                onRerun: { store.rerunCommand(block.command) },
+                                onCopyCwd: { copyToPasteboard(block.contextCwd) },
+                                onCopyBranch: { copyToPasteboard(block.branch) })
+                                .id(block.startLine)
+                        }
+                        Color.clear.frame(height: 1).id(Self.bottomID)
                     }
-                    // The live input block — only at the prompt. While a command
-                    // runs, the RUNNING card above is the active line instead.
-                    if !executing {
-                        ShellLiveBlock(
-                            promptUserHost: promptUserHost,
-                            cwd: cwd,
-                            text: liveInput.text,
-                            cursor: liveInput.cursor,
-                            ghost: ghost,
-                            highlights: highlights,
-                            monoFont: monoFont)
-                    }
-                    Color.clear.frame(height: 1).id(Self.bottomID)
+                    .padding(.horizontal, 18).padding(.top, 14).padding(.bottom, 8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .padding(.horizontal, 18).padding(.top, 14).padding(.bottom, 14)
+                // Bottom-anchored: content shorter than the viewport sits at the
+                // bottom (intentional void above); newest block stays pinned as
+                // history grows. Explicit scrollTo backstops append/exec changes.
+                .defaultScrollAnchor(.bottom)
+                .onChange(of: blocks.count) { proxy.scrollTo(Self.bottomID, anchor: .bottom) }
+                .onChange(of: executing) { proxy.scrollTo(Self.bottomID, anchor: .bottom) }
             }
-            // Keep the bottom (live block / running card) in view as history
-            // grows and as you type.
-            .onChange(of: blocks.count) { proxy.scrollTo(Self.bottomID, anchor: .bottom) }
-            .onChange(of: liveInput.text) { proxy.scrollTo(Self.bottomID, anchor: .bottom) }
-            .onChange(of: executing) { proxy.scrollTo(Self.bottomID, anchor: .bottom) }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            PinnedInputBar(
+                contextHeader: liveContextHeader,
+                executing: executing,
+                text: liveInput.text,
+                cursor: liveInput.cursor,
+                ghost: ghost,
+                highlights: highlights,
+                monoFont: monoFont)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         // §6.1 term-window surface = the handoff design dark (bg1), matching
         // ShellTermWindow's pane so the transcript and chrome are one surface.
         .background(Color(DesignTokens.bg1))
         // F-3: render the completion menu (same store state that drives the key
-        // monitor) anchored under the live caret, on top of the transcript.
+        // monitor) anchored to the live caret — now from the PINNED bar, so the
+        // anchor is scroll-stable; the overlay flips the menu ABOVE the caret
+        // since it sits near the viewport bottom.
         .overlayPreferenceValue(LiveCaretBoundsKey.self) { caretAnchor in
             GeometryReader { geo in
                 if let caretAnchor, let menu = store.terminalMenuSnapshot(for: session.id) {
@@ -117,13 +130,52 @@ struct ShellBlockTranscript: View {
     }
 }
 
-/// The live (currently-typed) command, rendered as a block matching
-/// `ShellCommandBlockCard`'s prompt line: `user@host:cwd ❯ <buffer>` + a blinking
-/// caret + dimmed F-1 ghost text. Text comes from `TermyStore.terminalLiveInput`
-/// (OSC 133 T, the F-1 buffer publish); the ghost from `terminalInlineSuggestionSuffix`.
+/// §12.1 permanently-pinned bottom input bar: a muted live context header
+/// (node·cwd·branch·gitStatus, mirroring the block header) above the live prompt.
+/// While a command runs the prompt is a dim placeholder (no caret/anchor — zle
+/// isn't publishing, and no menu should open), keeping the bar height stable so
+/// the layout never jumps. The bar lives INSIDE the transcript overlay so the
+/// covered SwiftTerm host keeps first-responder focus.
+struct PinnedInputBar: View {
+    let contextHeader: String
+    let executing: Bool
+    let text: String
+    let cursor: Int
+    let ghost: String?
+    let highlights: [InputHighlightSpan]
+    let monoFont: Font
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            if !contextHeader.isEmpty {
+                Text(contextHeader)
+                    .font(Typography.mono(10.5))
+                    .foregroundStyle(Color(DesignTokens.fg4))
+            }
+            if executing {
+                // Stable-height placeholder; a command owns the line, no live input.
+                (Text("❯ ").foregroundStyle(Color(DesignTokens.fg4))
+                 + Text("running…").foregroundStyle(Color(DesignTokens.fg4)))
+                    .font(monoFont)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                ShellLiveBlock(
+                    text: text, cursor: cursor, ghost: ghost,
+                    highlights: highlights, monoFont: monoFont)
+            }
+        }
+        .padding(.horizontal, 18).padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(DesignTokens.bg1))
+        .overlay(alignment: .top) { Rectangle().fill(Color(DesignTokens.hair)).frame(height: 1) }
+    }
+}
+
+/// The live (currently-typed) command: `❯ <buffer>` + a blinking caret + dimmed
+/// F-1 ghost text (the cwd/branch/node live above it in `PinnedInputBar`'s
+/// header). Text comes from `TermyStore.terminalLiveInput` (OSC 133 T, the F-1
+/// buffer publish); the ghost from `terminalInlineSuggestionSuffix`.
 struct ShellLiveBlock: View {
-    let promptUserHost: String
-    let cwd: String?
     let text: String
     let cursor: Int
     let ghost: String?
@@ -139,9 +191,7 @@ struct ShellLiveBlock: View {
         let beforeAttr = AttributedString(full[full.startIndex..<splitIndex])
         let afterAttr = AttributedString(full[splitIndex..<full.endIndex])
         HStack(alignment: .center, spacing: 0) {
-            (Text(promptUserHost).foregroundStyle(Color(DesignTokens.primary))
-             + Text(cwd.map { ":\($0)" } ?? "").foregroundStyle(Color(DesignTokens.fg3))
-             + Text("  ❯ ").foregroundStyle(Color(DesignTokens.primary))
+            (Text("❯ ").foregroundStyle(Color(DesignTokens.primary))
              + Text(beforeAttr))
                 .font(monoFont)
             // Caret sits at the cursor index (supports mid-line editing).

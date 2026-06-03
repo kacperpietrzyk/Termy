@@ -2672,6 +2672,14 @@ final class TermyStore: ObservableObject {
         commandContext[id]?[startLine]
     }
 
+    /// Slice-2b: the most recent command's context, used as the LIVE pinned-input
+    /// header proxy (branch/node). Stale-until-next-command: a `cd` into another
+    /// repo won't refresh the live branch until a command runs — it is NOT a fresh
+    /// probe. Live cwd comes from the session directly (always current).
+    func latestCommandContext(for id: UUID) -> TerminalBlockContext? {
+        commandContext[id]?.max(by: { $0.key < $1.key })?.value
+    }
+
     func commandDuration(forSession id: UUID, startLine: Int) -> TimeInterval? {
         commandDurations[id]?[startLine]
     }
