@@ -52,6 +52,15 @@ enum BufferSnapshot {
     /// Consecutive same-foreground cells are coalesced into one SGR run; each
     /// line resets (`ESC[0m`) at its end. Trailing blanks are already trimmed by
     /// the cell readers.
+    ///
+    /// Slice-1 fidelity limits (deliberate, documented):
+    /// - Only the FOREGROUND color is captured. Reverse-video / `.defaultInvertedColor`
+    ///   loses its fg/bg-swap intent (mapped to `ESC[39m`), so a reverse-video
+    ///   status bar renders as plain text in the frozen block.
+    /// - The 16 basic ANSI colors round-trip as `ESC[38;5;Nm` → the parser's
+    ///   palette LUT → an approximate `.trueColor` (e.g. index 1 → (205,0,0)),
+    ///   NOT the live terminal theme's color. Frozen blocks may show marginally
+    ///   different basic colors than the live SwiftTerm view.
     static func ansiString(forCells rows: [[Cell]]) -> String {
         rows.map { cells -> String in
             var out = ""
@@ -78,6 +87,12 @@ enum BufferSnapshot {
 
     /// Read a scroll-invariant row range as an SGR-colored string (one snapshot
     /// of a command's output, ready for the block card).
+    ///
+    /// Completeness is bounded by SwiftTerm's scrollback depth: rows already
+    /// evicted from the buffer return nil from `getScrollInvariantLine` and are
+    /// skipped, so a command whose output exceeded the scrollback shows a
+    /// truncated snapshot (the early rows are gone from the buffer). Spec §7
+    /// raises scrollback to mitigate; a per-block cap is a later concern.
     static func ansiString(_ terminal: Terminal, scrollInvariantRows range: ClosedRange<Int>) -> String {
         var rows: [[Cell]] = []
         for row in range {
