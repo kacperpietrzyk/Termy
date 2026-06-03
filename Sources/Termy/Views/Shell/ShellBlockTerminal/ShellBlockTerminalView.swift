@@ -45,6 +45,19 @@ struct ShellBlockTranscript: View {
         session.currentWorkingDirectory.map { ShellModuleModel.abbreviateTilde($0) }
     }
 
+    // Slice-2a hover actions. Copy = command + its output; Copy cwd/branch copy the
+    // single field. No-op when the field is absent (Copy branch before Slice-2c).
+    private func copyBlock(_ block: TerminalRenderedCommandBlock) {
+        let output = block.outputLines.map(\.text).joined()
+        let text = output.isEmpty ? block.command : "\(block.command)\n\(output)"
+        copyToPasteboard(text)
+    }
+    private func copyToPasteboard(_ text: String?) {
+        guard let text, !text.isEmpty else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+    }
+
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
@@ -52,10 +65,12 @@ struct ShellBlockTranscript: View {
                     ForEach(blocks) { block in
                         ShellCommandBlockCard(
                             block: block,
-                            promptUserHost: promptUserHost,
-                            cwd: cwd,
                             theme: store.terminalTheme,
-                            monoFont: monoFont)
+                            monoFont: monoFont,
+                            onCopy: { copyBlock(block) },
+                            onRerun: { store.rerunCommand(block.command) },
+                            onCopyCwd: { copyToPasteboard(block.contextCwd) },
+                            onCopyBranch: { copyToPasteboard(block.branch) })
                             .id(block.startLine)
                     }
                     // The live input block — only at the prompt. While a command

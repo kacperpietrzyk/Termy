@@ -93,6 +93,18 @@ struct TerminalRenderedCommandBlock: Identifiable {
     let outputLines: [TerminalLine]
     let isSelected: Bool
     let isFolded: Bool
+    /// Slice-2a Warp context header. `contextCwd` = the directory the command was
+    /// LAUNCHED in (captured at command start, not the session's current cwd).
+    /// `branch`/`gitStatus`/`node` are populated by Slice-2c (nil until then); the
+    /// header renders gracefully over whatever is present.
+    var contextCwd: String? = nil
+    var branch: String? = nil
+    var gitStatus: String? = nil
+    var node: String? = nil
+    /// True when this command drove the alternate screen (claude/vim/htop). Its
+    /// snapshot is intentionally empty; the card shows a compact "ran fullscreen"
+    /// annotation instead of nothing.
+    var enteredAltScreen: Bool = false
 
     var id: Int { startLine }
 }

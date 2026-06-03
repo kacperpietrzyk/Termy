@@ -1133,7 +1133,9 @@ final class TermyStore: ObservableObject {
                 duration: commandDuration(forSession: selectedSession.id, startLine: block.startLine),
                 outputLines: effectiveOutputLines,
                 isSelected: selectedTerminalBlockStartLine == block.startLine,
-                isFolded: foldedTerminalBlockStartLines.contains(block.startLine)
+                isFolded: foldedTerminalBlockStartLines.contains(block.startLine),
+                contextCwd: commandStartCwd(forSession: selectedSession.id, startLine: block.startLine),
+                enteredAltScreen: commandUsedAltScreen(forSession: selectedSession.id, startLine: block.startLine)
             )
         }
     }
@@ -2644,9 +2646,25 @@ final class TermyStore: ObservableObject {
     private var commandStartTimes: [UUID: [Int: Date]] = [:]
     private var commandDurations: [UUID: [Int: TimeInterval]] = [:]
     private var pendingCommandPromptIndex: [UUID: Int] = [:]
+    /// Slice-2a: the directory each command was LAUNCHED in, keyed by prompt line
+    /// index. Captured at `.commandStarted` — at that instant the session's
+    /// `currentWorkingDirectory` still holds the prior command's exit-pwd, so this
+    /// is the honest per-block launch dir (the next `.commandFinished` advances cwd).
+    private var commandStartCwd: [UUID: [Int: String]] = [:]
+    /// Slice-2a: prompt indices whose command drove the alternate screen
+    /// (claude/vim/htop). Lets the card distinguish "ran fullscreen" from "no output".
+    private var commandUsedAltScreen: [UUID: Set<Int>] = [:]
 
     func commandDuration(forSession id: UUID, startLine: Int) -> TimeInterval? {
         commandDurations[id]?[startLine]
+    }
+
+    func commandStartCwd(forSession id: UUID, startLine: Int) -> String? {
+        commandStartCwd[id]?[startLine]
+    }
+
+    func commandUsedAltScreen(forSession id: UUID, startLine: Int) -> Bool {
+        commandUsedAltScreen[id]?.contains(startLine) ?? false
     }
 
     /// v3 block terminal: render-only clear of the live SwiftTerm VIEW (not the
@@ -2670,6 +2688,12 @@ final class TermyStore: ObservableObject {
         objectWillChange.send()
         let wasActive = terminalAltScreen[id] ?? false
         terminalAltScreen[id] = active
+        // Slice-2a: if a command is in flight when the alt screen turns on, tag its
+        // block so the card shows a compact "ran fullscreen" line (its snapshot is
+        // intentionally empty) rather than reading as a no-output command.
+        if active, let promptIndex = pendingCommandPromptIndex[id] {
+            commandUsedAltScreen[id, default: []].insert(promptIndex)
+        }
         // P2a follow-up: a full-screen TUI (claude/vim/htop) OWNED the display while
         // on the alternate screen, so its command block has no meaningful inline
         // output. On EXIT, the bytes captured around the alt↔normal transition (a
@@ -3336,6 +3360,18 @@ final class TermyStore: ObservableObject {
         }
     }
 
+    /// Slice-2a block hover action "Rerun": EXECUTE a finished block's command
+    /// again at the live prompt (writes `command\r` via the input sink). Unlike
+    /// `insertCommandAtPrompt` this runs immediately, matching Warp's "rerun".
+    /// No-op without a live input sink (e.g. a `.commandLine` SSH session).
+    func rerunCommand(_ command: String) {
+        let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, let id = selectedSessionID,
+              let sink = terminalInputSinks[id] else { return }
+        sink(trimmed + "\r")
+        statusMessage = "Rerunning \"\(trimmed)\"."
+    }
+
     /// v3 Shell §6.1 Find action: reveal the on-demand find/output toolbar and
     /// ask its field to take focus. The field (`TerminalSearchBar`) observes the
     /// monotonic token; the toolbar is gated on `terminalSearchVisible`.
@@ -3963,6 +3999,8 @@ final class TermyStore: ObservableObject {
         terminalMenuStates = [:]
         commandStartTimes = [:]
         commandDurations = [:]
+        commandStartCwd = [:]
+        commandUsedAltScreen = [:]
         pendingCommandPromptIndex = [:]
         terminalLocalClearSinks = [:]
         terminalAltScreen = [:]
@@ -4851,6 +4889,8 @@ final class TermyStore: ObservableObject {
         // v3 block terminal: clear per-command timing state.
         commandStartTimes[sessionID] = nil
         commandDurations[sessionID] = nil
+        commandStartCwd[sessionID] = nil
+        commandUsedAltScreen[sessionID] = nil
         pendingCommandPromptIndex[sessionID] = nil
         terminalLocalClearSinks[sessionID] = nil
         terminalAltScreen[sessionID] = nil
@@ -5491,6 +5531,12 @@ final class TermyStore: ObservableObject {
         if let snaps = terminalBlockSnapshots[sessionID] {
             terminalBlockSnapshots[sessionID] = Self.shiftLineKeys(snaps, by: overflow)
         }
+        if let cwds = commandStartCwd[sessionID] {
+            commandStartCwd[sessionID] = Self.shiftLineKeys(cwds, by: overflow)
+        }
+        if let alt = commandUsedAltScreen[sessionID] {
+            commandUsedAltScreen[sessionID] = Set(alt.compactMap { $0 >= overflow ? $0 - overflow : nil })
+        }
         if let pending = pendingCommandPromptIndex[sessionID] {
             pendingCommandPromptIndex[sessionID] = pending >= overflow ? pending - overflow : nil
         }
@@ -5527,6 +5573,12 @@ final class TermyStore: ObservableObject {
                     let promptIndex = sessions[si].lines.count - 1
                     pendingCommandPromptIndex[sessionID] = promptIndex
                     commandStartTimes[sessionID, default: [:]][promptIndex] = Date()
+                    // Slice-2a: record the launch dir. At command start the session's
+                    // cwd still reflects the PRIOR command's exit-pwd (advanced only at
+                    // the next commandFinished), so this is where THIS command runs.
+                    if let cwd = sessions[si].currentWorkingDirectory, !cwd.isEmpty {
+                        commandStartCwd[sessionID, default: [:]][promptIndex] = cwd
+                    }
                 }
                 terminalBlockArmHandlers[sessionID]?()   // Slice-1: arm buffer capture at OSC 133 C
                 statusMessage = "Running \(command)"
