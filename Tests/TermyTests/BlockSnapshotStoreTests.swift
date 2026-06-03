@@ -74,6 +74,36 @@ final class BlockSnapshotStoreTests: XCTestCase {
                      "snapshot dict must remain nil when no provider is registered")
     }
 
+    func testRenderedBlockUsesSnapshotOutputWhenPresent() {
+        let store = TermyStore(startInitialPTY: false)
+        guard let id = store.selectedSessionID else { return XCTFail("no selected session") }
+        store.registerTerminalBlockArmHandler({}, for: id)
+        store.registerTerminalBlockSnapshotProvider({ "SNAPSHOT-LINE" }, for: id)
+        store.ingestShellIntegrationEvents([
+            .commandStarted("echo hi"),
+            .output("RAW-REPARSE\n"),
+            .commandFinished(exitCode: 0, workingDirectory: "/tmp"),
+        ], for: id)
+        let blocks = store.renderedTerminalCommandBlocks()
+        let text = blocks.first?.outputLines.map(\.text).joined() ?? ""
+        XCTAssertTrue(text.contains("SNAPSHOT-LINE"), "finished block must render the snapshot")
+        XCTAssertFalse(text.contains("RAW-REPARSE"), "finished block must NOT render the re-parsed output")
+    }
+
+    func testRenderedBlockEmptySnapshotRendersNoOutput() {
+        let store = TermyStore(startInitialPTY: false)
+        guard let id = store.selectedSessionID else { return XCTFail("no selected session") }
+        store.registerTerminalBlockArmHandler({}, for: id)
+        store.registerTerminalBlockSnapshotProvider({ "" }, for: id)     // clean / pure-TUI
+        store.ingestShellIntegrationEvents([
+            .commandStarted("claude"),
+            .output("junk-from-reparse\n"),
+            .commandFinished(exitCode: 0, workingDirectory: "/tmp"),
+        ], for: id)
+        let blocks = store.renderedTerminalCommandBlocks()
+        XCTAssertEqual(blocks.first?.outputLines.count, 0, "empty snapshot → no output lines (clean block)")
+    }
+
     /// Multiple commands each get their own keyed snapshot.
     func testMultipleCommandsGetSeparateSnapshots() throws {
         let (store, id) = makeStore()

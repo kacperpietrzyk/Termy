@@ -1119,13 +1119,19 @@ final class TermyStore: ObservableObject {
                     return nil
                 }
             }
+            let snapshot = terminalBlockSnapshots[selectedSession.id]?[block.startLine]
+            let effectiveOutputLines: [TerminalLine] = {
+                guard let snapshot else { return outputLines }     // no snapshot (running / unsnapshotted) → re-parse
+                guard !snapshot.isEmpty else { return [] }         // clean / pure-TUI → no output
+                return [TerminalLine(role: .stdout, text: snapshot)]
+            }()
             return TerminalRenderedCommandBlock(
                 command: block.command,
                 startLine: block.startLine,
                 endLine: block.endLine,
                 exitCode: block.exitCode,
                 duration: commandDuration(forSession: selectedSession.id, startLine: block.startLine),
-                outputLines: outputLines,
+                outputLines: effectiveOutputLines,
                 isSelected: selectedTerminalBlockStartLine == block.startLine,
                 isFolded: foldedTerminalBlockStartLines.contains(block.startLine)
             )
