@@ -14,7 +14,24 @@ public enum ShellIntegrationScript {
         return """
         autoload -Uz add-zsh-hook add-zle-hook-widget
         termy_preexec() {
-          printf '\\033]133;C;cmd=%s\\007' "$1"
+          # Slice-2c: per-command context for the Warp block header. Real fields go
+          # FIRST and the command LAST so a command containing `;branch=…`/`;cmd=…`
+          # can't shadow a legit field (parser is first-wins). Every probe is cheap,
+          # quiet, and fail-open — a missing/slow git or node never blocks the prompt
+          # beyond its own call. `--no-optional-locks` avoids index-lock contention.
+          local termy_branch termy_gitstatus
+          termy_branch="$(git --no-optional-locks symbolic-ref --short -q HEAD 2>/dev/null)"
+          termy_gitstatus=''
+          if [[ -n $termy_branch ]]; then
+            git --no-optional-locks diff --quiet --ignore-submodules HEAD 2>/dev/null || termy_gitstatus='*'
+          fi
+          # node version is session-constant; probe once, then reuse the cached value.
+          if [[ -z $TERMY_NODE_PROBED ]]; then
+            TERMY_NODE_PROBED=1
+            command -v node >/dev/null 2>&1 && TERMY_NODE_VER="$(node --version 2>/dev/null)"
+          fi
+          printf '\\033]133;C;branch=%s;gitstatus=%s;node=%s;cmd=%s\\007' \\
+            "$termy_branch" "$termy_gitstatus" "$TERMY_NODE_VER" "$1"
         }
         termy_precmd() {
           local termy_status=$?

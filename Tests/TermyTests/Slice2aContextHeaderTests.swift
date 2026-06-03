@@ -141,6 +141,92 @@ final class Slice2aContextHeaderTests: XCTestCase {
                        "old unshifted alt-screen key must be gone")
     }
 
+    // MARK: - Slice-2c: per-block git/node context
+
+    func testCommandContextKeyedToItsBlock() throws {
+        let store = TermyStore(startInitialPTY: false)
+        guard let id = store.selectedSessionID else { return XCTFail("expected a session") }
+
+        store.ingestShellIntegrationEvents([
+            .commandStarted("git status"),
+            .commandContext(branch: "main", gitStatus: "*", node: "v20.11.0"),
+            .commandFinished(exitCode: 0, workingDirectory: "/repo"),
+        ], for: id)
+
+        let block = try XCTUnwrap(store.renderedTerminalCommandBlocks().first)
+        XCTAssertEqual(block.branch, "main")
+        XCTAssertEqual(block.gitStatus, "*")
+        XCTAssertEqual(block.node, "v20.11.0")
+    }
+
+    func testTwoCommandsCaptureTheirOwnBranch() throws {
+        let store = TermyStore(startInitialPTY: false)
+        guard let id = store.selectedSessionID else { return XCTFail("expected a session") }
+
+        // Command on branch A, then a checkout, then a command on branch B.
+        store.ingestShellIntegrationEvents([
+            .commandStarted("build"),
+            .commandContext(branch: "feature-a", gitStatus: nil, node: "v20"),
+            .commandFinished(exitCode: 0, workingDirectory: "/repo"),
+            .commandStarted("test"),
+            .commandContext(branch: "feature-b", gitStatus: "*", node: "v20"),
+            .commandFinished(exitCode: 0, workingDirectory: "/repo"),
+        ], for: id)
+
+        let blocks = store.renderedTerminalCommandBlocks()
+        XCTAssertEqual(blocks.count, 2)
+        XCTAssertEqual(blocks[0].branch, "feature-a", "first block keeps the branch it ran on")
+        XCTAssertEqual(blocks[1].branch, "feature-b", "second block reflects the post-checkout branch")
+        XCTAssertNil(blocks[0].gitStatus, "clean tree → nil dirty marker")
+        XCTAssertEqual(blocks[1].gitStatus, "*")
+    }
+
+    func testCommandContextNilWhenAbsent() throws {
+        let store = TermyStore(startInitialPTY: false)
+        guard let id = store.selectedSessionID else { return XCTFail("expected a session") }
+        // No .commandContext (e.g. not in a repo, node absent).
+        store.ingestShellIntegrationEvents([
+            .commandStarted("echo hi"),
+            .commandFinished(exitCode: 0, workingDirectory: "/tmp"),
+        ], for: id)
+
+        let block = try XCTUnwrap(store.renderedTerminalCommandBlocks().first)
+        XCTAssertNil(block.branch)
+        XCTAssertNil(block.gitStatus)
+        XCTAssertNil(block.node)
+    }
+
+    func testCommandContextSurvivesTranscriptTrim() throws {
+        let localProfile = try XCTUnwrap(ConnectionProfile.local())
+        let store = TermyStore(startInitialPTY: false)
+        let session = TermySession(
+            title: "Local Shell",
+            profile: localProfile,
+            lines: (0..<9_998).map { TerminalLine(role: .stdout, text: "line \($0)") },
+            interactionMode: .rawPTY
+        )
+        store.sessions = [session]
+        store.selectedSessionID = session.id
+
+        // prompt at 9,998; exit at 9,999 → 10,000 lines, no trim yet.
+        store.ingestShellIntegrationEvents([
+            .commandStarted("ls"),
+            .commandContext(branch: "main", gitStatus: "*", node: "v20"),
+            .commandFinished(exitCode: 0, workingDirectory: "/repo"),
+        ], for: session.id)
+
+        let originalKey = 9_998
+        XCTAssertEqual(store.commandContext(forSession: session.id, startLine: originalKey)?.branch, "main")
+
+        // Trigger trim: a new command appends one prompt line → overflow = 1.
+        store.ingestShellIntegrationEvents([.commandStarted("next")], for: session.id)
+
+        XCTAssertEqual(store.commandContext(forSession: session.id, startLine: originalKey - 1)?.branch, "main",
+                       "context key must shift down by the drop count")
+        XCTAssertNil(store.commandContext(forSession: session.id, startLine: originalKey),
+                     "old unshifted context key must be gone")
+    }
+
     // MARK: - pure header formatter
 
     func testHeaderAllFieldsPresent() {

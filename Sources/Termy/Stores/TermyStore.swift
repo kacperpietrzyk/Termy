@@ -1120,6 +1120,7 @@ final class TermyStore: ObservableObject {
                 }
             }
             let snapshot = terminalBlockSnapshots[selectedSession.id]?[block.startLine]
+            let ctx = commandContext(forSession: selectedSession.id, startLine: block.startLine)
             let effectiveOutputLines: [TerminalLine] = {
                 guard let snapshot else { return outputLines }     // no snapshot (running / unsnapshotted) → re-parse
                 guard !snapshot.isEmpty else { return [] }         // clean / pure-TUI → no output
@@ -1135,6 +1136,9 @@ final class TermyStore: ObservableObject {
                 isSelected: selectedTerminalBlockStartLine == block.startLine,
                 isFolded: foldedTerminalBlockStartLines.contains(block.startLine),
                 contextCwd: commandStartCwd(forSession: selectedSession.id, startLine: block.startLine),
+                branch: ctx?.branch,
+                gitStatus: ctx?.gitStatus,
+                node: ctx?.node,
                 enteredAltScreen: commandUsedAltScreen(forSession: selectedSession.id, startLine: block.startLine)
             )
         }
@@ -2654,6 +2658,19 @@ final class TermyStore: ObservableObject {
     /// Slice-2a: prompt indices whose command drove the alternate screen
     /// (claude/vim/htop). Lets the card distinguish "ran fullscreen" from "no output".
     private var commandUsedAltScreen: [UUID: Set<Int>] = [:]
+    /// Slice-2c: per-command git/node context for the Warp header, captured at
+    /// preexec (OSC 133 C) and keyed by prompt line index. git is genuinely
+    /// per-block; `node` is per-session (probed once — see ShellIntegrationScript).
+    struct TerminalBlockContext: Equatable {
+        var branch: String?
+        var gitStatus: String?
+        var node: String?
+    }
+    private var commandContext: [UUID: [Int: TerminalBlockContext]] = [:]
+
+    func commandContext(forSession id: UUID, startLine: Int) -> TerminalBlockContext? {
+        commandContext[id]?[startLine]
+    }
 
     func commandDuration(forSession id: UUID, startLine: Int) -> TimeInterval? {
         commandDurations[id]?[startLine]
@@ -4001,6 +4018,7 @@ final class TermyStore: ObservableObject {
         commandDurations = [:]
         commandStartCwd = [:]
         commandUsedAltScreen = [:]
+        commandContext = [:]
         pendingCommandPromptIndex = [:]
         terminalLocalClearSinks = [:]
         terminalAltScreen = [:]
@@ -4891,6 +4909,7 @@ final class TermyStore: ObservableObject {
         commandDurations[sessionID] = nil
         commandStartCwd[sessionID] = nil
         commandUsedAltScreen[sessionID] = nil
+        commandContext[sessionID] = nil
         pendingCommandPromptIndex[sessionID] = nil
         terminalLocalClearSinks[sessionID] = nil
         terminalAltScreen[sessionID] = nil
@@ -5537,6 +5556,9 @@ final class TermyStore: ObservableObject {
         if let alt = commandUsedAltScreen[sessionID] {
             commandUsedAltScreen[sessionID] = Set(alt.compactMap { $0 >= overflow ? $0 - overflow : nil })
         }
+        if let ctx = commandContext[sessionID] {
+            commandContext[sessionID] = Self.shiftLineKeys(ctx, by: overflow)
+        }
         if let pending = pendingCommandPromptIndex[sessionID] {
             pendingCommandPromptIndex[sessionID] = pending >= overflow ? pending - overflow : nil
         }
@@ -5678,6 +5700,13 @@ final class TermyStore: ObservableObject {
                 // FB-1: store the live-input highlight spans for the live block.
                 terminalInputHighlights[sessionID] = spans
                 objectWillChange.send()
+            case .commandContext(let branch, let gitStatus, let node):
+                // Slice-2c: emitted right after `.commandStarted`, so the pending
+                // prompt index is set — key the git/node header context to it.
+                if let promptIndex = pendingCommandPromptIndex[sessionID] {
+                    commandContext[sessionID, default: [:]][promptIndex] =
+                        TerminalBlockContext(branch: branch, gitStatus: gitStatus, node: node)
+                }
             }
         }
     }

@@ -8,6 +8,11 @@ public enum ShellIntegrationEvent: Equatable, Sendable {
     /// FB-1: zsh-syntax-highlighting `region_highlight` spans for the live input
     /// line, published alongside the buffer (separate OSC 133 `H` marker).
     case inputHighlightsChanged([InputHighlightSpan])
+    /// Slice-2c: per-command context captured at preexec and carried on the C
+    /// marker (`branch=`/`gitstatus=`/`node=`). Emitted right after the matching
+    /// `.commandStarted` so the store can key it to the same command. Each field
+    /// is nil when the shell reported it empty (not in a repo, no node, etc).
+    case commandContext(branch: String?, gitStatus: String?, node: String?)
 }
 
 /// FB-1: one `region_highlight` span over the live line-editor buffer —
@@ -48,6 +53,8 @@ public struct InputHighlightSpan: Equatable, Sendable {
 /// CONSUMED:
 ///   `C` -> .commandStarted(values["cmd"] ?? "") — the non-standard `cmd=`
 ///     extension IS relied upon; Termy's own ShellIntegrationScript emits it.
+///     Slice-2c: the same marker also carries `branch=`/`gitstatus=`/`node=`; when
+///     any is non-empty a `.commandContext` event is emitted right after.
 ///   `D` -> .commandFinished(exitCode: Int32, workingDirectory: values["pwd"]).
 ///   `T` -> .inputBufferChanged(base64-decoded values["b"], Int(values["c"]) ?? 0, Int(values["n"]) ?? 0)
 ///     — F-1 zle-line-pre-redraw $BUFFER report (Termy-private OSC 133 subtype).
@@ -123,52 +130,62 @@ public struct ShellIntegrationParser: Sendable {
             }
 
             let payload = String(buffer[payloadStart..<markerEnd.lowerBound])
-            if let event = parseMarker(payload) {
-                events.append(event)
-            }
+            events.append(contentsOf: parseMarker(payload))
             buffer.removeSubrange(..<markerEnd.upperBound)
         }
 
         return coalesceOutput(events)
     }
 
-    private func parseMarker(_ payload: String) -> ShellIntegrationEvent? {
+    private func parseMarker(_ payload: String) -> [ShellIntegrationEvent] {
         let segments = payload.split(separator: ";", omittingEmptySubsequences: false).map(String.init)
-        guard let marker = segments.first else { return nil }
+        guard let marker = segments.first else { return [] }
+        // First-wins on duplicate keys: the C marker carries the real fields FIRST
+        // and the user's command LAST, so a command containing `;branch=evil` (or
+        // even `;cmd=…`) can't override a legit earlier field. `uniqueKeysWithValues`
+        // would TRAP on such a duplicate (a reachable crash via `true;cmd=foo`).
         let values = Dictionary(
-            uniqueKeysWithValues: segments.dropFirst().compactMap { segment -> (String, String)? in
+            segments.dropFirst().compactMap { segment -> (String, String)? in
                 guard let separator = segment.firstIndex(of: "=") else { return nil }
                 let key = String(segment[..<separator])
                 let value = String(segment[segment.index(after: separator)...])
                 return (key, value.removingPercentEncoding ?? value)
-            }
+            },
+            uniquingKeysWith: { first, _ in first }
         )
 
         switch marker {
         case "C":
-            return .commandStarted(values["cmd"] ?? "")
+            var events: [ShellIntegrationEvent] = [.commandStarted(values["cmd"] ?? "")]
+            let branch = values["branch"].flatMap { $0.isEmpty ? nil : $0 }
+            let gitStatus = values["gitstatus"].flatMap { $0.isEmpty ? nil : $0 }
+            let node = values["node"].flatMap { $0.isEmpty ? nil : $0 }
+            if branch != nil || gitStatus != nil || node != nil {
+                events.append(.commandContext(branch: branch, gitStatus: gitStatus, node: node))
+            }
+            return events
         case "D":
             let exitCode = Int32(values["exit"] ?? "") ?? 0
-            return .commandFinished(exitCode: exitCode, workingDirectory: values["pwd"])
+            return [.commandFinished(exitCode: exitCode, workingDirectory: values["pwd"])]
         case "T":
             guard let b64 = values["b"],
                   let data = Data(base64Encoded: b64),
-                  let text = String(data: data, encoding: .utf8) else { return nil }
+                  let text = String(data: data, encoding: .utf8) else { return [] }
             let cursor = Int(values["c"] ?? "") ?? 0
             let length = Int(values["n"] ?? "") ?? 0
-            return .inputBufferChanged(text: text, cursor: cursor, length: length)
+            return [.inputBufferChanged(text: text, cursor: cursor, length: length)]
         case "H":
             // FB-1: base64-encoded `region_highlight`, entries joined by `|`.
             // An empty array (no highlighting) decodes to no spans.
             guard let b64 = values["r"],
                   let data = Data(base64Encoded: b64),
-                  let joined = String(data: data, encoding: .utf8) else { return nil }
+                  let joined = String(data: data, encoding: .utf8) else { return [] }
             let spans = joined
                 .split(separator: "|", omittingEmptySubsequences: true)
                 .compactMap { InputHighlightSpan.parse(entry: String($0)) }
-            return .inputHighlightsChanged(spans)
+            return [.inputHighlightsChanged(spans)]
         default:
-            return nil
+            return []
         }
     }
 
