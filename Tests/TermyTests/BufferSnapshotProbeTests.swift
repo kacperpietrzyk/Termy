@@ -96,6 +96,20 @@ final class BufferSnapshotProbeTests: XCTestCase {
         XCTAssertFalse(dump.contains("code-review-graph"), "alt-screen picker leaked")
     }
 
+    func testAnsiStringReencodesColorRunsRoundTrippable() {
+        let cells: [BufferSnapshot.Cell] = [
+            .init(character: "A", fg: .defaultColor),
+            .init(character: "B", fg: .defaultColor),
+            .init(character: "C", fg: .ansi256(code: 3)),
+            .init(character: "D", fg: .ansi256(code: 3)),
+        ]
+        let line = BufferSnapshot.ansiString(forCells: [cells])
+        XCTAssertTrue(line.contains("AB"), "default run text present")
+        XCTAssertTrue(line.contains("\u{1B}[38;5;3m"), "256-color SGR for the yellow run")
+        XCTAssertTrue(line.contains("CD"), "colored run text present")
+        XCTAssertFalse(line.contains("\u{1B}[38;5;3mAB"), "default run must not be colored")
+    }
+
     func testCapturesForegroundColorPerCell() {
         let view = makeView()
         let term = view.getTerminal()
