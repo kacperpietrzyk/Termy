@@ -213,6 +213,22 @@ final class BlockSnapshotStoreTests: XCTestCase {
                        "no snapshot → re-parse fallback")
     }
 
+    func testCopiedBlockOutputIsCleanNotResidue() {
+        let (store, id) = makeStore()
+        store.registerTerminalBlockArmHandler({}, for: id)
+        // An alt-screen command: clean snapshot is empty; re-parse holds residue.
+        store.registerTerminalBlockSnapshotProvider({ "" }, for: id)
+        store.ingestShellIntegrationEvents([
+            .commandStarted("claude"),
+            .output("78obsidian\n"),                       // re-parse residue
+            .commandFinished(exitCode: 0, workingDirectory: "/tmp"),
+        ], for: id)
+        store.copyLastCommandOutput()                       // Copy Last → pasteboard
+        let pasted = NSPasteboard.general.string(forType: .string) ?? "<none>"
+        XCTAssertFalse(pasted.contains("78obsidian"),
+                       "Copy must not paste re-parse residue for a clean alt-screen block")
+    }
+
     /// Slice-3a: while a command is still running (started, no finish) its block is
     /// drawn by SwiftTerm (full-reveal), so it must NOT appear as a re-parse card in
     /// the SwiftUI history list. A finished command stays a frozen history block.

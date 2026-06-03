@@ -1209,13 +1209,9 @@ final class TermyStore: ObservableObject {
         statusMessage = "Selected command block."
     }
 
-    // Slice-1 limitation (terminal rebuild): copy reads `block.output` from the
-    // byte-stream re-parse (`session.lines`), NOT from `terminalBlockSnapshots`.
-    // Finished blocks now RENDER from the clean buffer snapshot, so copy and the
-    // rendered card can diverge — e.g. an alt-screen command (`claude`/`vim`)
-    // shows an empty block but copy yields the re-parse residue. Not a regression
-    // (copy was always re-parse-based); to be re-pointed to the snapshot in the
-    // Path-B-deletion slice (Slice 3).
+    // Slice-3b: copy reads the CLEAN buffer snapshot (via `cleanBlockOutput`),
+    // identical to the rendered card — no more copy/display residue divergence.
+    // Falls back to the re-parse only for a still-running, unsnapshotted block.
     func copyLastCommandOutput() {
         guard let block = terminalCommandBlocks().last else {
             statusMessage = "No command block available to copy."
@@ -1267,7 +1263,7 @@ final class TermyStore: ObservableObject {
 
     private func copyCommandOutput(_ block: TerminalCommandBlock) {
         NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(block.output, forType: .string)
+        NSPasteboard.general.setString(cleanBlockOutput(forBlock: block), forType: .string)
         statusMessage = "Copied output for \(block.command)."
     }
 
