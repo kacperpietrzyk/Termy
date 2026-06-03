@@ -81,6 +81,39 @@ final class Slice2aContextHeaderTests: XCTestCase {
         XCTAssertTrue(block.enteredAltScreen, "a command that drove the alt screen must be flagged")
     }
 
+    /// Regression (visual gate, Slice-2): a finished `claude` block renders a TALL
+    /// BLANK body instead of the compact `▦ ran fullscreen` line. Root cause: after
+    /// the alt screen exits, the shell's primary-screen repaint accumulates a range
+    /// of BLANK rows, which `BufferSnapshot.ansiString` joins as "\n\n…\n" — a string
+    /// of newlines that is NOT `.isEmpty`. The store treated that as real output, so
+    /// `hasOutput == true` both rendered a tall blank body AND suppressed the
+    /// fullscreen annotation. A whitespace-only snapshot is blank restored-screen
+    /// residue, not output.
+    func testWhitespaceOnlySnapshotIsCleanForAltScreenBlock() throws {
+        let store = TermyStore(startInitialPTY: false)
+        guard let id = store.selectedSessionID else { return XCTFail("expected a session") }
+
+        // Exactly what the real view accumulator hands back for a post-alt-exit
+        // repaint of blank rows: trailing cells trimmed → empty rows → newline-joined.
+        store.registerTerminalBlockSnapshotProvider({ "\n\n\n\n" }, for: id)
+
+        store.ingestShellIntegrationEvents([.commandStarted("claude")], for: id)
+        store.setTerminalAltScreen(true, for: id)   // entered alt
+        store.setTerminalAltScreen(false, for: id)  // …and exited
+        store.ingestShellIntegrationEvents([
+            .commandFinished(exitCode: 0, workingDirectory: "/tmp"),
+        ], for: id)
+
+        let block = try XCTUnwrap(store.renderedTerminalCommandBlocks().first)
+        XCTAssertTrue(block.outputLines.isEmpty,
+                      "a whitespace-only snapshot is blank residue, not output")
+        XCTAssertEqual(
+            ShellCommandBlockCard.bodyKind(enteredAltScreen: block.enteredAltScreen,
+                                           hasOutput: !block.outputLines.isEmpty),
+            .fullscreenAnnotation,
+            "claude block must show the compact `▦ ran fullscreen` line, not a tall blank body")
+    }
+
     func testPlainCommandIsNotAltScreenFlagged() throws {
         let store = TermyStore(startInitialPTY: false)
         guard let id = store.selectedSessionID else { return XCTFail("expected a session") }

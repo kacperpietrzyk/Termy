@@ -1123,7 +1123,14 @@ final class TermyStore: ObservableObject {
             let ctx = commandContext(forSession: selectedSession.id, startLine: block.startLine)
             let effectiveOutputLines: [TerminalLine] = {
                 guard let snapshot else { return outputLines }     // no snapshot (running / unsnapshotted) → re-parse
-                guard !snapshot.isEmpty else { return [] }         // clean / pure-TUI → no output
+                // Whitespace-only (incl. a newline-joined run of blank rows, e.g.
+                // "\n\n…\n") is blank restored-screen residue, NOT output: after an
+                // alt-screen TUI (`claude`/`vim`) exits, the shell's primary-screen
+                // repaint accumulates a range of blank rows that `BufferSnapshot`
+                // joins as newlines — non-empty yet visually empty. Treating it as
+                // output rendered a tall blank body AND suppressed the compact
+                // `▦ ran fullscreen` annotation. `.isEmpty` alone misses this.
+                guard !snapshot.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return [] }
                 return [TerminalLine(role: .stdout, text: snapshot)]
             }()
             return TerminalRenderedCommandBlock(
