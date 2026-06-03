@@ -1106,7 +1106,14 @@ final class TermyStore: ObservableObject {
 
     func renderedTerminalCommandBlocks() -> [TerminalRenderedCommandBlock] {
         guard let selectedSession else { return [] }
-        return terminalCommandBlocks().map { block in
+        // Slice-3a: the still-running command is drawn live by SwiftTerm (the
+        // transcript yields while executing — verdict 2a), so it must NOT also
+        // render as a re-parse card here. Drop the block at the pending prompt
+        // index; finished blocks (and their snapshots) are unaffected.
+        let runningStartLine = pendingCommandPromptIndex[selectedSession.id]
+        return terminalCommandBlocks()
+            .filter { $0.startLine != runningStartLine }
+            .map { block in
             let outputLines = selectedSession.lines.enumerated().compactMap { index, line -> TerminalLine? in
                 guard index > block.startLine,
                       index <= block.endLine else {

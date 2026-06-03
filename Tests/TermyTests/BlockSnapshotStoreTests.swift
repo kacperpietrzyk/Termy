@@ -187,4 +187,34 @@ final class BlockSnapshotStoreTests: XCTestCase {
         XCTAssertNil(snapsAfter[originalKey],
                      "old unshifted key must be gone after trim")
     }
+
+    /// Slice-3a: while a command is still running (started, no finish) its block is
+    /// drawn by SwiftTerm (full-reveal), so it must NOT appear as a re-parse card in
+    /// the SwiftUI history list. A finished command stays a frozen history block.
+    func testRunningBlockIsExcludedFromRenderedHistory() {
+        let (store, id) = makeStore()
+        store.registerTerminalBlockArmHandler({}, for: id)
+        store.registerTerminalBlockSnapshotProvider({ "DONE-OUT" }, for: id)
+
+        // First command finishes → frozen history block.
+        store.ingestShellIntegrationEvents([
+            .commandStarted("echo one"),
+            .output("one\n"),
+            .commandFinished(exitCode: 0, workingDirectory: "/tmp"),
+        ], for: id)
+        // Second command is STILL RUNNING (started + output, no finish).
+        store.ingestShellIntegrationEvents([
+            .commandStarted("sleep 9"),
+            .output("RUNNING-REPARSE\n"),
+        ], for: id)
+
+        let blocks = store.renderedTerminalCommandBlocks()
+        XCTAssertTrue(blocks.contains { $0.command == "echo one" },
+                      "finished block must still be present")
+        XCTAssertFalse(blocks.contains { $0.command == "sleep 9" },
+                       "running block must be excluded — SwiftTerm draws the live run")
+        let allText = blocks.flatMap { $0.outputLines.map(\.text) }.joined()
+        XCTAssertFalse(allText.contains("RUNNING-REPARSE"),
+                       "running command's re-parse output must not appear in any card")
+    }
 }
