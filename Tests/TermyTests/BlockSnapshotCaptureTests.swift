@@ -46,5 +46,26 @@ final class BlockSnapshotCaptureTests: XCTestCase {
         XCTAssertNil(view.captureBlockSnapshotANSI(),
             "alt-screen episode accumulated into pendingBlockRange — snapshot should be nil")
     }
+
+    // Slice-3a: the running→finished handoff. A command runs (armed, streams
+    // output) then finishes; the snapshot frozen at OSC 133 D must hold the full
+    // live-run output and stay residue-free when a later `claude` alt-exit (with a
+    // split `ESC[78G`) paints garbage. This locks the 2a render path: what SwiftTerm
+    // drew live is exactly what freezes, with no #6 residue leaking in.
+    func testRunningThenFinishedHandoffIsResidueFree() {
+        let view = makeView()
+        feed(view, "prompt ❯ git status\r\n")
+        view.armBlockCapture()                                  // command starts
+        feed(view, "On branch dev\r\nnothing to commit\r\n")    // live run rows
+        let snap = view.captureBlockSnapshotANSI()              // OSC 133 D
+        // Alt-screen junk AFTER capture — must not appear in the block.
+        feed(view, "\u{1B}[?1049h[x] obsidian\u{1B}[78")
+        feed(view, "G\u{1B}[?1049l")
+        XCTAssertNotNil(snap)
+        XCTAssertTrue(snap!.contains("On branch dev"), "live-run output frozen into the block")
+        XCTAssertTrue(snap!.contains("nothing to commit"), "full run captured")
+        XCTAssertFalse(snap!.contains("78"), "no `78` residue from the later alt-screen")
+        XCTAssertFalse(snap!.contains("obsidian"), "no alt-screen picker leak")
+    }
 }
 #endif
