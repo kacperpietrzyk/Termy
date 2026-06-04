@@ -1273,18 +1273,66 @@ final class TermyStore: ObservableObject {
         statusMessage = "Copied terminal screen."
     }
 
-    /// Slice-3b: the clean, displayed output of a finished command block —
-    /// the Slice-1 buffer snapshot (residue-free by construction) stripped through
-    /// the SAME parser the card renders with, so copy/explain == what's on screen.
-    /// Falls back to the re-parse `block.output` ONLY when no snapshot exists yet
-    /// (a still-running / unsnapshotted block); an empty snapshot (a clean
-    /// alt-screen block) correctly returns "".
+    /// Slice-3b/3c-1: clean displayed output of a finished block for the SELECTED
+    /// session (copy/explain/search). Delegates to the session-scoped form.
     func cleanBlockOutput(forBlock block: TerminalCommandBlock) -> String {
-        guard let selectedSession,
-              let snapshot = terminalBlockSnapshots[selectedSession.id]?[block.startLine] else {
+        cleanBlockOutput(forBlock: block, inSession: selectedSession?.id)
+    }
+
+    /// Slice-3c-2: clean output of a block in an ARBITRARY session (restore persists
+    /// per-session, possibly not the selected one). The Slice-1 snapshot, ANSI-stripped
+    /// through the SAME parser the card renders with; falls back to the re-parse
+    /// `block.output` ONLY when no snapshot exists (running/unsnapshotted block).
+    func cleanBlockOutput(forBlock block: TerminalCommandBlock, inSession sessionID: UUID?) -> String {
+        guard let sessionID,
+              let snapshot = terminalBlockSnapshots[sessionID]?[block.startLine] else {
             return block.output
         }
         return ANSITextParser().parse(snapshot).map(\.text).joined()
+    }
+
+    /// Slice-3c-2: the residue-free scrollback persisted (and thereby replayed) on
+    /// restore for a rawPTY session. Walks `session.lines` and substitutes each finished
+    /// block's raw `.stdout`/`.stderr` output run with the clean buffer snapshot
+    /// (`cleanBlockOutput`), keeping prompt/system/exit marker lines so the rebuilt
+    /// transcript still re-indexes into blocks (and the SwiftTerm replay is clean too).
+    /// A still-running/unsnapshotted block keeps its raw `.output` (no snapshot yet —
+    /// acceptable edge). For non-rawPTY (stream) sessions there is no snapshot source —
+    /// `session.lines` IS the clean surface, returned unchanged.
+    private func cleanScrollbackLines(for session: TermySession) -> [TerminalLine] {
+        guard session.interactionMode == .rawPTY else { return session.lines }
+        let blocks = terminalCommandBlocks(forSession: session.id)
+        guard !blocks.isEmpty else { return session.lines }
+        let startToBlock = Dictionary(blocks.map { ($0.startLine, $0) },
+                                      uniquingKeysWith: { first, _ in first })
+        var replacedOutputIndices = Set<Int>()
+        for block in blocks {
+            for index in session.lines.indices where index > block.startLine && index <= block.endLine {
+                switch session.lines[index].role {
+                case .stdout, .stderr: replacedOutputIndices.insert(index)
+                case .prompt, .system: break
+                }
+            }
+        }
+        var out: [TerminalLine] = []
+        for (index, line) in session.lines.enumerated() {
+            if replacedOutputIndices.contains(index) { continue }   // raw output dropped; clean output emitted at the prompt
+            out.append(line)
+            if let block = startToBlock[index] {
+                let clean = cleanBlockOutput(forBlock: block, inSession: session.id)
+                if !clean.isEmpty {
+                    for row in clean.split(separator: "\n", omittingEmptySubsequences: false) {
+                        out.append(TerminalLine(role: .stdout, text: String(row)))
+                    }
+                }
+            }
+        }
+        return out
+    }
+
+    /// Test seam for `cleanScrollbackLines` (private).
+    func cleanScrollbackLinesForTesting(for session: TermySession) -> [TerminalLine] {
+        cleanScrollbackLines(for: session)
     }
 
     private func copyCommandOutput(_ block: TerminalCommandBlock) {

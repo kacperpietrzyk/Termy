@@ -415,4 +415,33 @@ final class BlockSnapshotStoreTests: XCTestCase {
         XCTAssertFalse(store.terminalSearchResults.isEmpty,
                        "with Find open, output still updates the live match index")
     }
+
+    // MARK: - Slice 3c-2: cleanScrollbackLines
+
+    func testCleanScrollbackSubstitutesBlockOutputWithSnapshot() {
+        let (store, id) = makeStore()                       // initial session is .rawPTY
+        store.registerTerminalBlockArmHandler({}, for: id)
+        store.registerTerminalBlockSnapshotProvider({ "clean-out" }, for: id)
+        store.ingestShellIntegrationEvents([
+            .commandStarted("git status"),
+            .output("78residue\n"),                         // re-parse residue → session.lines .stdout
+            .commandFinished(exitCode: 0, workingDirectory: "/tmp"),
+        ], for: id)
+
+        let session = try! XCTUnwrap(store.sessions.first { $0.id == id })
+        let texts = store.cleanScrollbackLinesForTesting(for: session).map(\.text)
+        XCTAssertTrue(texts.contains { $0.contains("git status") }, "the command/prompt line is preserved (block structure survives)")
+        XCTAssertTrue(texts.contains("clean-out"), "the block's output is the clean snapshot")
+        XCTAssertFalse(texts.joined(separator: "\n").contains("78residue"),
+                       "the re-parse residue output must be substituted out")
+    }
+
+    func testCleanScrollbackPreservesSystemLinesAndIsRawPTYOnly() {
+        let (store, id) = makeStore()
+        let session = try! XCTUnwrap(store.sessions.first { $0.id == id })
+        // The initial rawPTY session carries 2 .system lines and no blocks → passthrough.
+        let texts = store.cleanScrollbackLinesForTesting(for: session).map(\.text)
+        XCTAssertEqual(texts, session.lines.map(\.text),
+                       "no blocks → scrollback is the session's lines unchanged (system lines preserved)")
+    }
 }
