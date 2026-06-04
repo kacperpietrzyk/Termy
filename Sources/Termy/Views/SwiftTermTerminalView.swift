@@ -404,10 +404,19 @@ final class TappedLocalProcessTerminalView: LocalProcessTerminalView {
         super.dataReceived(slice: slice)   // SwiftTerm renders, unchanged
         let nowAlternate = getTerminal().isCurrentBufferAlternate
         let decision = AltScreenTapDecision.decide(wasAlternate: wasAlternate, nowAlternate: nowAlternate)
-        if decision.ingest { accumulateBlockRange() }  // Slice-1: only non-alt output feeds the snapshot
+        // LOAD-BEARING — DO NOT DELETE as "retired re-parse scaffolding" (spec §9 predates
+        // Slice 1 and is stale here). `decision.ingest` now gates the Slice-1 SNAPSHOT
+        // accumulation — the rebuild's CLEAN SOURCE. Removing this gate lets a full-screen
+        // TUI's (`claude`/`vim`/`htop`) alternate-buffer repaint frames into the snapshot,
+        // reviving the `787878%` / mangled-picker residue (screenshot #6) the rebuild killed.
+        if decision.ingest { accumulateBlockRange() }  // only non-alt output feeds the snapshot
         if decision.altScreenChanged {
-            onAltScreenChanged?(nowAlternate)   // arm suppression BEFORE any later ingest
+            onAltScreenChanged?(nowAlternate)   // arm suppression BEFORE any later ingest (drives 3a full-reveal)
         }
+        // Also gated to non-alt: keeps the RETAINED `session.lines` re-parse (still used by
+        // stream/SSH render, the running-block fallback, and 3c-2 restore structure) from
+        // being flooded by thousands of TUI repaint frames. Not scaffolding for a deleted
+        // path — upkeep for a deliberately-kept surface.
         if decision.ingest {
             streamBridge?.ingest(slice)    // observe-only, non-alt output only
         }

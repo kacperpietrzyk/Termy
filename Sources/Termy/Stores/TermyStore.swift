@@ -2809,6 +2809,14 @@ final class TermyStore: ObservableObject {
     private var terminalAltScreen: [UUID: Bool] = [:]
     /// Sessions whose `.output` is suppressed until the next command starts — set
     /// when a full-screen TUI leaves the alternate screen (see `setTerminalAltScreen`).
+    /// LOAD-BEARING — DO NOT DELETE as "retired suppression machinery" (spec §9 is stale
+    /// here). This keeps the RETAINED `session.lines` (the rebuild kept it for stream/SSH
+    /// render + the running-block fallback + 3c-2 restore structure) free of the alt-exit
+    /// transition residue (the straddling `ESC[78G…` → bare `78`). Removing it regresses
+    /// 3c-2 restore: the indexer ignores post-`Exit` output (TerminalCommandBlockIndexer
+    /// `currentCommand == nil`), so the residue becomes a LOOSE `.output` line attached to
+    /// no block, which `cleanScrollbackLines` preserves → restored scrollback re-acquires
+    /// `78`. Not scaffolding for a deleted path; upkeep for a deliberately-kept surface.
     private var suppressOutputUntilCommand: Set<UUID> = []
     func terminalAltScreenActive(for id: UUID) -> Bool { terminalAltScreen[id] ?? false }
     func setTerminalAltScreen(_ active: Bool, for id: UUID) {

@@ -24,6 +24,13 @@ import Foundation
 public struct AltScreenTapDecision: Equatable, Sendable {
     /// Forward this slice to the command-block tap. True only for output produced
     /// entirely on the primary (non-alternate) screen.
+    ///
+    /// RECLASSIFIED post-Slice-1 (terminal rebuild): originally this only gated the
+    /// re-parse path that spec §9 planned to retire. Slice 1 repurposed it to ALSO
+    /// gate the SwiftTerm-buffer SNAPSHOT accumulation — the rebuild's clean source.
+    /// So this decision is now LOAD-BEARING, not retire-able scaffolding: dropping the
+    /// gate re-pollutes the snapshot with alt-buffer repaint frames. See the call site
+    /// in `SwiftTermTerminalView.dataReceived`.
     public let ingest: Bool
 
     /// The alternate-screen flag changed across this slice. The view must
