@@ -4367,7 +4367,7 @@ final class TermyStore: ObservableObject {
             profileReference: restoreProfileReference(for: session),
             workingDirectory: restoreWorkingDirectory(for: session, descriptor: descriptor),
             launch: restoreLaunch(for: session, descriptor: descriptor),
-            scrollback: session.lines.map(restoreLine),
+            scrollback: cleanScrollbackLines(for: session).map(restoreLine),
             scrollbackBytes: 0,
             lastExitCode: session.lastExitCode.map(Int.init),
             capturedAt: capturedAt
