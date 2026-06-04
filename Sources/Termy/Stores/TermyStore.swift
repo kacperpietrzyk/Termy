@@ -3470,6 +3470,7 @@ final class TermyStore: ObservableObject {
     func requestTerminalSearchFocus() {
         objectWillChange.send()
         terminalSearchVisible = true
+        refreshTerminalIndex()      // surface is fresh on open (append-driven refresh is gated off while hidden)
         terminalSearchFocusToken += 1
     }
 
@@ -5610,7 +5611,7 @@ final class TermyStore: ObservableObject {
         guard let index = sessions.firstIndex(where: { $0.id == sessionID }) else { return }
         sessions[index].lines.append(line)
         trimTerminalTranscriptIfNeeded(at: index)
-        if sessionID == selectedSessionID {
+        if sessionID == selectedSessionID && terminalSearchVisible {
             refreshTerminalIndex()
         }
     }

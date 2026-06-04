@@ -371,4 +371,48 @@ final class BlockSnapshotStoreTests: XCTestCase {
         XCTAssertFalse(allText.contains("RUNNING-REPARSE"),
                        "running command's re-parse output must not appear in any card")
     }
+
+    // MARK: - Slice 3c-1: search index gating
+
+    func testSearchIndexNotRefreshedWhileFindHidden() {
+        let (store, id) = makeStore()                       // Find is hidden by default
+        store.registerTerminalBlockArmHandler({}, for: id)
+        store.registerTerminalBlockSnapshotProvider({ "needle-text" }, for: id)
+        store.terminalSearchQuery = "needle"                // a query that WOULD match
+        store.ingestShellIntegrationEvents([
+            .commandStarted("echo needle-text"),
+            .commandFinished(exitCode: 0, workingDirectory: "/tmp"),
+        ], for: id)
+        XCTAssertTrue(store.terminalSearchResults.isEmpty,
+                      "search index must not be rebuilt on output while Find is closed (perf gate)")
+    }
+
+    func testOpeningFindRefreshesTheSearchIndex() {
+        let (store, id) = makeStore()
+        store.registerTerminalBlockArmHandler({}, for: id)
+        store.registerTerminalBlockSnapshotProvider({ "needle-text" }, for: id)
+        store.terminalSearchQuery = "needle"
+        store.ingestShellIntegrationEvents([
+            .commandStarted("echo needle-text"),
+            .commandFinished(exitCode: 0, workingDirectory: "/tmp"),
+        ], for: id)
+        XCTAssertTrue(store.terminalSearchResults.isEmpty)  // nothing computed while hidden
+        store.requestTerminalSearchFocus()                  // opening Find recomputes
+        XCTAssertFalse(store.terminalSearchResults.isEmpty,
+                       "opening Find must refresh matches against the current transcript")
+    }
+
+    func testSearchIndexRefreshesOnOutputWhileFindVisible() {
+        let (store, id) = makeStore()
+        store.registerTerminalBlockArmHandler({}, for: id)
+        store.registerTerminalBlockSnapshotProvider({ "alpha" }, for: id)
+        store.requestTerminalSearchFocus()                  // Find open
+        store.terminalSearchQuery = "alpha"
+        store.ingestShellIntegrationEvents([
+            .commandStarted("echo alpha"),
+            .commandFinished(exitCode: 0, workingDirectory: "/tmp"),
+        ], for: id)
+        XCTAssertFalse(store.terminalSearchResults.isEmpty,
+                       "with Find open, output still updates the live match index")
+    }
 }
