@@ -985,6 +985,32 @@ final class TermyStore: ObservableObject {
         overlayPanel(for: paneLayout.bottomPane)
     }
 
+    /// Slice-3c-1: the line set fed to terminal search + link indexing.
+    /// For a local rawPTY shell (OSC-133 block mode) the residue-free source is the
+    /// clean per-block buffer snapshots — identical to what the cards display via
+    /// `cleanBlockOutput` — NOT the re-parse `session.lines` output. The still-running
+    /// block is excluded (SwiftTerm draws it live; same rule as `renderedTerminalCommandBlocks`).
+    /// For SSH/`.commandLine` (stream) sessions there is no SwiftTerm/alt-screen and no
+    /// snapshot — `session.lines` IS the clean rendered surface, so it stays the source
+    /// there (byte-identical to the prior behavior).
+    func searchableTerminalLines() -> [String] {
+        guard let selectedSession else { return [] }
+        guard selectedSession.interactionMode == .rawPTY else {
+            return selectedSession.lines.map(\.text)
+        }
+        let runningStartLine = pendingCommandPromptIndex[selectedSession.id]
+        var out: [String] = []
+        for block in terminalCommandBlocks() where block.startLine != runningStartLine {
+            out.append(block.command)
+            let clean = cleanBlockOutput(forBlock: block)
+            if !clean.isEmpty {
+                out.append(contentsOf:
+                    clean.split(separator: "\n", omittingEmptySubsequences: false).map(String.init))
+            }
+        }
+        return out
+    }
+
     func refreshTerminalIndex() {
         guard let selectedSession else {
             terminalSearchResults = []

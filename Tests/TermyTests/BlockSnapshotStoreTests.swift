@@ -245,6 +245,46 @@ final class BlockSnapshotStoreTests: XCTestCase {
         XCTAssertFalse(outputForAI.contains("RESIDUE-78"))
     }
 
+    func testSearchableLinesUseCleanSnapshotForRawPTYBlocks() {
+        let (store, id) = makeStore()                       // initial session is .rawPTY
+        store.registerTerminalBlockArmHandler({}, for: id)
+        // SGR-colored snapshot (what the card shows) vs residue-bearing re-parse output.
+        store.registerTerminalBlockSnapshotProvider({ "\u{1B}[33mclean-out\u{1B}[0m" }, for: id)
+        store.ingestShellIntegrationEvents([
+            .commandStarted("git status"),
+            .output("78residue\n"),                         // re-parse residue → session.lines
+            .commandFinished(exitCode: 0, workingDirectory: "/tmp"),
+        ], for: id)
+
+        let lines = store.searchableTerminalLines()
+        XCTAssertTrue(lines.contains("git status"), "the command is searchable")
+        XCTAssertTrue(lines.contains("clean-out"), "clean snapshot output is searchable (ANSI stripped)")
+        XCTAssertFalse(lines.joined(separator: "\n").contains("78residue"),
+                       "the re-parse residue must NOT be searchable for a rawPTY block")
+    }
+
+    func testSearchableLinesExcludeTheRunningBlock() {
+        let (store, id) = makeStore()
+        store.registerTerminalBlockArmHandler({}, for: id)
+        store.registerTerminalBlockSnapshotProvider({ "done-out" }, for: id)
+        store.ingestShellIntegrationEvents([
+            .commandStarted("echo one"),
+            .output("one\n"),
+            .commandFinished(exitCode: 0, workingDirectory: "/tmp"),
+        ], for: id)
+        // Second command still RUNNING (started + output, no finish) — SwiftTerm draws it live.
+        store.ingestShellIntegrationEvents([
+            .commandStarted("sleep 9"),
+            .output("RUNNING-REPARSE\n"),
+        ], for: id)
+
+        let lines = store.searchableTerminalLines()
+        XCTAssertTrue(lines.contains("echo one"), "finished command still searchable")
+        XCTAssertFalse(lines.contains("sleep 9"), "running block excluded (matches rendered history)")
+        XCTAssertFalse(lines.joined(separator: "\n").contains("RUNNING-REPARSE"),
+                       "running block's re-parse output is not searchable")
+    }
+
     /// Slice-3a: while a command is still running (started, no finish) its block is
     /// drawn by SwiftTerm (full-reveal), so it must NOT appear as a re-parse card in
     /// the SwiftUI history list. A finished command stays a frozen history block.
