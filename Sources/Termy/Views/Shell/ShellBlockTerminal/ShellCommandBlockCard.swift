@@ -81,6 +81,11 @@ struct ShellCommandBlockCard: View {
         .overlay(alignment: .topTrailing) {
             if showActions { actionsRow.padding(.top, 4) }
         }
+        // Make the WHOLE block rect hoverable — without this, only the text
+        // glyphs register hover, so moving the cursor off the text toward the
+        // top-right actions (across empty space) drops `hovering` and the
+        // buttons vanish before they can be clicked.
+        .contentShape(Rectangle())
         .onHover { hovering = $0 }
     }
 
