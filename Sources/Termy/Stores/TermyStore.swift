@@ -1012,12 +1012,12 @@ final class TermyStore: ObservableObject {
     }
 
     func refreshTerminalIndex() {
-        guard let selectedSession else {
+        guard selectedSession != nil else {
             terminalSearchResults = []
             terminalLinks = []
             return
         }
-        let index = TerminalTextIndex(lines: selectedSession.lines.map(\.text))
+        let index = TerminalTextIndex(lines: searchableTerminalLines())
         terminalSearchResults = index.search(terminalSearchQuery)
         terminalLinks = index.links()
     }

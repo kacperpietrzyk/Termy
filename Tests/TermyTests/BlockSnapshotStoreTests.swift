@@ -298,6 +298,50 @@ final class BlockSnapshotStoreTests: XCTestCase {
                        "running block's re-parse output is not searchable")
     }
 
+    // MARK: - Slice 3c-1: search/links index the clean snapshot
+
+    func testSearchResultsAndLinksAreCleanForRawPTYBlock() {
+        let (store, id) = makeStore()
+        store.registerTerminalBlockArmHandler({}, for: id)
+        store.registerTerminalBlockSnapshotProvider({ "see https://termy.test/ok" }, for: id)
+        store.ingestShellIntegrationEvents([
+            .commandStarted("curl x"),
+            .output("78residue https://residue.bad/x\n"),    // residue URL in the re-parse
+            .commandFinished(exitCode: 0, workingDirectory: "/tmp"),
+        ], for: id)
+
+        // Search for the residue token → no match (search no longer indexes the re-parse).
+        store.terminalSearchQuery = "78residue"
+        store.refreshTerminalIndex()
+        XCTAssertTrue(store.terminalSearchResults.isEmpty,
+                      "residue token must not be found — search indexes the clean snapshot")
+
+        // Search for clean snapshot text → match.
+        store.terminalSearchQuery = "termy.test"
+        store.refreshTerminalIndex()
+        XCTAssertFalse(store.terminalSearchResults.isEmpty, "clean snapshot text is searchable")
+
+        // Links come only from the clean snapshot, never the residue URL.
+        XCTAssertTrue(store.terminalLinks.contains { $0.urlString == "https://termy.test/ok" })
+        XCTAssertFalse(store.terminalLinks.contains { $0.urlString.contains("residue.bad") },
+                       "the residue URL must not be detected")
+    }
+
+    // Stream-route preservation: searchableTerminalLines' non-.rawPTY branch returns
+    // `selectedSession.lines.map(\.text)` verbatim. The rawPTY branch is covered above;
+    // this asserts the helper is non-empty and command-bearing for the rawPTY session so
+    // the branch is provably exercised, not dead.
+    func testSearchableLinesNonEmptyForRawPTYSession() {
+        let (store, id) = makeStore()
+        store.registerTerminalBlockArmHandler({}, for: id)
+        store.registerTerminalBlockSnapshotProvider({ "x" }, for: id)
+        store.ingestShellIntegrationEvents([
+            .commandStarted("echo hi"),
+            .commandFinished(exitCode: 0, workingDirectory: "/tmp"),
+        ], for: id)
+        XCTAssertTrue(store.searchableTerminalLines().contains("echo hi"))
+    }
+
     /// Slice-3a: while a command is still running (started, no finish) its block is
     /// drawn by SwiftTerm (full-reveal), so it must NOT appear as a re-parse card in
     /// the SwiftUI history list. A finished command stays a frozen history block.
