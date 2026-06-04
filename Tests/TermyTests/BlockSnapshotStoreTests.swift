@@ -263,6 +263,19 @@ final class BlockSnapshotStoreTests: XCTestCase {
                        "the re-parse residue must NOT be searchable for a rawPTY block")
     }
 
+    func testSearchableLinesSplitMultiLineSnapshotIntoRows() {
+        let (store, id) = makeStore()
+        store.registerTerminalBlockArmHandler({}, for: id)
+        store.registerTerminalBlockSnapshotProvider({ "line-a\nline-b" }, for: id)
+        store.ingestShellIntegrationEvents([
+            .commandStarted("printf"),
+            .commandFinished(exitCode: 0, workingDirectory: "/tmp"),
+        ], for: id)
+        let lines = store.searchableTerminalLines()
+        XCTAssertTrue(lines.contains("line-a"), "first row of a multi-line snapshot is its own searchable line")
+        XCTAssertTrue(lines.contains("line-b"), "second row is its own searchable line")
+    }
+
     func testSearchableLinesExcludeTheRunningBlock() {
         let (store, id) = makeStore()
         store.registerTerminalBlockArmHandler({}, for: id)
