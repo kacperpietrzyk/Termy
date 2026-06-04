@@ -53,7 +53,11 @@ struct ShellBlockTranscript: View {
     // Slice-2a hover actions. Copy = command + its output; Copy cwd/branch copy the
     // single field. No-op when the field is absent (Copy branch before Slice-2c).
     private func copyBlock(_ block: TerminalRenderedCommandBlock) {
-        let output = block.outputLines.map(\.text).joined()
+        // `outputLines` is the SGR-colored buffer snapshot (e.g. `ESC[39m…`); strip
+        // it through the SAME parser the card renders with so the clipboard gets the
+        // clean visible text, not raw escape codes (`[39m` litter when pasted).
+        let raw = block.outputLines.map(\.text).joined()
+        let output = ANSITextParser().parse(raw).map(\.text).joined()
         let text = output.isEmpty ? block.command : "\(block.command)\n\(output)"
         copyToPasteboard(text)
     }
