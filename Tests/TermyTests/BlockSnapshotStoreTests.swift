@@ -434,14 +434,52 @@ final class BlockSnapshotStoreTests: XCTestCase {
         XCTAssertTrue(texts.contains("clean-out"), "the block's output is the clean snapshot")
         XCTAssertFalse(texts.joined(separator: "\n").contains("78residue"),
                        "the re-parse residue output must be substituted out")
+
+        let promptIdx = try! XCTUnwrap(texts.firstIndex { $0.contains("git status") })
+        let cleanIdx = try! XCTUnwrap(texts.firstIndex(of: "clean-out"))
+        XCTAssertGreaterThan(cleanIdx, promptIdx, "clean output is emitted AFTER the block's prompt line")
     }
 
-    func testCleanScrollbackPreservesSystemLinesAndIsRawPTYOnly() {
+    func testCleanScrollbackNoBlocksReturnsSessionLinesUnchanged() {
         let (store, id) = makeStore()
         let session = try! XCTUnwrap(store.sessions.first { $0.id == id })
         // The initial rawPTY session carries 2 .system lines and no blocks → passthrough.
         let texts = store.cleanScrollbackLinesForTesting(for: session).map(\.text)
         XCTAssertEqual(texts, session.lines.map(\.text),
                        "no blocks → scrollback is the session's lines unchanged (system lines preserved)")
+    }
+
+    func testCleanScrollbackPassesThroughNonRawPTYSession() {
+        let (store, _) = makeStore()
+        let stream = TermySession(
+            title: "SSH",
+            profile: .local(name: "x", terminalOutputMode: .stream),
+            lines: [TerminalLine(role: .stdout, text: "remote-line")],
+            interactionMode: .commandLine
+        )
+        XCTAssertEqual(store.cleanScrollbackLinesForTesting(for: stream).map(\.text),
+                       ["remote-line"], "non-rawPTY session is passed through unchanged")
+    }
+
+    func testCleanScrollbackHandlesMultipleBlocksInOrder() {
+        let (store, id) = makeStore()
+        store.registerTerminalBlockArmHandler({}, for: id)
+        let outs = ["out-A", "out-B"]; var i = 0
+        store.registerTerminalBlockSnapshotProvider({ defer { i += 1 }; return i < outs.count ? outs[i] : "" }, for: id)
+        store.ingestShellIntegrationEvents([
+            .commandStarted("cmd-one"), .output("raw-one\n"), .commandFinished(exitCode: 0, workingDirectory: "/tmp"),
+        ], for: id)
+        store.ingestShellIntegrationEvents([
+            .commandStarted("cmd-two"), .output("raw-two\n"), .commandFinished(exitCode: 0, workingDirectory: "/tmp"),
+        ], for: id)
+        let session = try! XCTUnwrap(store.sessions.first { $0.id == id })
+        let texts = store.cleanScrollbackLinesForTesting(for: session)
+        let joined = texts.map(\.text).joined(separator: "\n")
+        XCTAssertTrue(texts.map(\.text).contains("out-A"))
+        XCTAssertTrue(texts.map(\.text).contains("out-B"))
+        XCTAssertFalse(joined.contains("raw-one")); XCTAssertFalse(joined.contains("raw-two"))
+        let aIdx = try! XCTUnwrap(texts.map(\.text).firstIndex(of: "out-A"))
+        let bIdx = try! XCTUnwrap(texts.map(\.text).firstIndex(of: "out-B"))
+        XCTAssertLessThan(aIdx, bIdx, "block A's output precedes block B's (no cross-contamination)")
     }
 }
