@@ -15,6 +15,7 @@ final class HighlightedCodeEditorGateTests: XCTestCase {
         let editor = HighlightedCodeEditor(text: .constant(source), fileName: fileName)
         let coordinator = editor.makeCoordinator()
         let textView = NSTextView(frame: NSRect(x: 0, y: 0, width: 540, height: 340))
+        textView.isRichText = false   // match the shipped editing surface (makeNSView)
         textView.backgroundColor = NSColor(Color(DesignTokens.bg1))
         textView.string = source
         coordinator.applyHighlight(to: textView)

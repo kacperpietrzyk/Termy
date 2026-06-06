@@ -86,9 +86,12 @@ struct HighlightedCodeEditor: NSViewRepresentable {
         }
 
         /// Re-tokenize the whole buffer and recolor. Guards against a tokenizer
-        /// whose concatenated tokens don't reconstruct the source exactly (which
-        /// would drift the offsets and mis-color) by falling back to a single
-        /// plain color in that case.
+        /// whose concatenated tokens don't reconstruct the source length exactly
+        /// (which would drift the offsets and mis-color) by falling back to a
+        /// single plain color in that case. The guard sums token UTF-16 lengths
+        /// rather than rebuilding the whole string, so it adds no per-keystroke
+        /// allocation. (Re-highlight is whole-buffer; fine for the editor's
+        /// typical file sizes — revisit with edited-range scoping for huge files.)
         func applyHighlight(to textView: NSTextView) {
             guard let storage = textView.textStorage else { return }
             let source = textView.string
@@ -100,8 +103,8 @@ struct HighlightedCodeEditor: NSViewRepresentable {
             storage.addAttribute(.foregroundColor, value: NSColor(SyntaxTokenColor.color(for: .plain)), range: full)
 
             let tokens = highlighter.highlight(source, fileName: parent.fileName)
-            let reconstructed = tokens.reduce(into: "") { $0 += $1.text }
-            if reconstructed == source {
+            let tokenLengthSum = tokens.reduce(0) { $0 + ($1.text as NSString).length }
+            if tokenLengthSum == nsSource.length {
                 var location = 0
                 for token in tokens {
                     let length = (token.text as NSString).length

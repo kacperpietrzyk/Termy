@@ -775,8 +775,11 @@ private struct EditorPanel: View {
             }
 
             HighlightedCodeEditor(
+                // The unnamed scratch buffer keeps its prior Markdown default
+                // (its seed content is a "# Termy Scratch" heading) — matches the
+                // old editorSyntaxTokens() `?? "Scratch.md"` fallback.
                 text: editorText,
-                fileName: store.editorFilePath.map { ($0 as NSString).lastPathComponent }
+                fileName: store.editorFilePath.map { ($0 as NSString).lastPathComponent } ?? "Scratch.md"
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
