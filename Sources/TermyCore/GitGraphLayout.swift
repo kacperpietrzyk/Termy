@@ -66,12 +66,13 @@ public struct GitGraphLayout: Equatable, Sendable {
             lanes[nodeCol] = commit.hash
 
             let before = lanes
-            // Every lane currently waiting for this hash converges into the node.
-            let mergeIntoNode = before.indices.filter { before[$0] == commit.hash }
-
-            // Free the converged child lanes (the node now owns them); nodeCol is
-            // reassigned to the first parent below.
-            for i in mergeIntoNode where i != nodeCol { lanes[i] = nil }
+            // The lane feeding this commit from above is exactly its own column:
+            // the algorithm keeps at most one lane per hash (every parent reuses an
+            // existing lane before opening a new one), so children of a shared
+            // commit already funnel into one lane via `branchFromNode` at their own
+            // rows — convergence is carried there, not by multiple top-edge columns.
+            let mergeIntoNode = [nodeCol]
+            // nodeCol is reassigned to the first parent below.
             lanes[nodeCol] = nil
 
             // Place parents and record the bottom columns the node branches to.
@@ -101,8 +102,10 @@ public struct GitGraphLayout: Equatable, Sendable {
             maxLanes = max(maxLanes, laneCount)
             rows.append(GitGraphRow(
                 commit: commit, node: nodeCol,
-                mergeIntoNode: mergeIntoNode.sorted(),
-                branchFromNode: branchFromNode.sorted(),
+                mergeIntoNode: mergeIntoNode,
+                // Dedup: a commit with duplicate parents (e.g. a ref merged with
+                // itself) would otherwise emit the same column twice → double-stroke.
+                branchFromNode: Array(Set(branchFromNode)).sorted(),
                 passThrough: passThrough, laneCount: laneCount
             ))
 
