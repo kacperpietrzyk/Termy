@@ -215,28 +215,17 @@ private struct FileExplorerPanel: View {
         .padding(12)
     }
 
+    /// During a search the tree flattens to matching files (depth 0); disclosure
+    /// chevrons and expand-on-tap only make sense in the navigable (non-search) view.
+    private var isSearching: Bool {
+        !store.fileSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     private var tree: some View {
         ScrollView {
             LazyVStack(spacing: 1) {
                 ForEach(store.visibleFileTreeItems) { treeItem in
-                    let selected = store.selectedFilePath == treeItem.item.relativePath
-                    Button { store.selectedFilePath = treeItem.item.relativePath } label: {
-                        HStack(spacing: 6) {
-                            Spacer().frame(width: CGFloat(treeItem.depth) * 14)
-                            Image(systemName: treeItem.iconName)
-                                .foregroundStyle(treeItem.item.isDirectory ? Color(DesignTokens.fg2) : Color(DesignTokens.fg3))
-                            Text(treeItem.item.name).foregroundStyle(Color(DesignTokens.fg1))
-                            Spacer(minLength: 0)
-                        }
-                        .font(Typography.ui(13))
-                        .padding(.horizontal, 8).padding(.vertical, 4)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(selected ? DesignTokens.Glass.fillSelection : Color.clear,
-                                    in: RoundedRectangle(cornerRadius: DesignTokens.Radius.row))
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .help(treeItem.item.relativePath)
+                    fileRow(treeItem)
                 }
             }
             .padding(.horizontal, 8).padding(.vertical, 6)
@@ -246,6 +235,19 @@ private struct FileExplorerPanel: View {
             if store.visibleFileTreeItems.isEmpty {
                 ContentUnavailableView(store.fileSearchQuery.isEmpty ? "No files" : "No matches", systemImage: "folder")
             }
+        }
+    }
+
+    private func fileRow(_ treeItem: LocalFileTreeItem) -> some View {
+        let showDisclosure = treeItem.item.isDirectory && !isSearching
+        return FileTreeRowView(
+            treeItem: treeItem,
+            selected: store.selectedFilePath == treeItem.item.relativePath,
+            expanded: store.isFileDirectoryExpanded(treeItem.item.relativePath),
+            showDisclosure: showDisclosure
+        ) {
+            store.selectedFilePath = treeItem.item.relativePath
+            if showDisclosure { store.toggleFileDirectory(treeItem.item.relativePath) }
         }
     }
 
@@ -279,6 +281,51 @@ private struct FileExplorerPanel: View {
                 .disabled(text.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         }
         .padding(12)
+    }
+}
+
+/// One row in the Files Finder-lite tree. Pure inputs (no store) so it renders
+/// in isolation for the static visual gate. Directories get a disclosure chevron
+/// and an open/closed folder glyph (blue, matching the completion-menu folder
+/// tint); files show their neutral type icon.
+struct FileTreeRowView: View {
+    let treeItem: LocalFileTreeItem
+    let selected: Bool
+    let expanded: Bool
+    let showDisclosure: Bool
+    let onTap: () -> Void
+
+    var body: some View {
+        let isDir = treeItem.item.isDirectory
+        let icon = isDir ? (expanded ? "folder.fill" : "folder") : treeItem.iconName
+        Button(action: onTap) {
+            HStack(spacing: 6) {
+                Spacer().frame(width: CGFloat(treeItem.depth) * 14)
+                Group {
+                    if showDisclosure {
+                        Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(Color(DesignTokens.fg4))
+                    } else {
+                        Color.clear
+                    }
+                }
+                .frame(width: 10)
+                Image(systemName: icon)
+                    .foregroundStyle(isDir ? Color(DesignTokens.primary2) : Color(DesignTokens.fg3))
+                    .frame(width: 16, alignment: .center)
+                Text(treeItem.item.name).foregroundStyle(Color(DesignTokens.fg1))
+                Spacer(minLength: 0)
+            }
+            .font(Typography.ui(13))
+            .padding(.horizontal, 8).padding(.vertical, 4)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(selected ? DesignTokens.Glass.fillSelection : Color.clear,
+                        in: RoundedRectangle(cornerRadius: DesignTokens.Radius.row))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(treeItem.item.relativePath)
     }
 }
 

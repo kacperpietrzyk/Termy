@@ -148,6 +148,32 @@ public struct LocalFileService {
         return try treeItems(relativePath: relativePath, depth: 0, maxDepth: maxDepth, budget: &budget)
     }
 
+    /// Finder-lite expand/collapse view. Lists the root's children and descends
+    /// ONLY into directories whose relative path is in `expanded` — so the cost is
+    /// proportional to what the user has opened, not the whole subtree. Directories
+    /// not in `expanded` show their node but none of their children. `maxNodes` is a
+    /// safety ceiling (a single expanded directory can still be huge). Unreadable
+    /// subtrees are skipped (their folder node remains), mirroring `tree()`.
+    public func visibleTree(expanded: Set<String>, maxNodes: Int = 5000) throws -> [LocalFileTreeItem] {
+        var budget = maxNodes
+        return try visibleItems(relativePath: "", depth: 0, expanded: expanded, budget: &budget)
+    }
+
+    private func visibleItems(relativePath: String, depth: Int, expanded: Set<String>, budget: inout Int) throws -> [LocalFileTreeItem] {
+        var result: [LocalFileTreeItem] = []
+        for item in try list(relativePath: relativePath).sorted(by: fileTreeSort) {
+            if budget <= 0 { break }
+            budget -= 1
+            result.append(LocalFileTreeItem(item: item, depth: depth))
+            if item.isDirectory && expanded.contains(item.relativePath) {
+                if let children = try? visibleItems(relativePath: item.relativePath, depth: depth + 1, expanded: expanded, budget: &budget) {
+                    result.append(contentsOf: children)
+                }
+            }
+        }
+        return result
+    }
+
     public func createFile(named relativePath: String, contents: String = "") throws {
         let url = try resolvedURL(for: relativePath)
         try fileManager.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)

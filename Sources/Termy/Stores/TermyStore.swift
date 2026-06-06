@@ -325,6 +325,10 @@ final class TermyStore: ObservableObject {
         get { appModel.files.fileTreeItems }
         set { objectWillChange.send(); appModel.files.fileTreeItems = newValue }
     }
+    var expandedFileDirectories: Set<String> {
+        get { appModel.files.expandedFileDirectories }
+        set { objectWillChange.send(); appModel.files.expandedFileDirectories = newValue }
+    }
     var sftpRemoteItems: [SFTPRemoteItem] {
         get { appModel.files.sftpRemoteItems }
         set { objectWillChange.send(); appModel.files.sftpRemoteItems = newValue }
@@ -1945,9 +1949,11 @@ final class TermyStore: ObservableObject {
     func refreshFiles() {
         do {
             let service = LocalFileService(root: projectRoot)
-            let tree = try service.tree()
-            fileTreeItems = tree
-            fileItems = tree.map(\.item)
+            // Navigable Finder-lite view: only root + currently-expanded dirs.
+            fileTreeItems = try service.visibleTree(expanded: expandedFileDirectories)
+            // Search corpus: the full bounded flat list (search spans the whole tree,
+            // not just what is expanded).
+            fileItems = try service.tree().map(\.item)
         } catch {
             statusMessage = "File refresh failed: \(error.localizedDescription)"
         }
@@ -1960,16 +1966,50 @@ final class TermyStore: ObservableObject {
     /// actor, publish results back on main.
     func refreshFilesAsync() {
         let root = projectRoot
+        let expanded = expandedFileDirectories
         DispatchQueue.global(qos: .userInitiated).async {
-            let result = Result { try LocalFileService(root: root).tree() }
+            let result = Result { () -> ([LocalFileTreeItem], [LocalFileItem]) in
+                let service = LocalFileService(root: root)
+                let visible = try service.visibleTree(expanded: expanded)
+                let all = try service.tree().map(\.item)
+                return (visible, all)
+            }
             DispatchQueue.main.async {
                 switch result {
-                case .success(let tree):
-                    self.fileTreeItems = tree
-                    self.fileItems = tree.map(\.item)
+                case .success(let (visible, all)):
+                    self.fileTreeItems = visible
+                    self.fileItems = all
                 case .failure(let error):
                     self.statusMessage = "File refresh failed: \(error.localizedDescription)"
                 }
+            }
+        }
+    }
+
+    /// True when the Files tree directory at `relativePath` is expanded.
+    func isFileDirectoryExpanded(_ relativePath: String) -> Bool {
+        expandedFileDirectories.contains(relativePath)
+    }
+
+    /// Toggle a directory open/closed in the Files tree and rebuild the visible
+    /// (lazy) tree off the main thread. Listing one newly-expanded directory is
+    /// cheap, but a huge folder could still hitch, so it runs on a background queue.
+    func toggleFileDirectory(_ relativePath: String) {
+        if expandedFileDirectories.contains(relativePath) {
+            // Collapse: drop this dir AND any now-hidden descendants from the set,
+            // so re-expanding the parent doesn't silently re-open nested children.
+            expandedFileDirectories = expandedFileDirectories.filter {
+                $0 != relativePath && !$0.hasPrefix(relativePath + "/")
+            }
+        } else {
+            expandedFileDirectories.insert(relativePath)
+        }
+        let root = projectRoot
+        let expanded = expandedFileDirectories
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = Result { try LocalFileService(root: root).visibleTree(expanded: expanded) }
+            DispatchQueue.main.async {
+                if case .success(let visible) = result { self.fileTreeItems = visible }
             }
         }
     }
