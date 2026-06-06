@@ -923,8 +923,18 @@ private struct ConnectionsPanel: View {
                 }
             } else {
                 ScrollView {
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 320), spacing: 14)], spacing: 14) {
-                        ForEach(store.profiles) { ConnectionCard(store: store, profile: $0) }
+                    LazyVStack(alignment: .leading, spacing: 18) {
+                        ForEach(Array(ConnectionGrouping.grouped(store.profiles).enumerated()), id: \.offset) { _, section in
+                            VStack(alignment: .leading, spacing: 10) {
+                                Text((section.title ?? "Ungrouped").uppercased())
+                                    .font(.system(size: 10, weight: .semibold))
+                                    .tracking(0.6)
+                                    .foregroundStyle(DesignTokens.Glass.textQuaternary)
+                                LazyVGrid(columns: [GridItem(.adaptive(minimum: 320), spacing: 14)], spacing: 14) {
+                                    ForEach(section.profiles) { ConnectionCard(store: store, profile: $0) }
+                                }
+                            }
+                        }
                     }
                     .padding(16)
                 }
@@ -938,7 +948,7 @@ private struct ConnectionsPanel: View {
 }
 
 /// One saved connection as a glass card: identity + Connect + per-kind actions.
-private struct ConnectionCard: View {
+struct ConnectionCard: View {
     @ObservedObject var store: TermyStore
     let profile: ConnectionProfile
     @State private var hovering = false
