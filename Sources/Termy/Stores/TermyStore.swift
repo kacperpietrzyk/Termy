@@ -3174,10 +3174,6 @@ final class TermyStore: ObservableObject {
         }
     }
 
-    func editorSyntaxTokens() -> [SyntaxToken] {
-        SyntaxHighlighter().highlight(scratchText, fileName: editorFilePath ?? "Scratch.md")
-    }
-
     func setEditorVimEnabled(_ enabled: Bool) {
         editorVimEnabled = enabled
         editorVimState = VimEditorState(buffer: scratchText)

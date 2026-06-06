@@ -681,7 +681,6 @@ private struct GitDiffSheet: View {
 
 private struct EditorPanel: View {
     @ObservedObject var store: TermyStore
-    @State private var showPreview = true
     @State private var showAI = false
 
     var body: some View {
@@ -694,8 +693,6 @@ private struct EditorPanel: View {
                 Spacer()
                 Button { showAI = true } label: { Label("AI", systemImage: "sparkles") }
                     .popover(isPresented: $showAI, arrowEdge: .bottom) { aiPopover }
-                Toggle(isOn: $showPreview) { Image(systemName: "sidebar.right") }
-                    .toggleStyle(.button).help("Toggle preview")
                 Toggle("Vim", isOn: Binding(get: { store.editorVimEnabled },
                                             set: { store.setEditorVimEnabled($0) }))
                     .toggleStyle(.switch).tint(DesignTokens.Glass.accent).fixedSize()
@@ -777,23 +774,11 @@ private struct EditorPanel: View {
                 Divider()
             }
 
-            if showPreview {
-                HSplitView {
-                    TextEditor(text: editorText)
-                        .font(.system(.body, design: .monospaced))
-                        .scrollContentBackground(.hidden)
-                        .padding(8)
-                        .frame(minWidth: 280)
-                    SyntaxPreview(tokens: store.editorSyntaxTokens())
-                        .frame(minWidth: 220)
-                }
-            } else {
-                TextEditor(text: editorText)
-                    .font(.system(.body, design: .monospaced))
-                    .scrollContentBackground(.hidden)
-                    .padding(8)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
+            HighlightedCodeEditor(
+                text: editorText,
+                fileName: store.editorFilePath.map { ($0 as NSString).lastPathComponent }
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
 
             if !store.editorAIDiff.isEmpty {
                 Divider()
@@ -902,57 +887,6 @@ private extension VimEditorOperator {
             return "c"
         case .yank:
             return "y"
-        }
-    }
-}
-
-private struct SyntaxPreview: View {
-    let tokens: [SyntaxToken]
-
-    var body: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Label("Preview", systemImage: "curlybraces")
-                    .font(Typography.ui(12))
-                    .foregroundStyle(.secondary)
-                Spacer()
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .background(Color(DesignTokens.bg2))
-
-            ScrollView([.vertical, .horizontal]) {
-                Text(attributedText)
-                    .font(.system(.body, design: .monospaced))
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(12)
-            }
-        }
-    }
-
-    private var attributedText: AttributedString {
-        tokens.reduce(into: AttributedString()) { result, token in
-            var part = AttributedString(token.text)
-            part.foregroundColor = color(for: token.kind)
-            result += part
-        }
-    }
-
-    private func color(for kind: SyntaxTokenKind) -> Color {
-        switch kind {
-        case .plain:
-            return Color(DesignTokens.fg1)
-        case .heading:
-            return Color(DesignTokens.primary)
-        case .keyword, .key:
-            return Color(DesignTokens.git.base)
-        case .string:
-            return Color(DesignTokens.sync.base)
-        case .number:
-            return Color(DesignTokens.agent.base)
-        case .comment:
-            return Color(DesignTokens.fg3)
         }
     }
 }
