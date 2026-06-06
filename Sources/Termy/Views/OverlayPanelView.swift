@@ -568,10 +568,11 @@ private struct GitHistoryView: View {
         if commits.isEmpty {
             ContentUnavailableView("No commits", systemImage: "clock")
         } else {
+            let layout = GitGraphLayout.compute(commits)
             ScrollView {
                 LazyVStack(spacing: 0) {
-                    ForEach(Array(commits.enumerated()), id: \.element.id) { index, commit in
-                        GitHistoryRow(commit: commit, isFirst: index == 0, isLast: index == commits.count - 1)
+                    ForEach(layout.rows) { row in
+                        GitGraphRowView(row: row, maxLanes: layout.maxLanes)
                     }
                 }
                 .padding(.vertical, 8).padding(.trailing, 16)
@@ -580,15 +581,30 @@ private struct GitHistoryView: View {
     }
 }
 
-private struct GitHistoryRow: View {
-    let commit: GitLogEntry
-    let isFirst: Bool
-    let isLast: Bool
+/// Lane colors cycle a small on-brand palette so adjacent branches read apart.
+enum GitGraphPalette {
+    static let colors: [Color] = [
+        Color(DesignTokens.git.base),
+        Color(DesignTokens.host.base),
+        Color(DesignTokens.agent.base),
+        Color(DesignTokens.sync.base),
+        Color(DesignTokens.primary2),
+    ]
+    static func color(_ lane: Int) -> Color { colors[((lane % colors.count) + colors.count) % colors.count] }
+}
+
+struct GitGraphRowView: View {
+    let row: GitGraphRow
+    let maxLanes: Int
+    private let rowHeight: CGFloat = 48
+    private let laneSpacing: CGFloat = 16
+
+    private var railWidth: CGFloat { CGFloat(max(maxLanes, 1)) * laneSpacing }
 
     var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            GraphRail(isMerge: commit.isMerge, isFirst: isFirst, isLast: isLast)
-                .frame(width: 22)
+        HStack(alignment: .center, spacing: 10) {
+            GitGraphCell(row: row, laneSpacing: laneSpacing)
+                .frame(width: railWidth, height: rowHeight)
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
                     ForEach(refChips, id: \.self) { ref in
@@ -598,24 +614,25 @@ private struct GitHistoryRow: View {
                             .padding(.horizontal, 5).padding(.vertical, 1)
                             .background(DesignTokens.Glass.fillChip, in: Capsule())
                     }
-                    Text(commit.subject).font(Typography.ui(13)).foregroundStyle(Color(DesignTokens.fg1))
+                    Text(row.commit.subject).font(Typography.ui(13)).foregroundStyle(Color(DesignTokens.fg1))
                         .lineLimit(1).truncationMode(.tail)
                 }
                 HStack(spacing: 6) {
-                    Text(commit.shortHash).font(.system(size: 11, design: .monospaced))
+                    Text(row.commit.shortHash).font(.system(size: 11, design: .monospaced))
                         .foregroundStyle(Color(DesignTokens.git.base))
-                    Text(commit.author).font(Typography.ui(11)).foregroundStyle(DesignTokens.Glass.textTertiary)
-                    Text("· \(commit.relativeDate)").font(Typography.ui(11)).foregroundStyle(DesignTokens.Glass.textQuaternary)
+                    Text(row.commit.author).font(Typography.ui(11)).foregroundStyle(DesignTokens.Glass.textTertiary)
+                    Text("· \(row.commit.relativeDate)").font(Typography.ui(11)).foregroundStyle(DesignTokens.Glass.textQuaternary)
                 }
             }
             Spacer(minLength: 0)
         }
-        .padding(.leading, 16).padding(.vertical, 7)
+        .padding(.leading, 12)
+        .frame(height: rowHeight)
     }
 
     /// Decoded ref names without the "HEAD -> " prefix noise; tags shown bare.
     private var refChips: [String] {
-        commit.refNames.compactMap { raw in
+        row.commit.refNames.compactMap { raw in
             if raw.hasPrefix("HEAD -> ") { return String(raw.dropFirst("HEAD -> ".count)) }
             if raw == "HEAD" { return "HEAD" }
             if raw.hasPrefix("tag: ") { return String(raw.dropFirst("tag: ".count)) }
@@ -624,26 +641,38 @@ private struct GitHistoryRow: View {
     }
 }
 
-/// The graph spine + commit node for one history row.
-private struct GraphRail: View {
-    let isMerge: Bool
-    let isFirst: Bool
-    let isLast: Bool
+/// Draws one commit-graph row: pass-through lanes, the merge-in / branch-out
+/// diagonals around this commit, and the node — all from the pure GitGraphLayout.
+private struct GitGraphCell: View {
+    let row: GitGraphRow
+    let laneSpacing: CGFloat
+
+    private func x(_ lane: Int) -> CGFloat { CGFloat(lane) * laneSpacing + laneSpacing / 2 }
 
     var body: some View {
-        GeometryReader { geo in
-            let cx = geo.size.width / 2
-            let cy: CGFloat = 18
-            Path { p in
-                if !isFirst { p.move(to: CGPoint(x: cx, y: 0)); p.addLine(to: CGPoint(x: cx, y: cy)) }
-                if !isLast { p.move(to: CGPoint(x: cx, y: cy)); p.addLine(to: CGPoint(x: cx, y: geo.size.height)) }
+        Canvas { ctx, size in
+            let cy = size.height / 2
+            func line(_ a: CGPoint, _ b: CGPoint, _ color: Color) {
+                var p = Path(); p.move(to: a); p.addLine(to: b)
+                ctx.stroke(p, with: .color(color), lineWidth: 1.5)
             }
-            .stroke(Color(DesignTokens.hairStrong), lineWidth: 1.5)
-            Circle()
-                .fill(isMerge ? DesignTokens.Glass.accent : Color(DesignTokens.git.base))
-                .frame(width: 9, height: 9)
-                .overlay(Circle().stroke(Color(DesignTokens.bg0), lineWidth: 2).frame(width: 13, height: 13))
-                .position(x: cx, y: cy)
+            for pt in row.passThrough {
+                line(CGPoint(x: x(pt.top), y: 0), CGPoint(x: x(pt.bottom), y: size.height),
+                     GitGraphPalette.color(pt.bottom))
+            }
+            for top in row.mergeIntoNode {
+                line(CGPoint(x: x(top), y: 0), CGPoint(x: x(row.node), y: cy), GitGraphPalette.color(top))
+            }
+            for bottom in row.branchFromNode {
+                line(CGPoint(x: x(row.node), y: cy), CGPoint(x: x(bottom), y: size.height),
+                     GitGraphPalette.color(bottom))
+            }
+            let radius: CGFloat = 4.5
+            let nodeRect = CGRect(x: x(row.node) - radius, y: cy - radius, width: radius * 2, height: radius * 2)
+            // Punch a ring in the pane background so crossing lines read behind the node.
+            ctx.fill(Path(ellipseIn: nodeRect.insetBy(dx: -2, dy: -2)), with: .color(Color(DesignTokens.bg2)))
+            ctx.fill(Path(ellipseIn: nodeRect),
+                     with: .color(row.commit.isMerge ? Color(DesignTokens.primary2) : Color(DesignTokens.git.base)))
         }
     }
 }
