@@ -650,29 +650,42 @@ private struct TerminalLineView: View {
 }
 
 /// A single row inside the completion menu, extracted to help type-checking.
-private struct CompletionMenuRow: View {
+struct CompletionMenuRow: View {
     let item: CompletionCandidate
     let isSelected: Bool
     let font: NSFont
     let rowHeight: CGFloat
     let descriptionRowHeight: CGFloat
     let horizontalInset: CGFloat
-    let kindIcon: (CompletionKind) -> String
 
     private var hasDesc: Bool { item.description?.isEmpty == false }
+    private var presentation: CompletionKindPresentation { .for(item.kind) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 1) {
             HStack(spacing: 8) {
-                Text(kindIcon(item.kind))
-                    .font(Typography.mono(11))
-                    .foregroundColor(Color(DesignTokens.fg3))
-                    .frame(width: 14, alignment: .leading)
+                // Real SF Symbol, tinted by kind (folders blue, hosts cyan,
+                // branches git-blue) — content icons keep their brand hues per
+                // DESIGN.md while the chrome stays monochrome.
+                Image(systemName: presentation.symbolName)
+                    .font(.system(size: 11))
+                    .foregroundStyle(CompletionMenuRow.tintColor(presentation.tint))
+                    .frame(width: 16, alignment: .center)
                 Text(item.title)
                     .font(Font(font))
                     .lineLimit(1)
                     .truncationMode(.tail)
-                Spacer(minLength: 0)
+                Spacer(minLength: 8)
+                // Right-aligned type tag (dir / cmd / branch / host …).
+                Text(presentation.typeLabel)
+                    .font(Typography.ui(9.5, weight: .medium))
+                    .foregroundColor(Color(DesignTokens.fg4))
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 1)
+                    .background(
+                        RoundedRectangle(cornerRadius: 3, style: .continuous)
+                            .fill(DesignTokens.Glass.fillChip)
+                    )
             }
             if let desc = item.description, !desc.isEmpty {
                 Text(desc)
@@ -680,12 +693,22 @@ private struct CompletionMenuRow: View {
                     .foregroundColor(Color(DesignTokens.fg3))
                     .lineLimit(1)
                     .truncationMode(.tail)
-                    .padding(.leading, 22)
+                    .padding(.leading, 24)
             }
         }
         .padding(.horizontal, horizontalInset)
         .frame(height: hasDesc ? descriptionRowHeight : rowHeight)
-        .background(isSelected ? Color.accentColor.opacity(0.25) : Color.clear)
+        .background(isSelected ? Color(DesignTokens.primary).opacity(0.22) : Color.clear)
+    }
+
+    /// Resolve the kind's semantic tint role to a concrete color.
+    static func tintColor(_ tint: CompletionKindPresentation.Tint) -> Color {
+        switch tint {
+        case .neutral: return Color(DesignTokens.fg3)
+        case .accent:  return Color(DesignTokens.primary2)
+        case .git:     return Color(DesignTokens.git.base)
+        case .host:    return Color(DesignTokens.host.base)
+        }
     }
 }
 
@@ -728,24 +751,40 @@ struct CompletionMenuOverlay: View {
         return max(min(preferred, viewportSize.width - 16), 120)
     }
 
+    /// Estimated detail-footer height (only present when a row is selected). Used
+    /// for flip/centering math; the footer itself sizes naturally to its content.
+    private var footerHeight: CGFloat {
+        guard snapshot.selection >= 0, snapshot.selection < snapshot.items.count else { return 0 }
+        let item = snapshot.items[snapshot.selection]
+        let hasDesc = (item.description?.isEmpty == false)
+        return hasDesc ? 70 : 28
+    }
+
+    private var totalHeight: CGFloat { maxHeight + footerHeight }
+
     private var flipUpward: Bool {
-        anchor.y + maxHeight > viewportSize.height
+        anchor.y + totalHeight > viewportSize.height
     }
 
     private var resolvedTop: CGFloat {
         flipUpward
-            ? max(0, anchor.y - maxHeight - rowHeight)  // above the caret
-            : anchor.y + rowHeight                       // below the caret
+            ? max(0, anchor.y - totalHeight - rowHeight)  // above the caret
+            : anchor.y + rowHeight                         // below the caret
     }
 
     var body: some View {
-        menuContent
-            .frame(width: width, height: maxHeight)
+        VStack(spacing: 0) {
+            menuContent
+                .frame(height: maxHeight)
+            detailFooter
+        }
+            .frame(width: width)
+            .frame(minHeight: maxHeight)
             .background(menuBackground)
             .overlay(menuBorder)
             .position(x: min(max(anchor.x + width / 2, width / 2 + 4),
                              viewportSize.width - width / 2 - 4),
-                      y: resolvedTop + maxHeight / 2)
+                      y: resolvedTop + totalHeight / 2)
     }
 
     private var menuContent: some View {
@@ -768,8 +807,6 @@ struct CompletionMenuOverlay: View {
 
     private var menuRows: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // Hoist the instance method to a local: passing kindIcon directly inside the @ViewBuilder ForEach closure can trip the type-checker.
-            let icon = kindIcon
             ForEach(Array(snapshot.items.enumerated()), id: \.offset) { idx, item in
                 CompletionMenuRow(
                     item: item,
@@ -777,9 +814,52 @@ struct CompletionMenuOverlay: View {
                     font: font,
                     rowHeight: rowHeight,
                     descriptionRowHeight: descriptionRowHeight,
-                    horizontalInset: horizontalInset,
-                    kindIcon: icon
+                    horizontalInset: horizontalInset
                 )
+            }
+        }
+    }
+
+    /// The currently highlighted candidate, or nil when nothing is selected
+    /// (B4 default state — Enter runs typed text, no row is pre-selected).
+    private var selectedItem: CompletionCandidate? {
+        guard snapshot.selection >= 0, snapshot.selection < snapshot.items.count else { return nil }
+        return snapshot.items[snapshot.selection]
+    }
+
+    /// Warp-style detail strip for the highlighted row: shows the full inserted
+    /// text and the (possibly long) description without truncation. Only appears
+    /// once the user has navigated into the list (selection >= 0), so the default
+    /// menu stays a clean list and the B4 "nothing selected" rule reads clearly.
+    @ViewBuilder
+    private var detailFooter: some View {
+        if let item = selectedItem {
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Image(systemName: CompletionKindPresentation.for(item.kind).symbolName)
+                        .font(.system(size: 10))
+                        .foregroundStyle(CompletionMenuRow.tintColor(CompletionKindPresentation.for(item.kind).tint))
+                    Text(item.replacement)
+                        .font(Typography.mono(11))
+                        .foregroundColor(Color(DesignTokens.fg2))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Spacer(minLength: 0)
+                }
+                if let desc = item.description, !desc.isEmpty {
+                    Text(desc)
+                        .font(Typography.ui(11))
+                        .foregroundColor(Color(DesignTokens.fg3))
+                        .lineLimit(3)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, horizontalInset + 2)
+            .padding(.vertical, 6)
+            .background(Color(DesignTokens.bg1))
+            .overlay(alignment: .top) {
+                Rectangle().fill(TermyDesign.subtleBorder).frame(height: 0.5)
             }
         }
     }
@@ -795,20 +875,6 @@ struct CompletionMenuOverlay: View {
             .stroke(TermyDesign.subtleBorder, lineWidth: 0.5)
     }
 
-    private func kindIcon(_ kind: CompletionKind) -> String {
-        switch kind {
-        case .command:    return "⌘"
-        case .flag:       return "-"
-        case .file:       return "/"
-        case .gitBranch:  return "⎇"
-        case .sshHost:    return "@"
-        case .history:    return "↑"    // not used in F-3 (history: []), but keep mapping
-        case .builtin:    return "⌥"
-        case .alias:      return "~"
-        case .directory:  return "/"
-        case .option:     return "-"
-        }
-    }
 }
 
 private struct CommandInput: View {
