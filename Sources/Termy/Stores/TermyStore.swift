@@ -1946,13 +1946,24 @@ final class TermyStore: ObservableObject {
         }
     }
 
+    /// Monotonic token for Files-tree rebuilds. Every rebuild request (sync or
+    /// async) bumps it; an async result only publishes if its captured token is
+    /// still the latest. Without this, two background rebuilds on the *concurrent*
+    /// global queue can complete out of order and a stale `visibleTree` snapshot
+    /// can stomp a newer expand/collapse state (open chevron, missing children).
+    /// Mirrors the terminal's `noteSessionProcessExited(generation:)` guard.
+    private var fileTreeGeneration = 0
+
     func refreshFiles() {
+        fileTreeGeneration += 1   // a synchronous refresh is authoritative now → invalidate any in-flight async rebuild
         do {
             let service = LocalFileService(root: projectRoot)
             // Navigable Finder-lite view: only root + currently-expanded dirs.
             fileTreeItems = try service.visibleTree(expanded: expandedFileDirectories)
             // Search corpus: the full bounded flat list (search spans the whole tree,
-            // not just what is expanded).
+            // not just what is expanded). NOTE: tree() caps at depth 8, so files
+            // nested deeper than 8 under a manually-expanded chain are navigable but
+            // not matched by search — an accepted bound for runaway safety.
             fileItems = try service.tree().map(\.item)
         } catch {
             statusMessage = "File refresh failed: \(error.localizedDescription)"
@@ -1965,6 +1976,8 @@ final class TermyStore: ObservableObject {
     /// `pullCurrentGitBranch` — capture the Sendable root, walk off the main
     /// actor, publish results back on main.
     func refreshFilesAsync() {
+        fileTreeGeneration += 1
+        let generation = fileTreeGeneration
         let root = projectRoot
         let expanded = expandedFileDirectories
         DispatchQueue.global(qos: .userInitiated).async {
@@ -1975,6 +1988,7 @@ final class TermyStore: ObservableObject {
                 return (visible, all)
             }
             DispatchQueue.main.async {
+                guard generation == self.fileTreeGeneration else { return }  // a newer rebuild superseded this one
                 switch result {
                 case .success(let (visible, all)):
                     self.fileTreeItems = visible
@@ -2004,11 +2018,14 @@ final class TermyStore: ObservableObject {
         } else {
             expandedFileDirectories.insert(relativePath)
         }
+        fileTreeGeneration += 1
+        let generation = fileTreeGeneration
         let root = projectRoot
         let expanded = expandedFileDirectories
         DispatchQueue.global(qos: .userInitiated).async {
             let result = Result { try LocalFileService(root: root).visibleTree(expanded: expanded) }
             DispatchQueue.main.async {
+                guard generation == self.fileTreeGeneration else { return }  // stale — a newer toggle/refresh won
                 if case .success(let visible) = result { self.fileTreeItems = visible }
             }
         }

@@ -154,19 +154,22 @@ public struct LocalFileService {
     /// not in `expanded` show their node but none of their children. `maxNodes` is a
     /// safety ceiling (a single expanded directory can still be huge). Unreadable
     /// subtrees are skipped (their folder node remains), mirroring `tree()`.
-    public func visibleTree(expanded: Set<String>, maxNodes: Int = 5000) throws -> [LocalFileTreeItem] {
+    public func visibleTree(expanded: Set<String>, maxDepth: Int = 64, maxNodes: Int = 5000) throws -> [LocalFileTreeItem] {
         var budget = maxNodes
-        return try visibleItems(relativePath: "", depth: 0, expanded: expanded, budget: &budget)
+        return try visibleItems(relativePath: "", depth: 0, expanded: expanded, maxDepth: maxDepth, budget: &budget)
     }
 
-    private func visibleItems(relativePath: String, depth: Int, expanded: Set<String>, budget: inout Int) throws -> [LocalFileTreeItem] {
+    private func visibleItems(relativePath: String, depth: Int, expanded: Set<String>, maxDepth: Int, budget: inout Int) throws -> [LocalFileTreeItem] {
         var result: [LocalFileTreeItem] = []
         for item in try list(relativePath: relativePath).sorted(by: fileTreeSort) {
             if budget <= 0 { break }
             budget -= 1
             result.append(LocalFileTreeItem(item: item, depth: depth))
-            if item.isDirectory && expanded.contains(item.relativePath) {
-                if let children = try? visibleItems(relativePath: item.relativePath, depth: depth + 1, expanded: expanded, budget: &budget) {
+            // `maxDepth` is a defensive ceiling (e.g. a symlink loop inside an
+            // expanded directory) on top of the node budget; deep enough that real
+            // manual expansion never hits it.
+            if item.isDirectory && depth < maxDepth && expanded.contains(item.relativePath) {
+                if let children = try? visibleItems(relativePath: item.relativePath, depth: depth + 1, expanded: expanded, maxDepth: maxDepth, budget: &budget) {
                     result.append(contentsOf: children)
                 }
             }
