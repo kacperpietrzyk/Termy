@@ -683,7 +683,7 @@ struct CompletionMenuRow: View {
                     .padding(.horizontal, 5)
                     .padding(.vertical, 1)
                     .background(
-                        RoundedRectangle(cornerRadius: 3, style: .continuous)
+                        RoundedRectangle(cornerRadius: DesignTokens.Radius.xs, style: .continuous)
                             .fill(DesignTokens.Glass.fillChip)
                     )
             }
@@ -751,13 +751,17 @@ struct CompletionMenuOverlay: View {
         return max(min(preferred, viewportSize.width - 16), 120)
     }
 
-    /// Estimated detail-footer height (only present when a row is selected). Used
-    /// for flip/centering math; the footer itself sizes naturally to its content.
+    // Detail-footer height. The footer is pinned to exactly this height (see
+    // detailFooter), so this value is the *actual* rendered height — not an
+    // estimate — and the flip/centering math below is exact. Description text is
+    // capped to 2 lines to fit `footerWithDescHeight`.
+    private let footerNoDescHeight: CGFloat = 28
+    private let footerWithDescHeight: CGFloat = 60
+
+    /// Footer height for the current selection (0 when nothing is selected).
     private var footerHeight: CGFloat {
-        guard snapshot.selection >= 0, snapshot.selection < snapshot.items.count else { return 0 }
-        let item = snapshot.items[snapshot.selection]
-        let hasDesc = (item.description?.isEmpty == false)
-        return hasDesc ? 70 : 28
+        guard let item = selectedItem else { return 0 }
+        return (item.description?.isEmpty == false) ? footerWithDescHeight : footerNoDescHeight
     }
 
     private var totalHeight: CGFloat { maxHeight + footerHeight }
@@ -779,7 +783,6 @@ struct CompletionMenuOverlay: View {
             detailFooter
         }
             .frame(width: width)
-            .frame(minHeight: maxHeight)
             .background(menuBackground)
             .overlay(menuBorder)
             .position(x: min(max(anchor.x + width / 2, width / 2 + 4),
@@ -834,11 +837,12 @@ struct CompletionMenuOverlay: View {
     @ViewBuilder
     private var detailFooter: some View {
         if let item = selectedItem {
+            let p = CompletionKindPresentation.for(item.kind)
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
-                    Image(systemName: CompletionKindPresentation.for(item.kind).symbolName)
+                    Image(systemName: p.symbolName)
                         .font(.system(size: 10))
-                        .foregroundStyle(CompletionMenuRow.tintColor(CompletionKindPresentation.for(item.kind).tint))
+                        .foregroundStyle(CompletionMenuRow.tintColor(p.tint))
                     Text(item.replacement)
                         .font(Typography.mono(11))
                         .foregroundColor(Color(DesignTokens.fg2))
@@ -850,13 +854,16 @@ struct CompletionMenuOverlay: View {
                     Text(desc)
                         .font(Typography.ui(11))
                         .foregroundColor(Color(DesignTokens.fg3))
-                        .lineLimit(3)
+                        .lineLimit(2)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, horizontalInset + 2)
             .padding(.vertical, 6)
+            // Pin to the exact height the flip/centering math reserves
+            // (footerHeight, padding included) so the menu anchors precisely to
+            // the caret regardless of the description's line count.
+            .frame(maxWidth: .infinity, minHeight: footerHeight, maxHeight: footerHeight, alignment: .topLeading)
             .background(Color(DesignTokens.bg1))
             .overlay(alignment: .top) {
                 Rectangle().fill(TermyDesign.subtleBorder).frame(height: 0.5)
