@@ -36,6 +36,11 @@ final class InMemoryUpdaterDriver: UpdaterDriving {
 final class SparkleUpdateController {
     @ObservationIgnored private var driver: UpdaterDriving
 
+    /// True once the live Sparkle updater has been activated. Stays false in
+    /// dev/unsigned builds (no SUFeedURL), which keeps "Check for Updates…"
+    /// disabled and prevents the launch-time SUNoFeedURLError alert.
+    private(set) var isLiveUpdaterActive = false
+
     /// Designated init — accepts any `UpdaterDriving` driver (tests pass a fake).
     init(driver: UpdaterDriving) {
         self.driver = driver
@@ -50,6 +55,15 @@ final class SparkleUpdateController {
         self.init(driver: InMemoryUpdaterDriver())
     }
 
+    /// Whether the running bundle is configured for updates. Dev/unsigned builds
+    /// (`build_and_run.sh`) write no `SUFeedURL`, so this is false and the live
+    /// updater is never started. Release builds (`package_dmg.sh` with
+    /// `UPDATE_FEED_URL`) carry it. `nonisolated` so it is usable as a default
+    /// argument from the @MainActor call site.
+    nonisolated static var bundleHasFeedURL: Bool {
+        Bundle.main.object(forInfoDictionaryKey: "SUFeedURL") != nil
+    }
+
     var canCheckForUpdates: Bool { driver.canCheckForUpdates }
 
     var automaticallyChecksForUpdates: Bool {
@@ -60,13 +74,17 @@ final class SparkleUpdateController {
     func checkForUpdates() { driver.checkForUpdates() }
 
     /// App-only: replace the in-memory driver with the live Sparkle updater.
-    /// Call once at app launch (e.g. from the `.task` modifier). Guarded so a
+    /// No-ops unless the bundle carries an `SUFeedURL` (release builds only), so
+    /// an unconfigured dev build never constructs `SPUStandardUpdaterController`
+    /// (which would fail with SUNoFeedURLError and alert on launch). Guarded so a
     /// second call is a no-op — without it, a second call would construct a
-    /// redundant SPUStandardUpdaterController and start a second update cycle.
-    func activateLiveUpdater() {
-        #if canImport(Sparkle)
+    /// redundant updater and start a second update cycle.
+    func activateLiveUpdater(feedConfigured: Bool = SparkleUpdateController.bundleHasFeedURL) {
+        guard feedConfigured else { return }
         guard driver is InMemoryUpdaterDriver else { return }
+        #if canImport(Sparkle)
         driver = SparkleUpdaterDriver()
+        isLiveUpdaterActive = true
         #endif
     }
 }

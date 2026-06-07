@@ -44,4 +44,19 @@ final class SparkleUpdateControllerTests: XCTestCase {
         XCTAssertTrue(controller.automaticallyChecksForUpdates)
         controller.checkForUpdates()
     }
+
+    func testActivateLiveUpdaterSkippedWhenFeedNotConfigured() {
+        // Dev/unsigned build path: no SUFeedURL in the bundle. The live updater
+        // must NOT start (starting it with no feed throws SUNoFeedURLError and
+        // shows a modal alert on launch — the bug this guards against).
+        let controller = SparkleUpdateController()
+        controller.activateLiveUpdater(feedConfigured: false)
+        XCTAssertFalse(controller.isLiveUpdaterActive)
+    }
+
+    func testBundleHasFeedURLDefaultsClosedInUnconfiguredBundle() {
+        // The test host bundle carries no SUFeedURL, so the gate reads false —
+        // proving activateLiveUpdater()'s default argument is fail-closed.
+        XCTAssertFalse(SparkleUpdateController.bundleHasFeedURL)
+    }
 }
