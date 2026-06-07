@@ -2,6 +2,14 @@
 <rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
   <channel>
     <title>Termy</title>
-    <description>Termy update feed</description>
+    <item>
+      <title>0.1.0</title>
+      
+      <pubDate>Sun, 07 Jun 2026 19:47:29 +0000</pubDate>
+      <sparkle:version>0.1.0</sparkle:version>
+      <sparkle:shortVersionString>0.1.0</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+      <enclosure url="https://github.com/kacperpietrzyk/Termy/releases/download/v0.1.0/Termy-0.1.0.dmg" type="application/octet-stream" sparkle:edSignature="sT6dvy5QALDblRftBCWedk9/uK3nq17XR6bFgfW7W8J/Zqz0gAkZyMwv14eVKp2YXEoGgVuVjr1kgly5lPNMCQ==" length="9619702" />
+    </item>
   </channel>
 </rss>
