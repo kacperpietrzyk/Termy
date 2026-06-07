@@ -41,10 +41,11 @@ direct-distribution audit (`dist/Termy-<v>.distribution.json` →
 
 ## Cutting a release
 
+The signing identity and the EdDSA public key are pinned as defaults in
+`script/release.sh`, so a release needs only the version:
+
 ```bash
-DEVELOPER_ID_APPLICATION="Developer ID Application: Your Name (TEAMID)" \
-SPARKLE_PUBLIC_ED_KEY="<pinned-or-env>" \
-  script/release.sh v0.2.0
+script/release.sh v0.2.0
 ```
 
 `release.sh` will:

@@ -27,8 +27,11 @@ GITHUB_REPO="${GITHUB_REPO:-kacperpietrzyk/Termy}"
 UPDATE_FEED_URL="${UPDATE_FEED_URL:-https://kacperpietrzyk.github.io/Termy/appcast.xml}"
 NOTARY_PROFILE="${NOTARY_PROFILE:-TermyNotary}"
 PAGES_BRANCH="${PAGES_BRANCH:-gh-pages}"
-# DEVELOPER_ID_APPLICATION and SPARKLE_PUBLIC_ED_KEY must come from the env
-# (the EdDSA public key is pinned here once generated — see docs/RELEASING.md).
+# Signing identity (public, not secret) and Sparkle EdDSA PUBLIC key, pinned so a
+# release needs no env. The Developer ID PRIVATE key and the EdDSA PRIVATE key
+# both live in the Keychain and never appear here. Override either via env.
+DEVELOPER_ID_APPLICATION="${DEVELOPER_ID_APPLICATION:-Developer ID Application: Kacper Pietrzyk (UDZLCK86PY)}"
+SPARKLE_PUBLIC_ED_KEY="${SPARKLE_PUBLIC_ED_KEY:-sGAGYRjxYkEG9az+ULcHBKBxzuKd2wyII+kdYBHBpY8=}"
 
 # ---- preflight: fail fast, before any build, if a credential is missing ----
 fail() { echo "preflight: $1" >&2; exit 1; }
