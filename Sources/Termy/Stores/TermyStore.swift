@@ -2724,6 +2724,12 @@ final class TermyStore: ObservableObject {
     /// cleared when a command starts so a suggestion never survives into
     /// execution.
     private var terminalInputBuffers: [UUID: (text: String, cursor: Int, length: Int)] = [:]
+    /// #4: after an inline ghost-text accept we set the buffer to its final value
+    /// at once (instant client-side insert) and remember it here. The shell then
+    /// re-echoes that text one character at a time; `.inputBufferChanged` drops
+    /// those intermediate prefix echoes (no "letter-by-letter" animation) until
+    /// the echo reaches — or diverges from — this value, then clears it.
+    private var pendingInlineOptimistic: [UUID: String] = [:]
     /// FB-1: zsh-syntax-highlighting `region_highlight` spans for the live input
     /// line (OSC 133 `H`), used to color the live block. Cleared with the buffer.
     private var terminalInputHighlights: [UUID: [InputHighlightSpan]] = [:]
@@ -3062,6 +3068,31 @@ final class TermyStore: ObservableObject {
     func terminalLiveInput(for sessionID: UUID) -> (text: String, cursor: Int)? {
         guard let buf = terminalInputBuffers[sessionID] else { return nil }
         return (buf.text, buf.cursor)
+    }
+
+    /// #4: accept an inline ghost-text suffix with an instant client-side insert.
+    /// Warp inserts the accepted text immediately; Termy used to just `send` the
+    /// suffix to the PTY and let the shell echo it back one character at a time,
+    /// which looked like the line typing itself in. Instead we set the buffer to
+    /// its final value at once (the SwiftUI live block re-renders via
+    /// objectWillChange) and arm `pendingInlineOptimistic` so the trailing prefix
+    /// echoes are dropped, THEN send the suffix to the PTY. Falls back to a plain
+    /// send when there's no tracked buffer (e.g. SSH `.commandLine` sessions).
+    ///
+    /// LIVE-GATE REQUIRED: the suppression assumes the shell re-echoes the accepted
+    /// text as growing prefixes of the optimistic value. If a shell batches or
+    /// reshapes the echo, the worst case self-corrects (a non-prefix report clears
+    /// the pending state and the shell's value wins) — never wrong-then-stuck —
+    /// but the "no animation" payoff must be confirmed against real PTY timing.
+    func acceptInlineSuffix(_ suffix: String, for sessionID: UUID) {
+        guard !suffix.isEmpty else { return }
+        if let buf = terminalInputBuffers[sessionID] {
+            let newText = buf.text + suffix
+            terminalInputBuffers[sessionID] = (newText, newText.count, newText.count)
+            pendingInlineOptimistic[sessionID] = newText
+            objectWillChange.send()
+        }
+        terminalInputSinks[sessionID]?(suffix)
     }
 
     /// FB-1: the live input's syntax-highlight spans (zsh-syntax-highlighting
@@ -4192,6 +4223,7 @@ final class TermyStore: ObservableObject {
         tunnelReconnectContexts = [:]
         tunnelReconnectAttempts = [:]
         terminalInputBuffers = [:]
+        pendingInlineOptimistic = [:]
         terminalInputHighlights = [:]
         terminalCaretOriginProviders = [:]
         terminalInputSinks = [:]
@@ -5807,6 +5839,7 @@ final class TermyStore: ObservableObject {
                 commandActivityLog.record(at: Date())
                 objectWillChange.send()
                 terminalInputBuffers[sessionID] = nil   // F-1: drop pending suggestion
+                pendingInlineOptimistic[sessionID] = nil   // #4: a new command voids any optimistic accept
                 terminalInputHighlights[sessionID] = nil // FB-1: drop live highlight spans
                 // F-3: a command starting means the user accepted (Enter at prompt) —
                 // any open menu is now stale; close it defensively.
@@ -5857,6 +5890,17 @@ final class TermyStore: ObservableObject {
                     Task { await sidecar.notifyCwd(cwd) }
                 }
             case .inputBufferChanged(let text, let cursor, let length):
+                // #4: suppress the prefix echoes that follow an optimistic inline
+                // accept (see `pendingInlineOptimistic` / `acceptInlineSuffix`).
+                if let pending = pendingInlineOptimistic[sessionID] {
+                    if text == pending {
+                        pendingInlineOptimistic[sessionID] = nil          // echo caught up → apply normally
+                    } else if pending.hasPrefix(text) && text.count < pending.count {
+                        break                                             // intermediate prefix → keep the optimistic buffer
+                    } else {
+                        pendingInlineOptimistic[sessionID] = nil          // diverged (user edited) → trust the shell
+                    }
+                }
                 // F-1: set buffer state only. The view refresh is pushed by
                 // `terminalRenderChanged` from SwiftTerm's post-render
                 // `rangeChanged`, so the overlay re-reads `caretFrame` after
@@ -6409,6 +6453,16 @@ extension TermyStore {
     /// Sets the raw input buffer for testing (simulates OSC 133 T events).
     func testSetInputBuffer(_ sid: UUID, text: String, cursor: Int) {
         terminalInputBuffers[sid] = (text, cursor, text.count)
+    }
+
+    /// Current live input buffer text for `sid` (nil when none). #4 tests.
+    func testInputBufferText(_ sid: UUID) -> String? {
+        terminalInputBuffers[sid]?.text
+    }
+
+    /// Whether an optimistic inline accept is still awaiting its echo. #4 tests.
+    func testHasPendingInlineOptimistic(_ sid: UUID) -> Bool {
+        pendingInlineOptimistic[sid] != nil
     }
 }
 #endif
