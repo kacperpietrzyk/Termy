@@ -7,7 +7,8 @@ MIN_SYSTEM_VERSION="14.0"
 VERSION="${VERSION:-0.1.0}"
 IDENTITY="${DEVELOPER_ID_APPLICATION:-}"
 NOTARY_PROFILE="${NOTARY_PROFILE:-}"
-UPDATE_BASE_URL="${UPDATE_BASE_URL:-}"
+UPDATE_FEED_URL="${UPDATE_FEED_URL:-}"
+GITHUB_REPO="${GITHUB_REPO:-kacperpietrzyk/Termy}"
 RELEASE_NOTES="${RELEASE_NOTES:-}"
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -103,8 +104,8 @@ install_name_tool -add_rpath "@executable_path/../Frameworks" "$APP_BINARY" 2>/d
 # privacy keys always (no telemetry / no first-run prompt / checks off).
 /usr/libexec/PlistBuddy -c "Add :SUEnableSystemProfiling bool false" "$INFO_PLIST"
 /usr/libexec/PlistBuddy -c "Add :SUEnableAutomaticChecks bool false" "$INFO_PLIST"
-if [[ -n "$UPDATE_BASE_URL" ]]; then
-  /usr/libexec/PlistBuddy -c "Add :SUFeedURL string ${UPDATE_BASE_URL%/}/appcast.xml" "$INFO_PLIST"
+if [[ -n "$UPDATE_FEED_URL" ]]; then
+  /usr/libexec/PlistBuddy -c "Add :SUFeedURL string ${UPDATE_FEED_URL}" "$INFO_PLIST"
 fi
 if [[ -n "${SPARKLE_PUBLIC_ED_KEY:-}" ]]; then
   /usr/libexec/PlistBuddy -c "Add :SUPublicEDKey string ${SPARKLE_PUBLIC_ED_KEY}" "$INFO_PLIST"
@@ -155,9 +156,9 @@ else
 fi
 
 APPCAST_PATH="$DIST_DIR/appcast.xml"
-if [[ -n "$UPDATE_BASE_URL" ]]; then
-  if [[ "$UPDATE_BASE_URL" != https://* ]]; then
-    echo "error: UPDATE_BASE_URL must use https" >&2
+if [[ -n "$UPDATE_FEED_URL" ]]; then
+  if [[ "$UPDATE_FEED_URL" != https://* ]]; then
+    echo "error: UPDATE_FEED_URL must use https" >&2
     exit 1
   fi
   SIGN_UPDATE="${SPARKLE_BIN:-}/sign_update"
@@ -169,7 +170,7 @@ if [[ -n "$UPDATE_BASE_URL" ]]; then
     exit 1
   fi
   SIG_LINE="$("$SIGN_UPDATE" "$DMG_PATH")"
-  DMG_URL="${UPDATE_BASE_URL%/}/$APP_NAME-$VERSION.dmg"
+  DMG_URL="https://github.com/${GITHUB_REPO}/releases/download/v${VERSION}/${APP_NAME}-${VERSION}.dmg"
   PUBDATE="$(LC_TIME=C date -u +"%a, %d %b %Y %H:%M:%S +0000")"
   NOTES_BLOCK=""
   if [[ -n "$RELEASE_NOTES" ]]; then
