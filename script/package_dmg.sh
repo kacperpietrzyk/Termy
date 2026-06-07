@@ -237,7 +237,15 @@ else
   SPECS_AUDITED=false
 fi
 
-MISSING_JSON="$(IFS=,; echo "${MISSING_REQUIREMENTS[*]}")"
+# bash 3.2 (macOS default) raises "unbound variable" on "${arr[*]}" for an EMPTY
+# array under `set -u` — which is exactly the all-requirements-satisfied case
+# (a fully compliant build). Guard the value-expansion; the count-expansion
+# `${#arr[@]}` is safe on an empty array.
+if [[ ${#MISSING_REQUIREMENTS[@]} -gt 0 ]]; then
+  MISSING_JSON="$(IFS=,; echo "${MISSING_REQUIREMENTS[*]}")"
+else
+  MISSING_JSON=""
+fi
 cat > "$DISTRIBUTION_AUDIT_PATH" <<EOF
 {
   "appBundleSignedWithDeveloperID": $APP_SIGNED_WITH_DEVELOPER_ID,
