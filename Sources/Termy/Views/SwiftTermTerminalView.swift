@@ -113,6 +113,9 @@ struct SwiftTermTerminalView: NSViewRepresentable {
         view.inlineAcceptComponentHandler = { [weak storeRef] in
             storeRef?.terminalInlineSuggestionNextComponent(for: sessionID)
         }
+        view.inlineAcceptApply = { [weak storeRef] suffix in
+            storeRef?.acceptInlineSuffix(suffix, for: sessionID)
+        }
         view.menuOpenSnapshot = { [weak storeRef] in
             storeRef?.terminalMenuSnapshot(for: sessionID) != nil
         }
@@ -295,6 +298,11 @@ final class TappedLocalProcessTerminalView: LocalProcessTerminalView {
     /// Ctrl-→, or nil. Wired from TermyStore in `makeNSView` below.
     var inlineAcceptComponentHandler: (() -> String?)?
 
+    /// #4: apply an accepted inline suffix via the store (instant client-side
+    /// insert + prefix-echo suppression) instead of a bare `send(txt:)`. Falls
+    /// back to `send` when nil. Wired from TermyStore in `makeNSView`.
+    var inlineAcceptApply: ((String) -> Void)?
+
     /// F-3: synchronous "is menu currently open for my session?" lookup. The
     /// monitor needs this BEFORE deciding whether to swallow keys. Wired from
     /// `makeNSView` to `store.terminalMenuSnapshot(for: sessionID) != nil`.
@@ -446,7 +454,9 @@ final class TappedLocalProcessTerminalView: LocalProcessTerminalView {
                 if let suffix = InlineAcceptDecision.suffix(
                     isAltScreen: self.getTerminal().isCurrentBufferAlternate,
                     pending: self.inlineAcceptComponentHandler?()) {
-                    self.send(txt: suffix)
+                    // #4: instant client-side insert (+ echo suppression) via the
+                    // store, falling back to a bare send when unwired.
+                    if let apply = self.inlineAcceptApply { apply(suffix) } else { self.send(txt: suffix) }
                     return nil
                 }
                 // fall through to F-3 logic below — Ctrl-→ does not collide
@@ -508,7 +518,8 @@ final class TappedLocalProcessTerminalView: LocalProcessTerminalView {
             guard let suffix = InlineAcceptDecision.suffix(
                 isAltScreen: isAltScreen,
                 pending: self.inlineAcceptHandler?()) else { return event }
-            self.send(txt: suffix)
+            // #4: instant client-side insert (+ echo suppression) via the store.
+            if let apply = self.inlineAcceptApply { apply(suffix) } else { self.send(txt: suffix) }
             return nil
         }
 
