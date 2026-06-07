@@ -13,12 +13,54 @@ public enum ShellIntegrationScript {
         let specBlock = specStylesBlock.isEmpty ? "" : specStylesBlock + "\n"
         return """
         autoload -Uz add-zsh-hook add-zle-hook-widget
+        # Slice-2c / Bug 1+3: probe the Warp context fields for the CURRENT $PWD into
+        # the caller's locals `termy_branch`/`termy_gitstatus`/`termy_node` (zsh
+        # dynamic scope — caller declares them `local`). Every probe is cheap, quiet,
+        # and fail-open; `--no-optional-locks` avoids index-lock contention.
+        termy_probe_context() {
+          termy_branch="$(git --no-optional-locks symbolic-ref --short -q HEAD 2>/dev/null)"
+          termy_gitstatus=''
+          if [[ -n $termy_branch ]]; then
+            git --no-optional-locks diff --quiet --ignore-submodules HEAD 2>/dev/null || termy_gitstatus='*'
+          fi
+          # node version is session-constant; probe once, then reuse the cached value.
+          if [[ -z $TERMY_NODE_PROBED ]]; then
+            TERMY_NODE_PROBED=1
+            command -v node >/dev/null 2>&1 && TERMY_NODE_VER="$(node --version 2>/dev/null)"
+          fi
+          # Bug 3 / Warp parity: surface node ONLY inside a node-flavored project —
+          # a package.json found walking up to the git root. Other runtimes
+          # (Cargo.toml→Rust, requirements.txt→Python, …) = a separate multi-runtime
+          # feature, intentionally NOT built here. Version stays session-constant
+          # (nvm-per-dir unhandled, pre-existing limit).
+          termy_node=''
+          if [[ -n $TERMY_NODE_VER ]]; then
+            local termy_d="$PWD"
+            while [[ -n $termy_d && $termy_d != / ]]; do
+              if [[ -f $termy_d/package.json ]]; then termy_node="$TERMY_NODE_VER"; break; fi
+              [[ -e $termy_d/.git ]] && break   # stop at the repo root
+              termy_d="${termy_d:h}"
+            done
+          fi
+        }
         termy_preexec() {
-          printf '\\033]133;C;cmd=%s\\007' "$1"
+          # Per-command context for the Warp block header. Real fields go FIRST and
+          # the command LAST so a command containing `;branch=…`/`;cmd=…` can't
+          # shadow a legit field (parser is first-wins).
+          local termy_branch termy_gitstatus termy_node
+          termy_probe_context
+          printf '\\033]133;C;branch=%s;gitstatus=%s;node=%s;cmd=%s\\007' \\
+            "$termy_branch" "$termy_gitstatus" "$termy_node" "$1"
         }
         termy_precmd() {
           local termy_status=$?
-          printf '\\033]133;D;exit=%d;pwd=%s\\007' "$termy_status" "$PWD"
+          # Bug 1: carry LIVE prompt context on D too (precmd fires before EVERY
+          # prompt incl. the first), so the pinned input bar shows the branch right
+          # after a `cd` — and clears it on `cd` into a non-repo (empty fields).
+          local termy_branch termy_gitstatus termy_node
+          termy_probe_context
+          printf '\\033]133;D;exit=%d;pwd=%s;branch=%s;gitstatus=%s;node=%s\\007' \\
+            "$termy_status" "$PWD" "$termy_branch" "$termy_gitstatus" "$termy_node"
         }
         add-zsh-hook preexec termy_preexec
         add-zsh-hook precmd termy_precmd
@@ -41,6 +83,13 @@ public enum ShellIntegrationScript {
         # SwiftTerm prompt reads the same as the rendered command-block cards.
         # `❯` replaces `%#` (purely visual; OSC 133 C/D marks drive parsing).
         PROMPT='%n@%m:%~ ❯ '
+        # Block-model fix: zsh's PROMPT_SP "preserve partial line" feature always
+        # emits PROMPT_EOL_MARK (`%`) + pad + CR before each prompt. On a raw
+        # terminal the prompt overwrites it, but Termy's command-block tap captures
+        # the `%` literally as trailing output of the just-finished block (the CR +
+        # overwrite lands in the next block). Disable it so blocks stay clean.
+        unsetopt PROMPT_SP 2>/dev/null
+        PROMPT_EOL_MARK=''
         # FB-1: Warp-style command syntax highlighting via vendored zsh-syntax-highlighting
         # (zsh-only). Styles derive from the active Termy theme. The source is guarded so a
         # missing resource never blocks shell start (fail-open).

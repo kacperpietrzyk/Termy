@@ -23,6 +23,8 @@ struct SwiftTermTerminalView: NSViewRepresentable {
     let onScreenText: (@escaping () -> String) -> Void
     let storeRef: TermyStore
     let onCaretOrigin: (@escaping () -> (x: CGFloat, y: CGFloat)?) -> Void
+    let onBlockCaptureArm: (@escaping () -> Void) -> Void
+    let onBlockCaptureSnapshot: (@escaping () -> String?) -> Void
     let onSendInput: (@escaping (String) -> Void) -> Void
     let initialTranscriptReplay: String?
     let onInitialTranscriptReplayed: () -> Void
@@ -100,6 +102,8 @@ struct SwiftTermTerminalView: NSViewRepresentable {
             guard f != .zero else { return nil }
             return (x: f.maxX, y: view.frame.height - f.maxY)
         }
+        onBlockCaptureArm { [weak view] in view?.armBlockCapture() }
+        onBlockCaptureSnapshot { [weak view] in view?.captureBlockSnapshotANSI() }
         onSendInput { [weak view] text in
             view?.send(txt: text)
         }
@@ -111,6 +115,9 @@ struct SwiftTermTerminalView: NSViewRepresentable {
         }
         view.menuOpenSnapshot = { [weak storeRef] in
             storeRef?.terminalMenuSnapshot(for: sessionID) != nil
+        }
+        view.menuHasSelectionSnapshot = { [weak storeRef] in
+            (storeRef?.terminalMenuSnapshot(for: sessionID)?.selection ?? -1) >= 0
         }
         view.menuOpenHandler = { [weak storeRef] in
             storeRef?.terminalMenuOpen(for: sessionID) ?? false
@@ -126,13 +133,16 @@ struct SwiftTermTerminalView: NSViewRepresentable {
         }
         view.installInlineAcceptMonitor()   // nil-guarded internally
         view.notifyUpdateChanges = true
-        view.onRenderChanged = { [weak storeRef, weak view] in
+        view.onRenderChanged = { [weak storeRef] in
             storeRef?.terminalRenderChanged(for: sessionID)
-            // v3 block terminal: keep the alt-screen flag in sync so the block
-            // view hands the whole area to a TUI (vim/htop) and back.
-            if let view {
-                storeRef?.setTerminalAltScreen(view.getTerminal().isCurrentBufferAlternate, for: sessionID)
-            }
+        }
+        // v3 block terminal: keep the alt-screen flag in sync so the block view
+        // hands the whole area to a TUI (vim/htop) and back. Driven from
+        // `dataReceived` (synchronous with the PTY bytes) rather than the render
+        // callback, so the alt-exit output suppression arms before the next
+        // slice is ingested (residue fix — see AltScreenTapDecision).
+        view.onAltScreenChanged = { [weak storeRef] active in
+            storeRef?.setTerminalAltScreen(active, for: sessionID)
         }
         // v3 block terminal: render-only clear of THIS view's emulator (NOT the PTY).
         storeRef.registerTerminalLocalClear({ [weak view] in
@@ -210,6 +220,7 @@ enum MenuKeyDecision: Equatable {
         keyCode: UInt16,
         modifiers: NSEvent.ModifierFlags,
         menuOpen: Bool,
+        hasSelection: Bool,
         isAltScreen: Bool
     ) -> MenuKeyDecision {
         // TUI apps never host the menu (no OSC 133 T fires in alt-screen) —
@@ -222,11 +233,22 @@ enum MenuKeyDecision: Equatable {
 
         if menuOpen {
             // Modal subset while menu is open.
+            //
+            // B4 (Warp parity): being OPEN no longer means "accept on Return".
+            // The menu is "be aggressive in offering, never in hijacking": with
+            // NOTHING selected (the default), Return submits the typed line
+            // verbatim and → accepts the inline ghost — neither touches the
+            // menu. Only after the user explicitly enters the list (↓ / Tab)
+            // do Return / → accept the highlighted candidate.
             if bare {
                 switch keyCode {
-                case 126: return .move(by: -1)   // Up
-                case 125: return .move(by: 1)    // Down
-                case 48, 124, 36: return .accept // Tab / Right / Return
+                case 126: return .move(by: -1)   // Up — enter list / move up
+                case 125: return .move(by: 1)    // Down — enter list / move down
+                case 48: return .move(by: 1)     // Tab — ENTER/advance list (never accept)
+                case 124, 36:                     // Right / Return
+                    // Accept ONLY when an explicit selection exists; otherwise
+                    // pass through (Return → verbatim submit, → → F-1 ghost).
+                    return hasSelection ? .accept : .passthrough
                 case 53: return .cancel           // Esc
                 default: return .passthrough     // live-narrow path
                 }
@@ -278,6 +300,12 @@ final class TappedLocalProcessTerminalView: LocalProcessTerminalView {
     /// `makeNSView` to `store.terminalMenuSnapshot(for: sessionID) != nil`.
     var menuOpenSnapshot: (() -> Bool)?
 
+    /// B4: synchronous "does the open menu have an EXPLICIT selection?" lookup
+    /// (selection >= 0). Wired to `store.terminalMenuSnapshot(...).selection >= 0`.
+    /// `decide` needs it to distinguish "nothing selected" (Return → verbatim
+    /// submit) from "row N selected" (Return → accept).
+    var menuHasSelectionSnapshot: (() -> Bool)?
+
     /// F-3: returns `true` if the menu opened (the engine had ≥1 candidate).
     /// Monitor swallows the event when `true`; passes through (zsh native Tab)
     /// when `false`.
@@ -312,9 +340,86 @@ final class TappedLocalProcessTerminalView: LocalProcessTerminalView {
     /// Verified verbatim against SwiftTerm 1.13.0:
     ///   MacLocalTerminalView.swift:183
     ///     open func dataReceived(slice: ArraySlice<UInt8>) { feed (byteArray: slice) }
+    /// Synchronous alt-screen state notification, wired to
+    /// `store.setTerminalAltScreen`. Pushed from `dataReceived` (NOT the render
+    /// callback) so the store's alt-exit output-suppression window opens in the
+    /// same call that gates ingest — see `AltScreenTapDecision`.
+    var onAltScreenChanged: ((Bool) -> Void)?
+
+    /// Slice-1: accumulated scroll-invariant dirty range of the in-flight
+    /// command's output, merged per slice. We sample SwiftTerm's update range
+    /// AFTER `super.dataReceived` emulated this slice but never call
+    /// `clearUpdateRange()` — the view's own draw cycle clears it; we only union
+    /// each slice's contribution into our own range, so rendering is untouched.
+    private var pendingBlockRange: (start: Int, end: Int)?
+
+    /// Floor row set at arm time: scroll-invariant rows strictly BEFORE this
+    /// value belong to pre-arm output and must be excluded from the snapshot.
+    /// In the real app the draw cycle calls `clearUpdateRange()` between the
+    /// pre-arm and post-arm slices, so the floor is never needed; in headless
+    /// tests there is no draw cycle and the range keeps growing, so the floor is
+    /// the only guard against pre-arm leakage.
+    private var blockCaptureFloor: Int = 0
+
+    /// Reset the accumulator at command start (OSC 133 C).
+    /// Records a floor from the cursor's current scroll-invariant position so
+    /// pre-arm rows are excluded even in headless tests where no draw cycle
+    /// runs `clearUpdateRange()`. The floor is `yDisp + cursor.y` — the same
+    /// coordinate scheme `updateRange` uses (`effectiveY = buffer._yDisp + y`).
+    func armBlockCapture() {
+        pendingBlockRange = nil
+        let term = getTerminal()
+        blockCaptureFloor = term.getTopVisibleRow() + term.getCursorLocation().y
+    }
+
+    /// Read the accumulated command region from the authoritative buffer as an
+    /// SGR-colored string (OSC 133 D). nil if nothing was captured.
+    func captureBlockSnapshotANSI() -> String? {
+        guard let r = pendingBlockRange else { return nil }
+        return BufferSnapshot.ansiString(getTerminal(), scrollInvariantRows: r.start...r.end)
+    }
+
+    private func accumulateBlockRange() {
+        guard let r = getTerminal().getScrollInvariantUpdateRange() else { return }
+        // Clamp to the floor recorded at arm time: exclude pre-arm rows.
+        let clampedStart = max(r.startY, blockCaptureFloor)
+        guard clampedStart <= r.endY else { return }
+        if let cur = pendingBlockRange {
+            pendingBlockRange = (min(cur.start, clampedStart), max(cur.end, r.endY))
+        } else {
+            pendingBlockRange = (clampedStart, r.endY)
+        }
+    }
+
     override func dataReceived(slice: ArraySlice<UInt8>) {
+        // B2/residue: never ingest ALTERNATE-SCREEN output into the Warp-style
+        // block transcript. A full-screen TUI (vim/htop/`claude`) repaints the
+        // same cells many times; capturing those frames produces garbled
+        // overlapping lines (`787878%`) after the program exits. Sample the
+        // terminal's own alt-screen flag BEFORE and AFTER `super`, then derive
+        // ingest + alt-change from the SAME sample so the alt-exit suppression
+        // arms synchronously with the bytes (the render callback armed it too
+        // late — PRODUCT_DIAGNOSIS §9).
+        let wasAlternate = getTerminal().isCurrentBufferAlternate
         super.dataReceived(slice: slice)   // SwiftTerm renders, unchanged
-        streamBridge?.ingest(slice)        // observe-only, same queue/frame
+        let nowAlternate = getTerminal().isCurrentBufferAlternate
+        let decision = AltScreenTapDecision.decide(wasAlternate: wasAlternate, nowAlternate: nowAlternate)
+        // LOAD-BEARING — DO NOT DELETE as "retired re-parse scaffolding" (spec §9 predates
+        // Slice 1 and is stale here). `decision.ingest` now gates the Slice-1 SNAPSHOT
+        // accumulation — the rebuild's CLEAN SOURCE. Removing this gate lets a full-screen
+        // TUI's (`claude`/`vim`/`htop`) alternate-buffer repaint frames into the snapshot,
+        // reviving the `787878%` / mangled-picker residue (screenshot #6) the rebuild killed.
+        if decision.ingest { accumulateBlockRange() }  // only non-alt output feeds the snapshot
+        if decision.altScreenChanged {
+            onAltScreenChanged?(nowAlternate)   // arm suppression BEFORE any later ingest (drives 3a full-reveal)
+        }
+        // Also gated to non-alt: keeps the RETAINED `session.lines` re-parse (still used by
+        // stream/SSH render, the running-block fallback, and 3c-2 restore structure) from
+        // being flooded by thousands of TUI repaint frames. Not scaffolding for a deleted
+        // path — upkeep for a deliberately-kept surface.
+        if decision.ingest {
+            streamBridge?.ingest(slice)    // observe-only, non-alt output only
+        }
     }
 
     /// F-1: Tab/Right-Arrow accept the inline suggestion. SwiftTerm's
@@ -355,6 +460,7 @@ final class TappedLocalProcessTerminalView: LocalProcessTerminalView {
                 keyCode: event.keyCode,
                 modifiers: modifiers,
                 menuOpen: self.menuOpenSnapshot?() ?? false,
+                hasSelection: self.menuHasSelectionSnapshot?() ?? false,
                 isAltScreen: isAltScreen
             )
             switch decision {
@@ -373,11 +479,19 @@ final class TappedLocalProcessTerminalView: LocalProcessTerminalView {
                 return nil
 
             case .accept:
+                // B4: `.accept` only reaches here with an EXPLICIT selection
+                // (decide gates it on hasSelection). Inject the diff-suffix and
+                // swallow the key so the completion doesn't also submit. When
+                // the suffix is empty/nil (user selected the exact text already
+                // typed), close the menu but FORWARD the event so Return still
+                // runs the command verbatim — never silently eat the newline.
                 if let suffix = self.menuAcceptHandler?(), !suffix.isEmpty {
                     self.send(txt: suffix)
+                    self.menuCancelHandler?()
+                    return nil
                 }
-                self.menuCancelHandler?()    // close in either case (incl. empty suffix)
-                return nil
+                self.menuCancelHandler?()
+                return event
 
             case .cancel:
                 self.menuCancelHandler?()

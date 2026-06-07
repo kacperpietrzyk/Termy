@@ -1,6 +1,6 @@
 import Foundation
 
-public enum CompletionKind: String, Sendable {
+public enum CompletionKind: String, Sendable, CaseIterable {
     case history
     case command
     case flag
@@ -11,6 +11,50 @@ public enum CompletionKind: String, Sendable {
     case alias
     case directory
     case option
+}
+
+/// Pure, UI-framework-free presentation for a completion kind. The F-3/F-4
+/// completion menu renders an SF Symbol, a short right-aligned type tag, and a
+/// per-kind icon tint; keeping the mapping here (not in the SwiftUI view) makes
+/// it testable and the single source of truth. The `tint` is a semantic *role*
+/// the view layer resolves to a concrete `DesignTokens` color — TermyCore stays
+/// free of SwiftUI/AppKit.
+public struct CompletionKindPresentation: Equatable, Sendable {
+    public enum Tint: String, Sendable {
+        case neutral   // plain content (files, builtins, flags, history)
+        case accent    // the blue interactive accent (commands, dirs, aliases)
+        case git       // git branches
+        case host      // ssh hosts
+    }
+
+    public let symbolName: String   // SF Symbol
+    public let typeLabel: String    // short tag, e.g. "dir", "cmd", "branch"
+    public let tint: Tint
+
+    public static func `for`(_ kind: CompletionKind) -> CompletionKindPresentation {
+        switch kind {
+        case .command:
+            return .init(symbolName: "terminal", typeLabel: "cmd", tint: .accent)
+        case .builtin:
+            return .init(symbolName: "gearshape", typeLabel: "builtin", tint: .neutral)
+        case .alias:
+            return .init(symbolName: "arrowshape.turn.up.right", typeLabel: "alias", tint: .accent)
+        case .file:
+            return .init(symbolName: "doc", typeLabel: "file", tint: .neutral)
+        case .directory:
+            return .init(symbolName: "folder.fill", typeLabel: "dir", tint: .accent)
+        case .flag:
+            return .init(symbolName: "minus.circle", typeLabel: "flag", tint: .neutral)
+        case .option:
+            return .init(symbolName: "slider.horizontal.3", typeLabel: "opt", tint: .neutral)
+        case .gitBranch:
+            return .init(symbolName: "arrow.triangle.branch", typeLabel: "branch", tint: .git)
+        case .sshHost:
+            return .init(symbolName: "network", typeLabel: "host", tint: .host)
+        case .history:
+            return .init(symbolName: "clock.arrow.circlepath", typeLabel: "hist", tint: .neutral)
+        }
+    }
 }
 
 public struct CompletionCandidate: Equatable, Sendable {

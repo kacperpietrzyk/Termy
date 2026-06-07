@@ -138,8 +138,43 @@ public struct LocalFileService {
             }
     }
 
-    public func tree(relativePath: String = "") throws -> [LocalFileTreeItem] {
-        try treeItems(relativePath: relativePath, depth: 0)
+    /// Bounded recursive walk. `maxDepth`/`maxNodes` are a hard safety ceiling so a
+    /// pathological root (e.g. `projectRoot` defaulting to `/` when the app is launched
+    /// via `open`, which sets cwd to `/`) can NEVER turn this into a whole-filesystem
+    /// walk that pins the main thread at launch. The Files UI only needs a shallow,
+    /// bounded view; deeper/larger trees are truncated rather than walked unbounded.
+    public func tree(relativePath: String = "", maxDepth: Int = 8, maxNodes: Int = 5000) throws -> [LocalFileTreeItem] {
+        var budget = maxNodes
+        return try treeItems(relativePath: relativePath, depth: 0, maxDepth: maxDepth, budget: &budget)
+    }
+
+    /// Finder-lite expand/collapse view. Lists the root's children and descends
+    /// ONLY into directories whose relative path is in `expanded` — so the cost is
+    /// proportional to what the user has opened, not the whole subtree. Directories
+    /// not in `expanded` show their node but none of their children. `maxNodes` is a
+    /// safety ceiling (a single expanded directory can still be huge). Unreadable
+    /// subtrees are skipped (their folder node remains), mirroring `tree()`.
+    public func visibleTree(expanded: Set<String>, maxDepth: Int = 64, maxNodes: Int = 5000) throws -> [LocalFileTreeItem] {
+        var budget = maxNodes
+        return try visibleItems(relativePath: "", depth: 0, expanded: expanded, maxDepth: maxDepth, budget: &budget)
+    }
+
+    private func visibleItems(relativePath: String, depth: Int, expanded: Set<String>, maxDepth: Int, budget: inout Int) throws -> [LocalFileTreeItem] {
+        var result: [LocalFileTreeItem] = []
+        for item in try list(relativePath: relativePath).sorted(by: fileTreeSort) {
+            if budget <= 0 { break }
+            budget -= 1
+            result.append(LocalFileTreeItem(item: item, depth: depth))
+            // `maxDepth` is a defensive ceiling (e.g. a symlink loop inside an
+            // expanded directory) on top of the node budget; deep enough that real
+            // manual expansion never hits it.
+            if item.isDirectory && depth < maxDepth && expanded.contains(item.relativePath) {
+                if let children = try? visibleItems(relativePath: item.relativePath, depth: depth + 1, expanded: expanded, maxDepth: maxDepth, budget: &budget) {
+                    result.append(contentsOf: children)
+                }
+            }
+        }
+        return result
     }
 
     public func createFile(named relativePath: String, contents: String = "") throws {
@@ -206,12 +241,18 @@ public struct LocalFileService {
         return candidate
     }
 
-    private func treeItems(relativePath: String, depth: Int) throws -> [LocalFileTreeItem] {
+    private func treeItems(relativePath: String, depth: Int, maxDepth: Int, budget: inout Int) throws -> [LocalFileTreeItem] {
         var result: [LocalFileTreeItem] = []
         for item in try list(relativePath: relativePath).sorted(by: fileTreeSort) {
+            if budget <= 0 { break }            // hard node ceiling — stop, never run away
+            budget -= 1
             result.append(LocalFileTreeItem(item: item, depth: depth))
-            if item.isDirectory {
-                result.append(contentsOf: try treeItems(relativePath: item.relativePath, depth: depth + 1))
+            if item.isDirectory && depth < maxDepth {
+                // One unreadable subtree (permissions / broken symlink) must not
+                // discard the whole tree — skip it but keep the folder node.
+                if let children = try? treeItems(relativePath: item.relativePath, depth: depth + 1, maxDepth: maxDepth, budget: &budget) {
+                    result.append(contentsOf: children)
+                }
             }
         }
         return result

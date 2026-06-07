@@ -1,6 +1,15 @@
 import SwiftUI
 import TermyCore
 
+/// Slice-3a: the block transcript covers the live SwiftTerm host only at the
+/// prompt. It is removed while a command is EXECUTING so SwiftTerm itself draws
+/// the live run (verdict 2a — cursor/tail at the frame bottom, keystrokes route
+/// to the run's stdin), and while an alt-screen TUI owns the alternate buffer.
+/// The finished command returns as a frozen snapshot block once executing ends.
+func shellShowsBlockTranscript(routeBlocks: Bool, altScreen: Bool, executing: Bool) -> Bool {
+    routeBlocks && !altScreen && !executing
+}
+
 /// DESIGN.md §6.1 term-window: a `t-h` header strip over the selected session's
 /// live render. Reuses `TerminalStageView` (rawPTY LiveTerminalSurface / blocks /
 /// stream / RDP / SSH input + search) with its own `Header` suppressed — the
@@ -18,10 +27,13 @@ struct ShellTermWindow: View {
         let mode = store.selectedTerminalOutputModeValue
         let routeBlocks = session.profile.kind == .local && session.interactionMode == .rawPTY && mode == .blocks
         let altScreen = store.terminalAltScreenActive(for: session.id)
-        // §6.1 design-faithful: the block transcript (history cards + the live
-        // block) covers the whole pane while at the prompt; the live SwiftTerm is
-        // revealed only when a TUI owns the alternate screen (vim/htop).
-        let showTranscript = routeBlocks && !altScreen
+        let executing = store.terminalCommandIsExecuting(for: session.id)
+        // §6.1 + Slice-3a: the block transcript (history cards + the live block)
+        // covers the whole pane only at the prompt. SwiftTerm is revealed when a
+        // TUI owns the alternate screen (vim/htop) AND while a command executes,
+        // so the live run is drawn by SwiftTerm itself (verdict 2a).
+        let showTranscript = shellShowsBlockTranscript(
+            routeBlocks: routeBlocks, altScreen: altScreen, executing: executing)
 
         VStack(spacing: 0) {
             header

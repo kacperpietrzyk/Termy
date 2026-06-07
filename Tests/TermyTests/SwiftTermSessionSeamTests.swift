@@ -80,6 +80,21 @@ final class SwiftTermSessionSeamTests: XCTestCase {
             .contains { $0.contains("exited") })
     }
 
+    // Regression: a CLI agent (e.g. Claude Code) that owned the alternate screen
+    // sets terminalAltScreen[id] = true via render-change tracking. When the
+    // child exits, SwiftTerm never switches back, so the flag stayed stuck true
+    // — which keeps `ShellTermWindow.showTranscript` false and exposes the
+    // now-stale, garbled raw SwiftTerm buffer. noteSessionProcessExited must
+    // clear the flag (mirroring closeSession) so the block transcript re-shows.
+    func testNoteSessionProcessExitedClearsAltScreenFlag() {
+        let (store, id) = storeWithOneSession()
+        store.setTerminalAltScreen(true, for: id)
+        XCTAssertTrue(store.terminalAltScreenActive(for: id))
+        store.noteSessionProcessExited(exitCode: 0, for: id)
+        XCTAssertFalse(store.terminalAltScreenActive(for: id),
+                       "alt-screen flag must be reset on process exit so the block transcript re-reveals")
+    }
+
     func testInlineSuggestionSuffixUsesHistoryAndRequiresCursorAtEnd() {
         let (store, id) = storeWithOneSession()
         store.ingestShellIntegrationEvents([.commandStarted("git status --short")], for: id)

@@ -11,6 +11,10 @@ import TermyCore
 final class FilesModel {
     var fileItems: [LocalFileItem] = []
     var fileTreeItems: [LocalFileTreeItem] = []
+    /// Relative paths of directories the user has expanded in the Files tree.
+    /// Finder-lite: everything is collapsed by default; children are listed
+    /// lazily only for directories in this set (see LocalFileService.visibleTree).
+    var expandedFileDirectories: Set<String> = []
     var sftpRemoteItems: [SFTPRemoteItem] = []
     var sftpRemotePath = "."
     var selectedSFTPRemotePath: String?

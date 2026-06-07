@@ -174,7 +174,7 @@ private struct FileExplorerPanel: View {
             }
         }
         .buttonStyle(TermyCompactButtonStyle())
-        .onAppear { store.refreshFiles() }
+        .onAppear { store.refreshFilesAsync() }
         .sheet(isPresented: $showSFTP) {
             if let profile = sshProfile { FileSFTPSheet(store: store, profile: profile) { showSFTP = false } }
         }
@@ -192,7 +192,7 @@ private struct FileExplorerPanel: View {
 
             Button { showNewItem = true } label: { Label("New", systemImage: "plus") }
                 .popover(isPresented: $showNewItem, arrowEdge: .bottom) { newItemPopover }
-            Button { store.refreshFiles() } label: { Image(systemName: "arrow.clockwise") }.help("Refresh")
+            Button { store.refreshFilesAsync() } label: { Image(systemName: "arrow.clockwise") }.help("Refresh")
             Spacer()
             if sshProfile != nil {
                 Button { showSFTP = true } label: { Label("SFTP", systemImage: "externaldrive.connected.to.line.below") }
@@ -215,28 +215,17 @@ private struct FileExplorerPanel: View {
         .padding(12)
     }
 
+    /// During a search the tree flattens to matching files (depth 0); disclosure
+    /// chevrons and expand-on-tap only make sense in the navigable (non-search) view.
+    private var isSearching: Bool {
+        !store.fileSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     private var tree: some View {
         ScrollView {
             LazyVStack(spacing: 1) {
                 ForEach(store.visibleFileTreeItems) { treeItem in
-                    let selected = store.selectedFilePath == treeItem.item.relativePath
-                    Button { store.selectedFilePath = treeItem.item.relativePath } label: {
-                        HStack(spacing: 6) {
-                            Spacer().frame(width: CGFloat(treeItem.depth) * 14)
-                            Image(systemName: treeItem.iconName)
-                                .foregroundStyle(treeItem.item.isDirectory ? Color(DesignTokens.fg2) : Color(DesignTokens.fg3))
-                            Text(treeItem.item.name).foregroundStyle(Color(DesignTokens.fg1))
-                            Spacer(minLength: 0)
-                        }
-                        .font(Typography.ui(13))
-                        .padding(.horizontal, 8).padding(.vertical, 4)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(selected ? DesignTokens.Glass.fillSelection : Color.clear,
-                                    in: RoundedRectangle(cornerRadius: DesignTokens.Radius.row))
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .help(treeItem.item.relativePath)
+                    fileRow(treeItem)
                 }
             }
             .padding(.horizontal, 8).padding(.vertical, 6)
@@ -246,6 +235,19 @@ private struct FileExplorerPanel: View {
             if store.visibleFileTreeItems.isEmpty {
                 ContentUnavailableView(store.fileSearchQuery.isEmpty ? "No files" : "No matches", systemImage: "folder")
             }
+        }
+    }
+
+    private func fileRow(_ treeItem: LocalFileTreeItem) -> some View {
+        let showDisclosure = treeItem.item.isDirectory && !isSearching
+        return FileTreeRowView(
+            treeItem: treeItem,
+            selected: store.selectedFilePath == treeItem.item.relativePath,
+            expanded: store.isFileDirectoryExpanded(treeItem.item.relativePath),
+            showDisclosure: showDisclosure
+        ) {
+            store.selectedFilePath = treeItem.item.relativePath
+            if showDisclosure { store.toggleFileDirectory(treeItem.item.relativePath) }
         }
     }
 
@@ -279,6 +281,51 @@ private struct FileExplorerPanel: View {
                 .disabled(text.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         }
         .padding(12)
+    }
+}
+
+/// One row in the Files Finder-lite tree. Pure inputs (no store) so it renders
+/// in isolation for the static visual gate. Directories get a disclosure chevron
+/// and an open/closed folder glyph (blue, matching the completion-menu folder
+/// tint); files show their neutral type icon.
+struct FileTreeRowView: View {
+    let treeItem: LocalFileTreeItem
+    let selected: Bool
+    let expanded: Bool
+    let showDisclosure: Bool
+    let onTap: () -> Void
+
+    var body: some View {
+        let isDir = treeItem.item.isDirectory
+        let icon = isDir ? (expanded ? "folder.fill" : "folder") : treeItem.iconName
+        Button(action: onTap) {
+            HStack(spacing: 6) {
+                Spacer().frame(width: CGFloat(treeItem.depth) * 14)
+                Group {
+                    if showDisclosure {
+                        Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(Color(DesignTokens.fg4))
+                    } else {
+                        Color.clear
+                    }
+                }
+                .frame(width: 10)
+                Image(systemName: icon)
+                    .foregroundStyle(isDir ? Color(DesignTokens.primary2) : Color(DesignTokens.fg3))
+                    .frame(width: 16, alignment: .center)
+                Text(treeItem.item.name).foregroundStyle(Color(DesignTokens.fg1))
+                Spacer(minLength: 0)
+            }
+            .font(Typography.ui(13))
+            .padding(.horizontal, 8).padding(.vertical, 4)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(selected ? DesignTokens.Glass.fillSelection : Color.clear,
+                        in: RoundedRectangle(cornerRadius: DesignTokens.Radius.row))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(treeItem.item.relativePath)
     }
 }
 
@@ -521,10 +568,11 @@ private struct GitHistoryView: View {
         if commits.isEmpty {
             ContentUnavailableView("No commits", systemImage: "clock")
         } else {
+            let layout = GitGraphLayout.compute(commits)
             ScrollView {
                 LazyVStack(spacing: 0) {
-                    ForEach(Array(commits.enumerated()), id: \.element.id) { index, commit in
-                        GitHistoryRow(commit: commit, isFirst: index == 0, isLast: index == commits.count - 1)
+                    ForEach(layout.rows) { row in
+                        GitGraphRowView(row: row, maxLanes: layout.maxLanes)
                     }
                 }
                 .padding(.vertical, 8).padding(.trailing, 16)
@@ -533,15 +581,30 @@ private struct GitHistoryView: View {
     }
 }
 
-private struct GitHistoryRow: View {
-    let commit: GitLogEntry
-    let isFirst: Bool
-    let isLast: Bool
+/// Lane colors cycle a small on-brand palette so adjacent branches read apart.
+enum GitGraphPalette {
+    static let colors: [Color] = [
+        Color(DesignTokens.git.base),
+        Color(DesignTokens.host.base),
+        Color(DesignTokens.agent.base),
+        Color(DesignTokens.sync.base),
+        Color(DesignTokens.primary2),
+    ]
+    static func color(_ lane: Int) -> Color { colors[((lane % colors.count) + colors.count) % colors.count] }
+}
+
+struct GitGraphRowView: View {
+    let row: GitGraphRow
+    let maxLanes: Int
+    private let rowHeight: CGFloat = 48
+    private let laneSpacing: CGFloat = 16
+
+    private var railWidth: CGFloat { CGFloat(max(maxLanes, 1)) * laneSpacing }
 
     var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            GraphRail(isMerge: commit.isMerge, isFirst: isFirst, isLast: isLast)
-                .frame(width: 22)
+        HStack(alignment: .center, spacing: 10) {
+            GitGraphCell(row: row, laneSpacing: laneSpacing)
+                .frame(width: railWidth, height: rowHeight)
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
                     ForEach(refChips, id: \.self) { ref in
@@ -551,24 +614,25 @@ private struct GitHistoryRow: View {
                             .padding(.horizontal, 5).padding(.vertical, 1)
                             .background(DesignTokens.Glass.fillChip, in: Capsule())
                     }
-                    Text(commit.subject).font(Typography.ui(13)).foregroundStyle(Color(DesignTokens.fg1))
+                    Text(row.commit.subject).font(Typography.ui(13)).foregroundStyle(Color(DesignTokens.fg1))
                         .lineLimit(1).truncationMode(.tail)
                 }
                 HStack(spacing: 6) {
-                    Text(commit.shortHash).font(.system(size: 11, design: .monospaced))
+                    Text(row.commit.shortHash).font(.system(size: 11, design: .monospaced))
                         .foregroundStyle(Color(DesignTokens.git.base))
-                    Text(commit.author).font(Typography.ui(11)).foregroundStyle(DesignTokens.Glass.textTertiary)
-                    Text("· \(commit.relativeDate)").font(Typography.ui(11)).foregroundStyle(DesignTokens.Glass.textQuaternary)
+                    Text(row.commit.author).font(Typography.ui(11)).foregroundStyle(DesignTokens.Glass.textTertiary)
+                    Text("· \(row.commit.relativeDate)").font(Typography.ui(11)).foregroundStyle(DesignTokens.Glass.textQuaternary)
                 }
             }
             Spacer(minLength: 0)
         }
-        .padding(.leading, 16).padding(.vertical, 7)
+        .padding(.leading, 12)
+        .frame(height: rowHeight)
     }
 
     /// Decoded ref names without the "HEAD -> " prefix noise; tags shown bare.
     private var refChips: [String] {
-        commit.refNames.compactMap { raw in
+        row.commit.refNames.compactMap { raw in
             if raw.hasPrefix("HEAD -> ") { return String(raw.dropFirst("HEAD -> ".count)) }
             if raw == "HEAD" { return "HEAD" }
             if raw.hasPrefix("tag: ") { return String(raw.dropFirst("tag: ".count)) }
@@ -577,26 +641,38 @@ private struct GitHistoryRow: View {
     }
 }
 
-/// The graph spine + commit node for one history row.
-private struct GraphRail: View {
-    let isMerge: Bool
-    let isFirst: Bool
-    let isLast: Bool
+/// Draws one commit-graph row: pass-through lanes, the merge-in / branch-out
+/// diagonals around this commit, and the node — all from the pure GitGraphLayout.
+private struct GitGraphCell: View {
+    let row: GitGraphRow
+    let laneSpacing: CGFloat
+
+    private func x(_ lane: Int) -> CGFloat { CGFloat(lane) * laneSpacing + laneSpacing / 2 }
 
     var body: some View {
-        GeometryReader { geo in
-            let cx = geo.size.width / 2
-            let cy: CGFloat = 18
-            Path { p in
-                if !isFirst { p.move(to: CGPoint(x: cx, y: 0)); p.addLine(to: CGPoint(x: cx, y: cy)) }
-                if !isLast { p.move(to: CGPoint(x: cx, y: cy)); p.addLine(to: CGPoint(x: cx, y: geo.size.height)) }
+        Canvas { ctx, size in
+            let cy = size.height / 2
+            func line(_ a: CGPoint, _ b: CGPoint, _ color: Color) {
+                var p = Path(); p.move(to: a); p.addLine(to: b)
+                ctx.stroke(p, with: .color(color), lineWidth: 1.5)
             }
-            .stroke(Color(DesignTokens.hairStrong), lineWidth: 1.5)
-            Circle()
-                .fill(isMerge ? DesignTokens.Glass.accent : Color(DesignTokens.git.base))
-                .frame(width: 9, height: 9)
-                .overlay(Circle().stroke(Color(DesignTokens.bg0), lineWidth: 2).frame(width: 13, height: 13))
-                .position(x: cx, y: cy)
+            for pt in row.passThrough {
+                line(CGPoint(x: x(pt.top), y: 0), CGPoint(x: x(pt.bottom), y: size.height),
+                     GitGraphPalette.color(pt.bottom))
+            }
+            for top in row.mergeIntoNode {
+                line(CGPoint(x: x(top), y: 0), CGPoint(x: x(row.node), y: cy), GitGraphPalette.color(top))
+            }
+            for bottom in row.branchFromNode {
+                line(CGPoint(x: x(row.node), y: cy), CGPoint(x: x(bottom), y: size.height),
+                     GitGraphPalette.color(bottom))
+            }
+            let radius: CGFloat = 4.5
+            let nodeRect = CGRect(x: x(row.node) - radius, y: cy - radius, width: radius * 2, height: radius * 2)
+            // Punch a ring in the pane background so crossing lines read behind the node.
+            ctx.fill(Path(ellipseIn: nodeRect.insetBy(dx: -2, dy: -2)), with: .color(Color(DesignTokens.bg2)))
+            ctx.fill(Path(ellipseIn: nodeRect),
+                     with: .color(row.commit.isMerge ? Color(DesignTokens.primary2) : Color(DesignTokens.git.base)))
         }
     }
 }
@@ -634,7 +710,6 @@ private struct GitDiffSheet: View {
 
 private struct EditorPanel: View {
     @ObservedObject var store: TermyStore
-    @State private var showPreview = true
     @State private var showAI = false
 
     var body: some View {
@@ -647,8 +722,6 @@ private struct EditorPanel: View {
                 Spacer()
                 Button { showAI = true } label: { Label("AI", systemImage: "sparkles") }
                     .popover(isPresented: $showAI, arrowEdge: .bottom) { aiPopover }
-                Toggle(isOn: $showPreview) { Image(systemName: "sidebar.right") }
-                    .toggleStyle(.button).help("Toggle preview")
                 Toggle("Vim", isOn: Binding(get: { store.editorVimEnabled },
                                             set: { store.setEditorVimEnabled($0) }))
                     .toggleStyle(.switch).tint(DesignTokens.Glass.accent).fixedSize()
@@ -730,23 +803,14 @@ private struct EditorPanel: View {
                 Divider()
             }
 
-            if showPreview {
-                HSplitView {
-                    TextEditor(text: editorText)
-                        .font(.system(.body, design: .monospaced))
-                        .scrollContentBackground(.hidden)
-                        .padding(8)
-                        .frame(minWidth: 280)
-                    SyntaxPreview(tokens: store.editorSyntaxTokens())
-                        .frame(minWidth: 220)
-                }
-            } else {
-                TextEditor(text: editorText)
-                    .font(.system(.body, design: .monospaced))
-                    .scrollContentBackground(.hidden)
-                    .padding(8)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
+            HighlightedCodeEditor(
+                // The unnamed scratch buffer keeps its prior Markdown default
+                // (its seed content is a "# Termy Scratch" heading) — matches the
+                // old editorSyntaxTokens() `?? "Scratch.md"` fallback.
+                text: editorText,
+                fileName: store.editorFilePath.map { ($0 as NSString).lastPathComponent } ?? "Scratch.md"
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
 
             if !store.editorAIDiff.isEmpty {
                 Divider()
@@ -859,57 +923,6 @@ private extension VimEditorOperator {
     }
 }
 
-private struct SyntaxPreview: View {
-    let tokens: [SyntaxToken]
-
-    var body: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Label("Preview", systemImage: "curlybraces")
-                    .font(Typography.ui(12))
-                    .foregroundStyle(.secondary)
-                Spacer()
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .background(Color(DesignTokens.bg2))
-
-            ScrollView([.vertical, .horizontal]) {
-                Text(attributedText)
-                    .font(.system(.body, design: .monospaced))
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(12)
-            }
-        }
-    }
-
-    private var attributedText: AttributedString {
-        tokens.reduce(into: AttributedString()) { result, token in
-            var part = AttributedString(token.text)
-            part.foregroundColor = color(for: token.kind)
-            result += part
-        }
-    }
-
-    private func color(for kind: SyntaxTokenKind) -> Color {
-        switch kind {
-        case .plain:
-            return Color(DesignTokens.fg1)
-        case .heading:
-            return Color(DesignTokens.primary)
-        case .keyword, .key:
-            return Color(DesignTokens.git.base)
-        case .string:
-            return Color(DesignTokens.sync.base)
-        case .number:
-            return Color(DesignTokens.agent.base)
-        case .comment:
-            return Color(DesignTokens.fg3)
-        }
-    }
-}
-
 private enum ConnSheet: String, Identifiable { case ssh, rdp, tunnels, keys; var id: String { rawValue } }
 
 private struct ConnectionsPanel: View {
@@ -939,8 +952,18 @@ private struct ConnectionsPanel: View {
                 }
             } else {
                 ScrollView {
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 320), spacing: 14)], spacing: 14) {
-                        ForEach(store.profiles) { ConnectionCard(store: store, profile: $0) }
+                    LazyVStack(alignment: .leading, spacing: 18) {
+                        ForEach(Array(ConnectionGrouping.grouped(store.profiles).enumerated()), id: \.offset) { _, section in
+                            VStack(alignment: .leading, spacing: 10) {
+                                Text((section.title ?? "Ungrouped").uppercased())
+                                    .font(.system(size: 10, weight: .semibold))
+                                    .tracking(0.6)
+                                    .foregroundStyle(DesignTokens.Glass.textQuaternary)
+                                LazyVGrid(columns: [GridItem(.adaptive(minimum: 320), spacing: 14)], spacing: 14) {
+                                    ForEach(section.profiles) { ConnectionCard(store: store, profile: $0) }
+                                }
+                            }
+                        }
                     }
                     .padding(16)
                 }
@@ -954,7 +977,7 @@ private struct ConnectionsPanel: View {
 }
 
 /// One saved connection as a glass card: identity + Connect + per-kind actions.
-private struct ConnectionCard: View {
+struct ConnectionCard: View {
     @ObservedObject var store: TermyStore
     let profile: ConnectionProfile
     @State private var hovering = false

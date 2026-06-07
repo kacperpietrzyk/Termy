@@ -237,6 +237,132 @@ public struct TerminalANSIParser: Sendable {
         return runs
     }
 
+    /// Boundary correctness for chunked output (the `claude`-exit `78` residue
+    /// fix). PTY reads slice the byte stream at arbitrary offsets, so a control
+    /// sequence such as `ESC[78G` can straddle two chunks (`ESC[78` | `G`). Each
+    /// chunk becomes its own block line, parsed independently and statelessly by
+    /// `parse` above; the orphaned `ESC[78` then hits the bare-ESC fallback,
+    /// which drops only `ESC[` and leaks the bare column number `78` as glyphs.
+    ///
+    /// Returns the start index of an INCOMPLETE escape sequence that runs to the
+    /// end of `text` (a valid prefix still awaiting more bytes), or nil if the
+    /// text ends cleanly. Callers (`ShellIntegrationParser`) buffer
+    /// `text[index...]` and prepend it to the next chunk so the sequence is
+    /// reassembled before `parse` ever sees it. A COMPLETE trailing sequence
+    /// (`ESC[0m`, `ESC[78G`, a terminated OSC) returns nil — it must not be held
+    /// back. Reuses the same sub-parsers as `parse`, so the two never drift.
+    public func indexOfIncompleteTrailingEscape(in text: String) -> String.Index? {
+        var index = text.startIndex
+        while index < text.endIndex {
+            guard isEscapeInitiator(text[index]) else {
+                index = text.index(after: index)
+                continue
+            }
+            if let endIndex = consumeCompleteEscape(in: text, from: index) {
+                index = endIndex                          // complete sequence — keep scanning
+            } else if trailingEscapeIsIncomplete(in: text, from: index) {
+                return index                              // valid prefix at end — hold back
+            } else {
+                // Malformed (not a completable prefix). Mirror parse()'s bare-ESC
+                // fallback: drop the initiator + one following non-ESC byte, then
+                // continue — a later trailing escape may still be incomplete.
+                index = text.index(after: index)
+                if index < text.endIndex, text[index] != "\u{001B}" {
+                    index = text.index(after: index)
+                }
+            }
+        }
+        return nil
+    }
+
+    private func isEscapeInitiator(_ character: Character) -> Bool {
+        character == "\u{001B}" || character == "\u{009B}" || character == "\u{009D}"
+            || isC1StringControlStart(character)
+    }
+
+    /// Try every sequence form `parse` recognizes, in the same order. Returns the
+    /// index past a COMPLETE sequence, or nil if the bytes do not form one
+    /// (whether incomplete or malformed — the caller disambiguates).
+    private func consumeCompleteEscape(in text: String, from index: String.Index) -> String.Index? {
+        if isCSIStart(text[index]), let parsed = parseEscape(in: text, from: index) { return parsed.endIndex }
+        if isOSCStart(text[index]), let end = parseOSC(in: text, from: index) { return end }
+        if isStringControlStart(text[index]), let end = parseStringControl(in: text, from: index) { return end }
+        if isCSIStart(text[index]), let end = parseCSI(in: text, from: index) { return end }
+        if let designation = parseCharsetDesignation(in: text, from: index) { return designation.endIndex }
+        if text[index] == "\u{001B}", let end = parseSimpleEscape(in: text, from: index) { return end }
+        return nil
+    }
+
+    /// True iff the escape starting at `start` is a valid PREFIX that runs to the
+    /// end of `text` (incomplete — needs more bytes), as opposed to malformed.
+    private func trailingEscapeIsIncomplete(in text: String, from start: String.Index) -> Bool {
+        let first = text[start]
+        let afterStart = text.index(after: start)
+
+        // C1 single-byte initiators: payload begins right after the initiator.
+        if first == "\u{009B}" { return csiPayloadIncomplete(in: text, from: afterStart) }
+        if first == "\u{009D}" { return oscPayloadIncomplete(in: text, from: afterStart) }
+        if isC1StringControlStart(first) { return stringControlPayloadIncomplete(in: text, from: afterStart) }
+
+        // ESC (0x1B): need at least one more byte to classify.
+        guard afterStart < text.endIndex else { return true }   // lone trailing ESC
+        switch text[afterStart] {
+        case "[":
+            return csiPayloadIncomplete(in: text, from: text.index(after: afterStart))
+        case "]":
+            return oscPayloadIncomplete(in: text, from: text.index(after: afterStart))
+        case "P", "_", "^", "X":
+            return stringControlPayloadIncomplete(in: text, from: text.index(after: afterStart))
+        case "(", ")", "*", "+", "-", ".", "/", "#", "%", " ":
+            // Charset / intermediate escape needs exactly one final byte after it.
+            return text.index(after: afterStart) >= text.endIndex
+        default:
+            // ESC + a single final byte = a complete two-byte escape, not a prefix.
+            return false
+        }
+    }
+
+    /// CSI payload (after `ESC[` / C1 CSI): incomplete iff it ends with only
+    /// parameter/intermediate bytes (0x20–0x3F) and no final byte (0x40–0x7E).
+    /// An out-of-range byte means malformed, not incomplete.
+    private func csiPayloadIncomplete(in text: String, from start: String.Index) -> Bool {
+        var index = start
+        while index < text.endIndex {
+            guard let value = asciiValue(of: text[index]) else { return false }
+            if (0x40...0x7E).contains(value) { return false }        // final byte present → complete
+            guard (0x20...0x3F).contains(value) else { return false } // invalid byte → malformed
+            index = text.index(after: index)
+        }
+        return true
+    }
+
+    /// OSC payload (after `ESC]` / C1 OSC): incomplete until a BEL or ST (`ESC\`
+    /// or C1 0x9C) terminator is seen.
+    private func oscPayloadIncomplete(in text: String, from start: String.Index) -> Bool {
+        stringPayloadIncomplete(in: text, from: start, allowBEL: true)
+    }
+
+    /// DCS/PM/APC/SOS payload (after `ESC P/_/^/X` / C1): incomplete until ST.
+    private func stringControlPayloadIncomplete(in text: String, from start: String.Index) -> Bool {
+        stringPayloadIncomplete(in: text, from: start, allowBEL: false)
+    }
+
+    private func stringPayloadIncomplete(in text: String, from start: String.Index, allowBEL: Bool) -> Bool {
+        var index = start
+        while index < text.endIndex {
+            let character = text[index]
+            if character == "\u{009C}" { return false }              // C1 ST
+            if allowBEL, character == "\u{0007}" { return false }    // BEL terminates OSC
+            if character == "\u{001B}" {
+                let next = text.index(after: index)
+                if next >= text.endIndex { return true }             // trailing ESC may begin ST
+                if text[next] == "\\" { return false }               // ESC\ = ST
+            }
+            index = text.index(after: index)
+        }
+        return true
+    }
+
     private func parseEscape(in text: String, from start: String.Index) -> (parameters: [Int], endIndex: String.Index)? {
         guard var index = csiParameterStart(in: text, from: start) else { return nil }
 

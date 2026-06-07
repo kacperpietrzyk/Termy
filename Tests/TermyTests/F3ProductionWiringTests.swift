@@ -41,7 +41,8 @@ final class F3ProductionWiringTests: XCTestCase {
         let snap = store.terminalMenuSnapshot(for: id)
         XCTAssertNotNil(snap)
         XCTAssertGreaterThanOrEqual(snap?.items.count ?? 0, 1)
-        XCTAssertGreaterThanOrEqual(snap?.selection ?? -1, 0)
+        // B4 (Warp parity): the menu opens with NOTHING selected (sentinel -1).
+        XCTAssertEqual(snap?.selection, -1)
         // Closed-world kind set — forces a conscious update when F-4 adds new
         // kinds. `.history` excluded because the menu engine call uses `history: []`.
         let kinds: Set<CompletionKind> = Set(snap?.items.map(\.kind) ?? [])

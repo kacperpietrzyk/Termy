@@ -27,7 +27,8 @@ final class TerminalLaunchDescriptorTests: XCTestCase {
         defer { launch.cleanup() }
         let zdotdir = try XCTUnwrap(launch.zdotdir)
         let zshrc = try String(contentsOf: zdotdir.appendingPathComponent(".zshrc"), encoding: .utf8)
-        XCTAssertTrue(zshrc.contains("133;C;cmd="))
+        XCTAssertTrue(zshrc.contains("133;C;branch="))   // Slice-2c: context-first, cmd last
+        XCTAssertTrue(zshrc.contains(";cmd=%s"))
         XCTAssertTrue(zshrc.contains("133;D;exit="))
         XCTAssertEqual(launch.environment["ZDOTDIR"], zdotdir.path)
         XCTAssertEqual(launch.shellPath, "/bin/zsh")

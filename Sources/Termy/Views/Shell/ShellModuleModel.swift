@@ -145,6 +145,28 @@ enum ShellModuleModel {
         return "healthy · \(crashCount) \(noun) / 60s"
     }
 
+    // MARK: §12.2 Slice-2a Warp context header.
+    /// The muted per-block context line — `node · cwd · branch · gitStatus · duration`
+    /// with `·` separators, omitting every field that is nil/empty. cwd is
+    /// tilde-abbreviated; duration formatted via `formatBlockDuration`. Returns ""
+    /// when nothing is present (caller hides the line). branch/gitStatus/node are
+    /// nil until Slice-2c, so the 2a header reads as "cwd · duration".
+    static func blockContextHeader(
+        node: String?,
+        cwd: String?,
+        branch: String?,
+        gitStatus: String?,
+        duration: TimeInterval?
+    ) -> String {
+        var parts: [String] = []
+        if let node, !node.isEmpty { parts.append(node) }
+        if let cwd, !cwd.isEmpty { parts.append(abbreviateTilde(cwd)) }
+        if let branch, !branch.isEmpty { parts.append(branch) }
+        if let gitStatus, !gitStatus.isEmpty { parts.append(gitStatus) }
+        if let duration { parts.append(formatBlockDuration(duration)) }
+        return parts.joined(separator: " · ")
+    }
+
     // MARK: §6.1 block footer — duration display.
     /// Block footer duration: sub-second → "Nms"; under a minute → "N.Ns";
     /// else "Xm Ys". Matches the handoff's "8ms" / "4.2s".

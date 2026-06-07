@@ -6309,6 +6309,103 @@ final class TermyCoreTests: XCTestCase {
         XCTAssertTrue(s.contains("typeset -gA ZSH_HIGHLIGHT_STYLES"))
     }
 
+    func testIndexOfIncompleteTrailingEscapeReturnsNilForCleanText() {
+        let parser = TerminalANSIParser()
+        // No escape, and complete trailing sequences must NOT be held back.
+        XCTAssertNil(parser.indexOfIncompleteTrailingEscape(in: "plain text"))
+        XCTAssertNil(parser.indexOfIncompleteTrailingEscape(in: "a\u{1B}[78G"))       // complete CHA
+        XCTAssertNil(parser.indexOfIncompleteTrailingEscape(in: "a\u{1B}[0m"))        // complete SGR
+        XCTAssertNil(parser.indexOfIncompleteTrailingEscape(in: "a\u{1B}]0;t\u{7}"))  // complete OSC (BEL)
+        XCTAssertNil(parser.indexOfIncompleteTrailingEscape(in: "a\u{1B}]0;t\u{1B}\\")) // complete OSC (ST)
+        XCTAssertNil(parser.indexOfIncompleteTrailingEscape(in: "a\u{1B}(B"))         // complete charset
+    }
+
+    func testIndexOfIncompleteTrailingEscapeFindsEveryCSISplitPosition() {
+        let parser = TerminalANSIParser()
+        // A `ESC[78G` cut at any interior position leaves an incomplete tail
+        // starting at the ESC; everything before it ("x") is safe to emit.
+        for tail in ["\u{1B}", "\u{1B}[", "\u{1B}[7", "\u{1B}[78"] {
+            let text = "x" + tail
+            guard let index = parser.indexOfIncompleteTrailingEscape(in: text) else {
+                return XCTFail("expected incomplete tail in \(text.debugDescription)")
+            }
+            XCTAssertEqual(String(text[..<index]), "x")
+        }
+    }
+
+    func testIndexOfIncompleteTrailingEscapeSkipsCompletePrecedingSequences() {
+        let parser = TerminalANSIParser()
+        // A complete SGR then an incomplete CSI: hold back only the latter.
+        let text = "\u{1B}[31mred\u{1B}[78"
+        guard let index = parser.indexOfIncompleteTrailingEscape(in: text) else {
+            return XCTFail("expected incomplete trailing CSI")
+        }
+        XCTAssertEqual(String(text[..<index]), "\u{1B}[31mred")
+    }
+
+    // MARK: - Chunk-boundary escape residue (the `claude`-exit `78` leak)
+
+    /// Faithfully replays production: each `.output` event becomes its own
+    /// `TerminalLine`, parsed independently by `TerminalANSIParser`
+    /// (TerminalStageView:530). Joins the rendered glyphs across all chunks.
+    private func renderBlockOutput(_ chunks: [String]) -> String {
+        var parser = ShellIntegrationParser()
+        let ansi = TerminalANSIParser()
+        var rendered = ""
+        func render(_ events: [ShellIntegrationEvent]) {
+            for event in events {
+                if case .output(let text) = event {
+                    rendered += ansi.parse(text).map(\.text).joined()
+                }
+            }
+        }
+        for chunk in chunks { render(parser.consume(chunk)) }
+        render(parser.flush())
+        return rendered
+    }
+
+    func testShellIntegrationParserHoldsBackSplitCSIAcrossChunks() {
+        // claude's cursor-positioning `ESC[78G` arrives split across two PTY
+        // read slices. Split at EVERY interior boundary must reassemble — never
+        // leak the bare column number `78` as block residue.
+        let splits: [[String]] = [
+            ["x\u{1B}", "[78G y"],
+            ["x\u{1B}[", "78G y"],
+            ["x\u{1B}[7", "8G y"],
+            ["x\u{1B}[78", "G y"],
+        ]
+        for chunks in splits {
+            XCTAssertEqual(renderBlockOutput(chunks), "x y", "split \(chunks)")
+        }
+    }
+
+    func testShellIntegrationParserRendersIntactCSIWithoutLeak() {
+        // Regression: a complete `ESC[78G` in a single chunk is consumed (no leak).
+        XCTAssertEqual(renderBlockOutput(["x\u{1B}[78G y"]), "x y")
+    }
+
+    func testShellIntegrationParserUnaffectedByPlainChunkSplit() {
+        // Regression: plain text split across chunks is untouched.
+        XCTAssertEqual(renderBlockOutput(["ab", "cd"]), "abcd")
+    }
+
+    func testShellIntegrationParserReassemblesSplitOSCMarkerPrefix() {
+        // The OSC 133 prefix itself split across chunks (`ESC]13` | `3;C...`)
+        // must reassemble into a command, not leak `13` / `3`.
+        var parser = ShellIntegrationParser()
+        let first = parser.consume("done\u{1B}]13")
+        let second = parser.consume("3;C;cmd=ls\u{7}")
+        XCTAssertEqual(first, [.output("done")])
+        XCTAssertEqual(second, [.commandStarted("ls")])
+    }
+
+    func testShellIntegrationParserFlushDropsDanglingIncompleteEscape() {
+        // At genuine end-of-stream a never-completable `ESC[78` is dropped, not
+        // emitted — otherwise the `78` leak reappears once at teardown. The "ok"
+        // is emitted on consume; flush must contribute nothing (no `78`).
+        XCTAssertEqual(renderBlockOutput(["ok\u{1B}[78"]), "ok")
+    }
+
 }
 
 private final class LocalAIURLProtocol: URLProtocol {

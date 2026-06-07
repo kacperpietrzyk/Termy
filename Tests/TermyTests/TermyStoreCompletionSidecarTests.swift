@@ -72,6 +72,42 @@ final class TermyStoreCompletionSidecarTests: XCTestCase {
 
         XCTAssertTrue(store.testMenuIsOpen(for: sid),
             "Non-empty result after debounce must auto-open the menu.")
+        // B4 (Warp parity): the user-facing auto-open (the menu popping open
+        // WHILE TYPING after the 80 ms debounce) must select NOTHING — pressing
+        // Enter then runs the typed text verbatim, never the highlighted row.
+        XCTAssertEqual(store.terminalMenuSnapshot(for: sid)?.selection, -1,
+            "Auto-opened menu must have no default selection (sentinel -1).")
+        XCTAssertNil(store.terminalMenuAcceptedSuffix(for: sid),
+            "With nothing selected, accept yields nil so Enter submits verbatim.")
+    }
+
+    // MARK: - 3a. B4: sentinel survives a second sidecar result (refresh)
+
+    func test_autoOpen_noSelectionSentinel_survivesRefresh() {
+        let store = makeStore()
+        let sid = store.testAddRawPtySession(cwd: "/tmp")
+        store.testMarkDebounceElapsed(sid)
+        // First result auto-opens with nothing selected.
+        store.applySidecarEventForTesting(.result(id: 1, items: [
+            CompletionCandidate(title: "status", replacement: "status", kind: .command)
+        ]), sessionID: sid)
+        XCTAssertEqual(store.terminalMenuSnapshot(for: sid)?.selection, -1)
+        // A SECOND result refreshes the open menu — the -1 sentinel must persist
+        // (a naive max(0,…) clamp here would reset to 0 and re-hijack Enter).
+        store.applySidecarEventForTesting(.result(id: 2, items: [
+            CompletionCandidate(title: "status", replacement: "status", kind: .command),
+            CompletionCandidate(title: "stash", replacement: "stash", kind: .command)
+        ]), sessionID: sid)
+        XCTAssertEqual(store.terminalMenuSnapshot(for: sid)?.selection, -1,
+            "Refreshing an auto-opened menu must preserve the -1 sentinel.")
+        // After the user explicitly enters the list, a further refresh clamps
+        // the real selection (no reset to -1).
+        store.terminalMenuMoveSelection(for: sid, by: 1)   // -1 → row 0
+        store.applySidecarEventForTesting(.result(id: 3, items: [
+            CompletionCandidate(title: "status", replacement: "status", kind: .command)
+        ]), sessionID: sid)
+        XCTAssertEqual(store.terminalMenuSnapshot(for: sid)?.selection, 0,
+            "An explicit selection must be clamped into range, not reset to -1.")
     }
 
     // MARK: - 3b. Accepting a token-shaped sidecar candidate (regression)
@@ -88,6 +124,8 @@ final class TermyStoreCompletionSidecarTests: XCTestCase {
             CompletionCandidate(title: "status", replacement: "status", kind: .command)
         ]), sessionID: sid)
         XCTAssertTrue(store.testMenuIsOpen(for: sid))
+        // B4: auto-open selects nothing; the user enters the list (↓/Tab) first.
+        store.terminalMenuMoveSelection(for: sid, by: 1)   // -1 → row 0 ("status")
         // Accept must complete the last token ("s" → "status"); the previous
         // full-buffer prefix check returned nil here (repl "status" is not a
         // prefix of "git s"), so Tab/Enter silently failed to insert.
@@ -104,8 +142,66 @@ final class TermyStoreCompletionSidecarTests: XCTestCase {
             CompletionCandidate(title: "README.md", replacement: "README.md", kind: .file)
         ]), sessionID: sid)
         XCTAssertTrue(store.testMenuIsOpen(for: sid))
+        store.terminalMenuMoveSelection(for: sid, by: 1)   // B4: enter list (-1 → row 0)
         // Trailing space → last token is "", so the whole candidate is inserted.
         XCTAssertEqual(store.terminalMenuAcceptedSuffix(for: sid), "README.md")
+    }
+
+    // MARK: - 3c. B4 path completion: `cd Projects/` → `cd Projects/Nexus`
+
+    /// The reported bug: typing `cd Projects/`, selecting `Nexus`, and pressing
+    /// Enter collapsed back to `cd Projects`. Root cause was the sidecar reporting
+    /// `replacement = "Nexus"` (bare segment) while the accept logic matches the
+    /// replacement against the whitespace token `Projects/`. The sidecar fix now
+    /// reports the FULL word `Projects/Nexus`; the existing accept logic then
+    /// completes correctly with NO Swift change.
+    func test_acceptSuffix_pathCompletion_appendsAfterSlash() {
+        let store = makeStore()
+        let sid = store.testAddRawPtySession(cwd: "/tmp")
+        store.testMarkDebounceElapsed(sid)
+        store.ingestShellIntegrationEvents(
+            [.inputBufferChanged(text: "cd Projects/", cursor: 12, length: 12)], for: sid)
+        // Post-fix candidate: title is the bare segment (menu display), replacement
+        // is the full inserted word.
+        store.applySidecarEventForTesting(.result(id: 1, items: [
+            CompletionCandidate(title: "Nexus", replacement: "Projects/Nexus", kind: .directory)
+        ]), sessionID: sid)
+        XCTAssertTrue(store.testMenuIsOpen(for: sid))
+        store.terminalMenuMoveSelection(for: sid, by: 1)   // -1 → row 0 ("Nexus")
+        // Suffix appended after the slash → `cd Projects/Nexus`, NOT a collapse.
+        XCTAssertEqual(store.terminalMenuAcceptedSuffix(for: sid), "Nexus")
+    }
+
+    /// Same fix on the inline ghost path. Uses a synthetic path that cannot match
+    /// real on-disk history (which would otherwise win and suppress the sidecar
+    /// ghost) so the test isolates the path-segment suffix logic.
+    func test_sidecarGhost_pathCompletion_suffixAfterSlash() {
+        let store = makeStore()
+        let sid = store.testAddRawPtySession(cwd: "/tmp")
+        store.testSetInputBuffer(sid, text: "cd Xyzzy42/", cursor: 11)
+        store.applySidecarEventForTesting(.result(id: 1, items: [
+            CompletionCandidate(title: "Plugh", replacement: "Xyzzy42/Plugh", kind: .directory)
+        ]), sessionID: sid)
+        XCTAssertFalse(store.testMenuIsOpen(for: sid))
+        XCTAssertEqual(store.terminalSidecarGhost(for: sid), "Plugh",
+            "Ghost completes the path segment after the slash.")
+    }
+
+    /// Regression guard documenting WHY the bug happened: a bare-segment
+    /// replacement (the pre-fix sidecar output) yields no usable suffix, so
+    /// Enter/Tab silently failed to insert `/Nexus`.
+    func test_acceptSuffix_bareSegmentReplacement_failsToComplete() {
+        let store = makeStore()
+        let sid = store.testAddRawPtySession(cwd: "/tmp")
+        store.testMarkDebounceElapsed(sid)
+        store.ingestShellIntegrationEvents(
+            [.inputBufferChanged(text: "cd Projects/", cursor: 12, length: 12)], for: sid)
+        store.applySidecarEventForTesting(.result(id: 1, items: [
+            CompletionCandidate(title: "Nexus", replacement: "Nexus", kind: .directory)  // pre-fix shape
+        ]), sessionID: sid)
+        store.terminalMenuMoveSelection(for: sid, by: 1)
+        XCTAssertNil(store.terminalMenuAcceptedSuffix(for: sid),
+            "Bare-segment replacement cannot match the `Projects/` token — the original defect.")
     }
 
     func test_lastWhitespaceToken() {
@@ -260,5 +356,41 @@ final class TermyStoreCompletionSidecarTests: XCTestCase {
         )
         XCTAssertNil(store.terminalSidecarGhost(for: sid),
             "commandStarted must clear the sidecar ghost.")
+    }
+
+    // MARK: - 11. Bug 2: an accepted token is not re-suggested
+
+    /// After accepting "Projects" (the shell echoes it back → buffer "cd Projects"),
+    /// the sidecar re-queries and returns the EXACT token again. A candidate that
+    /// adds nothing to the current token must NOT re-surface the menu — mirroring
+    /// the ghost path, which already drops empty-suffix candidates.
+    func test_sidecarResult_exactMatchOfCurrentToken_doesNotResurfaceMenu() {
+        let store = makeStore()
+        let sid = store.testAddRawPtySession(cwd: "/tmp")
+        store.testMarkDebounceElapsed(sid)
+        store.ingestShellIntegrationEvents(
+            [.inputBufferChanged(text: "cd Projects", cursor: 11, length: 11)], for: sid)
+        store.applySidecarEventForTesting(.result(id: 1, items: [
+            CompletionCandidate(title: "Projects", replacement: "Projects", kind: .directory)
+        ]), sessionID: sid)
+        XCTAssertFalse(store.testMenuIsOpen(for: sid),
+            "an exact-match candidate adds nothing → menu must not reopen after accept")
+    }
+
+    /// The zero-contribution candidate is dropped, but a genuinely extending one
+    /// (descend into a subdir) still opens the menu and is the only row shown.
+    func test_sidecarResult_dropsZeroContributionKeepsExtending() {
+        let store = makeStore()
+        let sid = store.testAddRawPtySession(cwd: "/tmp")
+        store.testMarkDebounceElapsed(sid)
+        store.ingestShellIntegrationEvents(
+            [.inputBufferChanged(text: "cd Projects", cursor: 11, length: 11)], for: sid)
+        store.applySidecarEventForTesting(.result(id: 1, items: [
+            CompletionCandidate(title: "Projects", replacement: "Projects", kind: .directory),
+            CompletionCandidate(title: "Projects/Nexus", replacement: "Projects/Nexus", kind: .directory),
+        ]), sessionID: sid)
+        XCTAssertTrue(store.testMenuIsOpen(for: sid), "an extending candidate still opens the menu")
+        XCTAssertEqual(store.terminalMenuSnapshot(for: sid)?.items.map(\.replacement), ["Projects/Nexus"],
+            "the zero-contribution exact match is filtered out of the menu")
     }
 }

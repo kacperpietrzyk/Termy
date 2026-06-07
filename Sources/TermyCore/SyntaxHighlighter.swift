@@ -92,15 +92,15 @@ public struct SyntaxHighlighter: Sendable {
     }
 
     private func highlightMarkdown(_ source: String) -> [SyntaxToken] {
-        source.split(separator: "\n", omittingEmptySubsequences: false).enumerated().flatMap { index, line in
+        // Split once, not once-per-line: the per-keystroke editor highlight path
+        // runs this on the whole buffer, so an in-loop re-split is O(L²) in lines.
+        let lines = source.split(separator: "\n", omittingEmptySubsequences: false)
+        let lastIndex = lines.count - 1
+        return lines.enumerated().flatMap { index, line -> [SyntaxToken] in
             var tokens: [SyntaxToken] = []
             let text = String(line)
-            if text.hasPrefix("#") {
-                tokens.append(SyntaxToken(text: text, kind: .heading))
-            } else {
-                tokens.append(SyntaxToken(text: text, kind: .plain))
-            }
-            if index < source.split(separator: "\n", omittingEmptySubsequences: false).count - 1 {
+            tokens.append(SyntaxToken(text: text, kind: text.hasPrefix("#") ? .heading : .plain))
+            if index < lastIndex {
                 tokens.append(SyntaxToken(text: "\n", kind: .plain))
             }
             return tokens

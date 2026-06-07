@@ -44,6 +44,16 @@ typeset -g __termy_cd_target=""
 function compadd {
   local -a __t_titles __t_descs __t_matched __t_order_values
   local __t_desc_var="" __t_kind="commands" __t_i=1 __t_should_capture=1 __t_array_mode=""
+  # B4/path-completion fix: the inserted command-line word is NOT just the match
+  # title — zsh prepends the already-consumed word prefix. For `cd Projects/<TAB>`
+  # the completer moves `Projects/` into $IPREFIX (or passes it via `compadd -p`)
+  # and the match is the bare segment `Nexus`. Reporting only `Nexus` as the
+  # replacement made the Swift accept logic (which matches the replacement against
+  # the whitespace-delimited token `Projects/`) fail, so accepting collapsed
+  # `cd Projects/Nexus` back to `cd Projects`. Carry the effective prefix so the
+  # replacement column is the FULL word `Projects/Nexus` while the title stays the
+  # bare segment for the menu display.
+  local __t_pprefix=""
   if [[ -n "${curtag:-}" ]]; then __t_kind="$curtag"; fi
   __t_order_values=(match mat ma nosort nos no numeric num nu reverse rev re)
 
@@ -53,8 +63,12 @@ function compadd {
       -ld|-dl) (( __t_i++ )); __t_desc_var="${(P)__t_i}" ;;
       -a)  __t_array_mode="array" ;;
       -k)  __t_array_mode="assoc" ;;
+      # `-p <hidden-prefix>` is inserted before each match on the command line but
+      # is not part of the match itself; capture it so the replacement word is
+      # complete (path completers on some zsh versions use this instead of $IPREFIX).
+      -p)  (( __t_i++ )); __t_pprefix="${(P)__t_i}" ;;
       # zsh 5.9 zshcompwid(1): compadd flags that consume one argument.
-      -P|-S|-p|-s|-i|-I|-W|-J|-X|-x|-V|-r|-R|-F|-M|-E)
+      -P|-S|-s|-i|-I|-W|-J|-X|-x|-V|-r|-R|-F|-M|-E)
            (( __t_i++ )) ;;
       # These options store/filter matches in caller-provided arrays and do
       # not add user-visible matches themselves.
@@ -113,6 +127,20 @@ function compadd {
     builtin compadd -O __t_matched "$@" 2>/dev/null
   fi
 
+  # Effective insertion prefix: the already-consumed word part zsh re-inserts
+  # ahead of every match in this call. Empty for plain command/subcommand
+  # completion, `Projects/` for `cd Projects/<TAB>`, `~/` for `cd ~/Pro<TAB>`.
+  # It is carried EITHER by $IPREFIX (completer used `compset -P`) OR by an
+  # explicit `compadd -p` value — and occasionally the `-p` value ALREADY embeds
+  # $IPREFIX (zsh's _path_files `-U` branch passes `-p "${Uopt:+$IPREFIX}…"`).
+  # Avoid double-counting: if the captured `-p` value already starts with
+  # $IPREFIX, use it verbatim; otherwise concatenate.
+  local __t_prefix
+  if [[ -n "$__t_pprefix" && -n "$IPREFIX" && "$__t_pprefix" == "${IPREFIX}"* ]]; then
+    __t_prefix="$__t_pprefix"
+  else
+    __t_prefix="${IPREFIX}${__t_pprefix}"
+  fi
   local __t_n=${#__t_matched} __t_j=1
   while (( __t_j <= __t_n )); do
     local __t_title="${__t_matched[__t_j]}"
@@ -128,10 +156,13 @@ function compadd {
       __t_desc="${__t_desc#* -- }"
       [[ "$__t_desc" == "$__t_title" ]] && __t_desc=""
     fi
-    # Strip embedded tabs/newlines from title/desc to keep TSV well-formed.
+    # Replacement = full inserted word (prefix + segment); title = bare segment.
+    local __t_replacement="${__t_prefix}${__t_title}"
+    # Strip embedded tabs/newlines from fields to keep TSV well-formed.
     __t_title="${__t_title//$'\t'/ }"; __t_title="${__t_title//$'\n'/ }"
+    __t_replacement="${__t_replacement//$'\t'/ }"; __t_replacement="${__t_replacement//$'\n'/ }"
     __t_desc="${__t_desc//$'\t'/ }";   __t_desc="${__t_desc//$'\n'/ }"
-    __termy_captured+=("${__t_kind}	${__t_title}	${__t_title}	${__t_desc}")
+    __termy_captured+=("${__t_kind}	${__t_title}	${__t_replacement}	${__t_desc}")
     (( __t_j++ ))
   done
   builtin compadd "$@"

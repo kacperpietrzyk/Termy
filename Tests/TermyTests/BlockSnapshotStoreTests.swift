@@ -1,0 +1,485 @@
+import XCTest
+@testable import Termy
+import TermyCore
+
+@MainActor
+final class BlockSnapshotStoreTests: XCTestCase {
+
+    // MARK: - Helpers
+
+    private func makeStore() -> (TermyStore, UUID) {
+        let store = TermyStore(startInitialPTY: false)
+        guard let id = store.selectedSessionID else {
+            XCTFail("expected an initial session from TermyStore(startInitialPTY: false)")
+            fatalError("unreachable")
+        }
+        return (store, id)
+    }
+
+    // MARK: - Tests
+
+    /// (a) arm handler fires at commandStarted; (b) snapshot is stored at commandFinished
+    /// keyed by the prompt index.
+    func testCommandFinishedStoresSnapshotKeyedByPromptIndex() {
+        let (store, id) = makeStore()
+
+        var armed = false
+        store.registerTerminalBlockArmHandler({ armed = true }, for: id)
+        store.registerTerminalBlockSnapshotProvider({ "out-A\nout-B" }, for: id)
+
+        store.ingestShellIntegrationEvents([
+            .commandStarted("echo hi"),
+            .output("hi\n"),
+            .commandFinished(exitCode: 0, workingDirectory: "/tmp"),
+        ], for: id)
+
+        XCTAssertTrue(armed, "arm handler must fire at commandStarted")
+
+        let snap = store.terminalBlockSnapshotForTesting(sessionID: id)
+        XCTAssertNotNil(snap, "snapshot dict must be non-nil after commandFinished")
+        XCTAssertEqual(snap?.values.first, "out-A\nout-B",
+                       "snapshot must be keyed by the prompt index with the provider's return value")
+    }
+
+    /// nil provider → empty string stored (NOT skipped). Pure TUI commands like
+    /// `claude` leave no main-buffer range; the empty snapshot is the correct
+    /// clean result so block rendering doesn't fall back to the residue-prone re-parse.
+    func testCommandFinishedStoresEmptyWhenProviderReturnsNil() {
+        let (store, id) = makeStore()
+
+        store.registerTerminalBlockArmHandler({}, for: id)
+        store.registerTerminalBlockSnapshotProvider({ nil }, for: id)
+
+        store.ingestShellIntegrationEvents([
+            .commandStarted("claude"),
+            .commandFinished(exitCode: 0, workingDirectory: "/tmp"),
+        ], for: id)
+
+        let snap = store.terminalBlockSnapshotForTesting(sessionID: id)
+        XCTAssertNotNil(snap, "snapshot dict must be non-nil even when provider returns nil")
+        XCTAssertEqual(snap?.values.first, "",
+                       "nil provider must coalesce to empty string, not skip the entry")
+    }
+
+    /// Snapshot NOT stored when no provider is registered (no arm side-effect either).
+    func testNoSnapshotStoredWithoutRegisteredProvider() {
+        let (store, id) = makeStore()
+        // Deliberately no registerTerminalBlockSnapshotProvider call.
+
+        store.ingestShellIntegrationEvents([
+            .commandStarted("ls"),
+            .commandFinished(exitCode: 0, workingDirectory: "/tmp"),
+        ], for: id)
+
+        XCTAssertNil(store.terminalBlockSnapshotForTesting(sessionID: id),
+                     "snapshot dict must remain nil when no provider is registered")
+    }
+
+    func testRenderedBlockUsesSnapshotOutputWhenPresent() {
+        let store = TermyStore(startInitialPTY: false)
+        guard let id = store.selectedSessionID else { return XCTFail("no selected session") }
+        store.registerTerminalBlockArmHandler({}, for: id)
+        store.registerTerminalBlockSnapshotProvider({ "SNAPSHOT-LINE" }, for: id)
+        store.ingestShellIntegrationEvents([
+            .commandStarted("echo hi"),
+            .output("RAW-REPARSE\n"),
+            .commandFinished(exitCode: 0, workingDirectory: "/tmp"),
+        ], for: id)
+        let blocks = store.renderedTerminalCommandBlocks()
+        let text = blocks.first?.outputLines.map(\.text).joined() ?? ""
+        XCTAssertTrue(text.contains("SNAPSHOT-LINE"), "finished block must render the snapshot")
+        XCTAssertFalse(text.contains("RAW-REPARSE"), "finished block must NOT render the re-parsed output")
+    }
+
+    func testRenderedBlockEmptySnapshotRendersNoOutput() {
+        let store = TermyStore(startInitialPTY: false)
+        guard let id = store.selectedSessionID else { return XCTFail("no selected session") }
+        store.registerTerminalBlockArmHandler({}, for: id)
+        store.registerTerminalBlockSnapshotProvider({ "" }, for: id)     // clean / pure-TUI
+        store.ingestShellIntegrationEvents([
+            .commandStarted("claude"),
+            .output("junk-from-reparse\n"),
+            .commandFinished(exitCode: 0, workingDirectory: "/tmp"),
+        ], for: id)
+        let blocks = store.renderedTerminalCommandBlocks()
+        XCTAssertEqual(blocks.first?.outputLines.count, 0, "empty snapshot → no output lines (clean block)")
+    }
+
+    /// Multiple commands each get their own keyed snapshot.
+    func testMultipleCommandsGetSeparateSnapshots() throws {
+        let (store, id) = makeStore()
+
+        var callCount = 0
+        let snapshots = ["first output", "second output"]
+        store.registerTerminalBlockArmHandler({}, for: id)
+        store.registerTerminalBlockSnapshotProvider({
+            let s = snapshots[callCount]
+            callCount += 1
+            return s
+        }, for: id)
+
+        store.ingestShellIntegrationEvents([
+            .commandStarted("echo first"),
+            .output("first output\n"),
+            .commandFinished(exitCode: 0, workingDirectory: "/tmp"),
+            .commandStarted("echo second"),
+            .output("second output\n"),
+            .commandFinished(exitCode: 0, workingDirectory: "/tmp"),
+        ], for: id)
+
+        let snap = try XCTUnwrap(store.terminalBlockSnapshotForTesting(sessionID: id))
+        XCTAssertEqual(snap.count, 2, "two commands → two snapshot entries keyed by different prompt indices")
+        XCTAssertTrue(snap.values.contains("first output"))
+        XCTAssertTrue(snap.values.contains("second output"))
+    }
+
+    /// When leading lines are trimmed from the transcript, `terminalBlockSnapshots`
+    /// must be re-keyed by the same drop count so finished blocks keep their output.
+    ///
+    /// Strategy (mirrors TermyStoreTerminalTests approach):
+    /// 1. Pre-fill the session to 9,998 lines so the next appends don't yet overflow.
+    /// 2. Run one command (commandStarted + commandFinished) — this appends 2 lines
+    ///    (prompt at index 9,998, exit at 9,999 but we only care about the snapshot key
+    ///    = promptIndex = 9,998) and stores a snapshot at that key. Total = 10,000.
+    /// 3. Append one more output line via ingestShellIntegrationEvents([.output(…)]).
+    ///    This pushes the count to 10,001 → trim drops 1 line (overflow = 1).
+    ///    The snapshot key must shift from 9,998 → 9,997; the old key must be nil.
+    func testSnapshotKeysSurviveTranscriptTrim() throws {
+        let localProfile = try XCTUnwrap(ConnectionProfile.local())
+        let store = TermyStore(startInitialPTY: false)
+
+        // Pre-fill to 9,998 so two more lines (prompt + exit from commandStarted/Finished)
+        // bring us to exactly 10,000 without triggering a trim yet.
+        let session = TermySession(
+            title: "Local Shell",
+            profile: localProfile,
+            lines: (0..<9_998).map { TerminalLine(role: .stdout, text: "line \($0)") },
+            interactionMode: .rawPTY
+        )
+        store.sessions = [session]
+        store.selectedSessionID = session.id
+
+        // Register a snapshot provider so a snapshot is stored at commandFinished.
+        store.registerTerminalBlockArmHandler({}, for: session.id)
+        store.registerTerminalBlockSnapshotProvider({ "trimmed-snapshot" }, for: session.id)
+
+        // Run a command: appends prompt line (index 9,998) + exit line (index 9,999).
+        // Snapshot is stored keyed by promptIndex = 9,998. No trim yet (count = 10,000).
+        store.ingestShellIntegrationEvents([
+            .commandStarted("echo hi"),
+            .commandFinished(exitCode: 0, workingDirectory: "/tmp"),
+        ], for: session.id)
+
+        // Confirm the snapshot key before trim.
+        let snapsBefore = try XCTUnwrap(store.terminalBlockSnapshotForTesting(sessionID: session.id),
+                                        "snapshot must be stored after commandFinished")
+        let originalKey = try XCTUnwrap(snapsBefore.keys.first,
+                                        "snapshot dict must have one entry")
+        XCTAssertEqual(snapsBefore[originalKey], "trimmed-snapshot", "snapshot value before trim")
+
+        // Trigger trim: one more append → 10,001 lines → overflow = 1.
+        store.ingestShellIntegrationEvents([.output("trigger-trim\n")], for: session.id)
+
+        let snapsAfter = try XCTUnwrap(store.terminalBlockSnapshotForTesting(sessionID: session.id),
+                                       "snapshot dict must still exist after trim")
+        XCTAssertEqual(snapsAfter[originalKey - 1], "trimmed-snapshot",
+                       "snapshot key must shift down by 1 (the drop count)")
+        XCTAssertNil(snapsAfter[originalKey],
+                     "old unshifted key must be gone after trim")
+    }
+
+    func testCleanBlockOutputStripsSnapshotAndFallsBackWhenAbsent() {
+        let (store, id) = makeStore()
+        store.registerTerminalBlockArmHandler({}, for: id)
+        // SGR-colored snapshot (what the card renders): yellow "hi" + reset.
+        store.registerTerminalBlockSnapshotProvider({ "\u{1B}[33mhi\u{1B}[0m" }, for: id)
+        store.ingestShellIntegrationEvents([
+            .commandStarted("echo hi"),
+            .output("RAW-REPARSE\n"),
+            .commandFinished(exitCode: 0, workingDirectory: "/tmp"),
+        ], for: id)
+
+        let block = try! XCTUnwrap(store.terminalCommandBlocks().first { $0.command == "echo hi" })
+        // Snapshot present → clean, ANSI-stripped, NOT the re-parse.
+        XCTAssertEqual(store.cleanBlockOutput(forBlock: block), "hi",
+                       "must return the snapshot text with SGR escapes stripped")
+        XCTAssertFalse(store.cleanBlockOutput(forBlock: block).contains("RAW-REPARSE"),
+                       "must not fall back to the re-parse when a snapshot exists")
+
+        // A block with no snapshot entry → falls back to block.output.
+        let synthetic = TerminalCommandBlock(command: "x", startLine: 9_999, endLine: 9_999,
+                                             exitCode: 0, output: "FALLBACK")
+        XCTAssertEqual(store.cleanBlockOutput(forBlock: synthetic), "FALLBACK",
+                       "no snapshot → re-parse fallback")
+    }
+
+    func testCopiedBlockOutputIsCleanNotResidue() {
+        let (store, id) = makeStore()
+        store.registerTerminalBlockArmHandler({}, for: id)
+        // An alt-screen command: clean snapshot is empty; re-parse holds residue.
+        store.registerTerminalBlockSnapshotProvider({ "" }, for: id)
+        store.ingestShellIntegrationEvents([
+            .commandStarted("claude"),
+            .output("78obsidian\n"),                       // re-parse residue
+            .commandFinished(exitCode: 0, workingDirectory: "/tmp"),
+        ], for: id)
+        store.copyLastCommandOutput()                       // Copy Last → pasteboard
+        let pasted = NSPasteboard.general.string(forType: .string) ?? "<none>"
+        XCTAssertFalse(pasted.contains("78obsidian"),
+                       "Copy must not paste re-parse residue for a clean alt-screen block")
+    }
+
+    func testExplainUsesCleanOutputForFailedBlock() {
+        let (store, id) = makeStore()
+        store.registerTerminalBlockArmHandler({}, for: id)
+        store.registerTerminalBlockSnapshotProvider({ "\u{1B}[31merror: nope\u{1B}[0m" }, for: id)
+        store.ingestShellIntegrationEvents([
+            .commandStarted("build"),
+            .output("RESIDUE-78\n"),
+            .commandFinished(exitCode: 2, workingDirectory: "/tmp"),
+        ], for: id)
+        let failed = try! XCTUnwrap(
+            store.terminalCommandBlocks().last { ($0.exitCode ?? 0) != 0 })
+        let outputForAI = store.cleanBlockOutput(forBlock: failed)
+        XCTAssertEqual(outputForAI, "error: nope", "explain must send the clean snapshot output")
+        XCTAssertFalse(outputForAI.contains("RESIDUE-78"))
+    }
+
+    func testSearchableLinesUseCleanSnapshotForRawPTYBlocks() {
+        let (store, id) = makeStore()                       // initial session is .rawPTY
+        store.registerTerminalBlockArmHandler({}, for: id)
+        // SGR-colored snapshot (what the card shows) vs residue-bearing re-parse output.
+        store.registerTerminalBlockSnapshotProvider({ "\u{1B}[33mclean-out\u{1B}[0m" }, for: id)
+        store.ingestShellIntegrationEvents([
+            .commandStarted("git status"),
+            .output("78residue\n"),                         // re-parse residue → session.lines
+            .commandFinished(exitCode: 0, workingDirectory: "/tmp"),
+        ], for: id)
+
+        let lines = store.searchableTerminalLines()
+        XCTAssertTrue(lines.contains("git status"), "the command is searchable")
+        XCTAssertTrue(lines.contains("clean-out"), "clean snapshot output is searchable (ANSI stripped)")
+        XCTAssertFalse(lines.joined(separator: "\n").contains("78residue"),
+                       "the re-parse residue must NOT be searchable for a rawPTY block")
+    }
+
+    func testSearchableLinesSplitMultiLineSnapshotIntoRows() {
+        let (store, id) = makeStore()
+        store.registerTerminalBlockArmHandler({}, for: id)
+        store.registerTerminalBlockSnapshotProvider({ "line-a\nline-b" }, for: id)
+        store.ingestShellIntegrationEvents([
+            .commandStarted("printf"),
+            .commandFinished(exitCode: 0, workingDirectory: "/tmp"),
+        ], for: id)
+        let lines = store.searchableTerminalLines()
+        XCTAssertTrue(lines.contains("line-a"), "first row of a multi-line snapshot is its own searchable line")
+        XCTAssertTrue(lines.contains("line-b"), "second row is its own searchable line")
+    }
+
+    func testSearchableLinesExcludeTheRunningBlock() {
+        let (store, id) = makeStore()
+        store.registerTerminalBlockArmHandler({}, for: id)
+        store.registerTerminalBlockSnapshotProvider({ "done-out" }, for: id)
+        store.ingestShellIntegrationEvents([
+            .commandStarted("echo one"),
+            .output("one\n"),
+            .commandFinished(exitCode: 0, workingDirectory: "/tmp"),
+        ], for: id)
+        // Second command still RUNNING (started + output, no finish) — SwiftTerm draws it live.
+        store.ingestShellIntegrationEvents([
+            .commandStarted("sleep 9"),
+            .output("RUNNING-REPARSE\n"),
+        ], for: id)
+
+        let lines = store.searchableTerminalLines()
+        XCTAssertTrue(lines.contains("echo one"), "finished command still searchable")
+        XCTAssertFalse(lines.contains("sleep 9"), "running block excluded (matches rendered history)")
+        XCTAssertFalse(lines.joined(separator: "\n").contains("RUNNING-REPARSE"),
+                       "running block's re-parse output is not searchable")
+    }
+
+    // MARK: - Slice 3c-1: search/links index the clean snapshot
+
+    func testSearchResultsAndLinksAreCleanForRawPTYBlock() {
+        let (store, id) = makeStore()
+        store.registerTerminalBlockArmHandler({}, for: id)
+        store.registerTerminalBlockSnapshotProvider({ "see https://termy.test/ok" }, for: id)
+        store.ingestShellIntegrationEvents([
+            .commandStarted("curl x"),
+            .output("78residue https://residue.bad/x\n"),    // residue URL in the re-parse
+            .commandFinished(exitCode: 0, workingDirectory: "/tmp"),
+        ], for: id)
+
+        // Search for the residue token → no match (search no longer indexes the re-parse).
+        store.terminalSearchQuery = "78residue"
+        store.refreshTerminalIndex()
+        XCTAssertTrue(store.terminalSearchResults.isEmpty,
+                      "residue token must not be found — search indexes the clean snapshot")
+
+        // Search for clean snapshot text → match.
+        store.terminalSearchQuery = "termy.test"
+        store.refreshTerminalIndex()
+        XCTAssertFalse(store.terminalSearchResults.isEmpty, "clean snapshot text is searchable")
+
+        // Links come only from the clean snapshot, never the residue URL.
+        XCTAssertTrue(store.terminalLinks.contains { $0.urlString == "https://termy.test/ok" })
+        XCTAssertFalse(store.terminalLinks.contains { $0.urlString.contains("residue.bad") },
+                       "the residue URL must not be detected")
+    }
+
+    // Stream-route preservation: searchableTerminalLines' non-.rawPTY branch returns
+    // `selectedSession.lines.map(\.text)` verbatim. The rawPTY branch is covered above;
+    // this asserts the helper is non-empty and command-bearing for the rawPTY session so
+    // the branch is provably exercised, not dead.
+    func testSearchableLinesNonEmptyForRawPTYSession() {
+        let (store, id) = makeStore()
+        store.registerTerminalBlockArmHandler({}, for: id)
+        store.registerTerminalBlockSnapshotProvider({ "x" }, for: id)
+        store.ingestShellIntegrationEvents([
+            .commandStarted("echo hi"),
+            .commandFinished(exitCode: 0, workingDirectory: "/tmp"),
+        ], for: id)
+        XCTAssertTrue(store.searchableTerminalLines().contains("echo hi"))
+    }
+
+    /// Slice-3a: while a command is still running (started, no finish) its block is
+    /// drawn by SwiftTerm (full-reveal), so it must NOT appear as a re-parse card in
+    /// the SwiftUI history list. A finished command stays a frozen history block.
+    func testRunningBlockIsExcludedFromRenderedHistory() {
+        let (store, id) = makeStore()
+        store.registerTerminalBlockArmHandler({}, for: id)
+        store.registerTerminalBlockSnapshotProvider({ "DONE-OUT" }, for: id)
+
+        // First command finishes → frozen history block.
+        store.ingestShellIntegrationEvents([
+            .commandStarted("echo one"),
+            .output("one\n"),
+            .commandFinished(exitCode: 0, workingDirectory: "/tmp"),
+        ], for: id)
+        // Second command is STILL RUNNING (started + output, no finish).
+        store.ingestShellIntegrationEvents([
+            .commandStarted("sleep 9"),
+            .output("RUNNING-REPARSE\n"),
+        ], for: id)
+
+        let blocks = store.renderedTerminalCommandBlocks()
+        XCTAssertTrue(blocks.contains { $0.command == "echo one" },
+                      "finished block must still be present")
+        XCTAssertFalse(blocks.contains { $0.command == "sleep 9" },
+                       "running block must be excluded — SwiftTerm draws the live run")
+        let allText = blocks.flatMap { $0.outputLines.map(\.text) }.joined()
+        XCTAssertFalse(allText.contains("RUNNING-REPARSE"),
+                       "running command's re-parse output must not appear in any card")
+    }
+
+    // MARK: - Slice 3c-1: search index gating
+
+    func testSearchIndexNotRefreshedWhileFindHidden() {
+        let (store, id) = makeStore()                       // Find is hidden by default
+        store.registerTerminalBlockArmHandler({}, for: id)
+        store.registerTerminalBlockSnapshotProvider({ "needle-text" }, for: id)
+        store.terminalSearchQuery = "needle"                // a query that WOULD match
+        store.ingestShellIntegrationEvents([
+            .commandStarted("echo needle-text"),
+            .commandFinished(exitCode: 0, workingDirectory: "/tmp"),
+        ], for: id)
+        XCTAssertTrue(store.terminalSearchResults.isEmpty,
+                      "search index must not be rebuilt on output while Find is closed (perf gate)")
+    }
+
+    func testOpeningFindRefreshesTheSearchIndex() {
+        let (store, id) = makeStore()
+        store.registerTerminalBlockArmHandler({}, for: id)
+        store.registerTerminalBlockSnapshotProvider({ "needle-text" }, for: id)
+        store.terminalSearchQuery = "needle"
+        store.ingestShellIntegrationEvents([
+            .commandStarted("echo needle-text"),
+            .commandFinished(exitCode: 0, workingDirectory: "/tmp"),
+        ], for: id)
+        XCTAssertTrue(store.terminalSearchResults.isEmpty)  // nothing computed while hidden
+        store.requestTerminalSearchFocus()                  // opening Find recomputes
+        XCTAssertFalse(store.terminalSearchResults.isEmpty,
+                       "opening Find must refresh matches against the current transcript")
+    }
+
+    func testSearchIndexRefreshesOnOutputWhileFindVisible() {
+        let (store, id) = makeStore()
+        store.registerTerminalBlockArmHandler({}, for: id)
+        store.registerTerminalBlockSnapshotProvider({ "alpha" }, for: id)
+        store.requestTerminalSearchFocus()                  // Find open
+        store.terminalSearchQuery = "alpha"
+        store.ingestShellIntegrationEvents([
+            .commandStarted("echo alpha"),
+            .commandFinished(exitCode: 0, workingDirectory: "/tmp"),
+        ], for: id)
+        XCTAssertFalse(store.terminalSearchResults.isEmpty,
+                       "with Find open, output still updates the live match index")
+    }
+
+    // MARK: - Slice 3c-2: cleanScrollbackLines
+
+    func testCleanScrollbackSubstitutesBlockOutputWithSnapshot() {
+        let (store, id) = makeStore()                       // initial session is .rawPTY
+        store.registerTerminalBlockArmHandler({}, for: id)
+        store.registerTerminalBlockSnapshotProvider({ "clean-out" }, for: id)
+        store.ingestShellIntegrationEvents([
+            .commandStarted("git status"),
+            .output("78residue\n"),                         // re-parse residue → session.lines .stdout
+            .commandFinished(exitCode: 0, workingDirectory: "/tmp"),
+        ], for: id)
+
+        let session = try! XCTUnwrap(store.sessions.first { $0.id == id })
+        let texts = store.cleanScrollbackLinesForTesting(for: session).map(\.text)
+        XCTAssertTrue(texts.contains { $0.contains("git status") }, "the command/prompt line is preserved (block structure survives)")
+        XCTAssertTrue(texts.contains("clean-out"), "the block's output is the clean snapshot")
+        XCTAssertFalse(texts.joined(separator: "\n").contains("78residue"),
+                       "the re-parse residue output must be substituted out")
+
+        let promptIdx = try! XCTUnwrap(texts.firstIndex { $0.contains("git status") })
+        let cleanIdx = try! XCTUnwrap(texts.firstIndex(of: "clean-out"))
+        XCTAssertGreaterThan(cleanIdx, promptIdx, "clean output is emitted AFTER the block's prompt line")
+    }
+
+    func testCleanScrollbackNoBlocksReturnsSessionLinesUnchanged() {
+        let (store, id) = makeStore()
+        let session = try! XCTUnwrap(store.sessions.first { $0.id == id })
+        // The initial rawPTY session carries 2 .system lines and no blocks → passthrough.
+        let texts = store.cleanScrollbackLinesForTesting(for: session).map(\.text)
+        XCTAssertEqual(texts, session.lines.map(\.text),
+                       "no blocks → scrollback is the session's lines unchanged (system lines preserved)")
+    }
+
+    func testCleanScrollbackPassesThroughNonRawPTYSession() {
+        let (store, _) = makeStore()
+        let stream = TermySession(
+            title: "SSH",
+            profile: .local(name: "x", terminalOutputMode: .stream),
+            lines: [TerminalLine(role: .stdout, text: "remote-line")],
+            interactionMode: .commandLine
+        )
+        XCTAssertEqual(store.cleanScrollbackLinesForTesting(for: stream).map(\.text),
+                       ["remote-line"], "non-rawPTY session is passed through unchanged")
+    }
+
+    func testCleanScrollbackHandlesMultipleBlocksInOrder() {
+        let (store, id) = makeStore()
+        store.registerTerminalBlockArmHandler({}, for: id)
+        let outs = ["out-A", "out-B"]; var i = 0
+        store.registerTerminalBlockSnapshotProvider({ defer { i += 1 }; return i < outs.count ? outs[i] : "" }, for: id)
+        store.ingestShellIntegrationEvents([
+            .commandStarted("cmd-one"), .output("raw-one\n"), .commandFinished(exitCode: 0, workingDirectory: "/tmp"),
+        ], for: id)
+        store.ingestShellIntegrationEvents([
+            .commandStarted("cmd-two"), .output("raw-two\n"), .commandFinished(exitCode: 0, workingDirectory: "/tmp"),
+        ], for: id)
+        let session = try! XCTUnwrap(store.sessions.first { $0.id == id })
+        let texts = store.cleanScrollbackLinesForTesting(for: session)
+        let joined = texts.map(\.text).joined(separator: "\n")
+        XCTAssertTrue(texts.map(\.text).contains("out-A"))
+        XCTAssertTrue(texts.map(\.text).contains("out-B"))
+        XCTAssertFalse(joined.contains("raw-one")); XCTAssertFalse(joined.contains("raw-two"))
+        let aIdx = try! XCTUnwrap(texts.map(\.text).firstIndex(of: "out-A"))
+        let bIdx = try! XCTUnwrap(texts.map(\.text).firstIndex(of: "out-B"))
+        XCTAssertLessThan(aIdx, bIdx, "block A's output precedes block B's (no cross-contamination)")
+    }
+}

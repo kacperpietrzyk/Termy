@@ -107,6 +107,61 @@ final class TermyStore: ObservableObject {
         }
     }
 
+    // MARK: - Poziom 1: per-session tab management (rename / color / close-others / copy)
+
+    /// Rename a session's tab title. Empty/whitespace is ignored (no blank tabs).
+    func renameSession(_ id: UUID, to newTitle: String) {
+        let trimmed = newTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, let idx = sessions.firstIndex(where: { $0.id == id }) else { return }
+        sessions[idx].title = trimmed
+    }
+
+    /// Tag a session with a color (or `.none` to clear).
+    func setSessionColorTag(_ id: UUID, _ tag: SessionColorTag) {
+        guard let idx = sessions.firstIndex(where: { $0.id == id }) else { return }
+        sessions[idx].colorTag = tag
+    }
+
+    /// Close every session except `id` (snapshot ids first — closeSession mutates `sessions`).
+    func closeOtherSessions(keeping id: UUID) {
+        for other in sessions.map(\.id) where other != id {
+            closeSession(sessionID: other)
+        }
+    }
+
+    /// Copy a session's working directory to the pasteboard.
+    func copySessionWorkingDirectory(_ id: UUID) {
+        guard let cwd = sessions.first(where: { $0.id == id })?.currentWorkingDirectory, !cwd.isEmpty else {
+            statusMessage = "No working directory for this session."
+            return
+        }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(cwd, forType: .string)
+        statusMessage = "Copied working directory."
+    }
+
+    /// Copy the current git branch of a session's working directory (best-effort,
+    /// off the main thread — a `git` call must never block the UI).
+    func copySessionGitBranch(_ id: UUID) {
+        guard let cwd = sessions.first(where: { $0.id == id })?.currentWorkingDirectory, !cwd.isEmpty else {
+            statusMessage = "No working directory for this session."
+            return
+        }
+        let root = URL(fileURLWithPath: cwd)
+        DispatchQueue.global(qos: .userInitiated).async {
+            let branch = (try? GitRepository(root: root).currentBranch()) ?? ""
+            DispatchQueue.main.async {
+                guard !branch.isEmpty else {
+                    self.statusMessage = "Not a git repository."
+                    return
+                }
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(branch, forType: .string)
+                self.statusMessage = "Copied branch: \(branch)"
+            }
+        }
+    }
+
     // M2c-1 strangler facade → `appModel.editor`. Computed forwarders; the
     // canonical bypass invariant + rationale is at the `let appModel`
     // comment below. Transient — deleted in the final M2c sub-plan.
@@ -269,6 +324,10 @@ final class TermyStore: ObservableObject {
     var fileTreeItems: [LocalFileTreeItem] {
         get { appModel.files.fileTreeItems }
         set { objectWillChange.send(); appModel.files.fileTreeItems = newValue }
+    }
+    var expandedFileDirectories: Set<String> {
+        get { appModel.files.expandedFileDirectories }
+        set { objectWillChange.send(); appModel.files.expandedFileDirectories = newValue }
     }
     var sftpRemoteItems: [SFTPRemoteItem] {
         get { appModel.files.sftpRemoteItems }
@@ -691,6 +750,18 @@ final class TermyStore: ObservableObject {
     private var privateSyncDebounceTask: Task<Void, Never>?
     private let privateSyncDebounceSeconds = 5
 
+    /// `projectRoot` defaults to the process cwd, but launching via `open -n`
+    /// (as `script/build_and_run.sh` does) sets cwd to `/`. A root of `/` makes
+    /// Files/Git/SFTP point at the whole filesystem — useless, and the source of
+    /// the original "No files" symptom. Fall back to the user's home directory.
+    nonisolated static func sanitizedProjectRoot(_ url: URL) -> URL {
+        let standardized = url.standardizedFileURL
+        guard standardized.path != "/" else {
+            return FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL
+        }
+        return standardized
+    }
+
     init(
         startInitialPTY: Bool = true,
         projectRoot: URL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath),
@@ -755,7 +826,7 @@ final class TermyStore: ObservableObject {
         self.remoteNotificationSink = remoteNotificationSink
         self.appIsActive = appIsActive
         self.sshPrivateKeyVault = sshPrivateKeyVault
-        self.projectRootURL = projectRoot.standardizedFileURL
+        self.projectRootURL = Self.sanitizedProjectRoot(projectRoot)
         self.agentWorktreeRoot = agentWorktreeRoot
         self.agentStateRoot = agentStateRoot
         self.agentHookHelperPath = agentHookHelperPath
@@ -918,13 +989,39 @@ final class TermyStore: ObservableObject {
         overlayPanel(for: paneLayout.bottomPane)
     }
 
+    /// Slice-3c-1: the line set fed to terminal search + link indexing.
+    /// For a local rawPTY shell (OSC-133 block mode) the residue-free source is the
+    /// clean per-block buffer snapshots — identical to what the cards display via
+    /// `cleanBlockOutput` — NOT the re-parse `session.lines` output. The still-running
+    /// block is excluded (SwiftTerm draws it live; same rule as `renderedTerminalCommandBlocks`).
+    /// For SSH/`.commandLine` (stream) sessions there is no SwiftTerm/alt-screen and no
+    /// snapshot — `session.lines` IS the clean rendered surface, so it stays the source
+    /// there (byte-identical to the prior behavior).
+    func searchableTerminalLines() -> [String] {
+        guard let selectedSession else { return [] }
+        guard selectedSession.interactionMode == .rawPTY else {
+            return selectedSession.lines.map(\.text)
+        }
+        let runningStartLine = pendingCommandPromptIndex[selectedSession.id]
+        var out: [String] = []
+        for block in terminalCommandBlocks() where block.startLine != runningStartLine {
+            out.append(block.command)
+            let clean = cleanBlockOutput(forBlock: block)
+            if !clean.isEmpty {
+                out.append(contentsOf:
+                    clean.split(separator: "\n", omittingEmptySubsequences: false).map(String.init))
+            }
+        }
+        return out
+    }
+
     func refreshTerminalIndex() {
-        guard let selectedSession else {
+        guard selectedSession != nil else {
             terminalSearchResults = []
             terminalLinks = []
             return
         }
-        let index = TerminalTextIndex(lines: selectedSession.lines.map(\.text))
+        let index = TerminalTextIndex(lines: searchableTerminalLines())
         terminalSearchResults = index.search(terminalSearchQuery)
         terminalLinks = index.links()
     }
@@ -1039,7 +1136,14 @@ final class TermyStore: ObservableObject {
 
     func renderedTerminalCommandBlocks() -> [TerminalRenderedCommandBlock] {
         guard let selectedSession else { return [] }
-        return terminalCommandBlocks().map { block in
+        // Slice-3a: the still-running command is drawn live by SwiftTerm (the
+        // transcript yields while executing — verdict 2a), so it must NOT also
+        // render as a re-parse card here. Drop the block at the pending prompt
+        // index; finished blocks (and their snapshots) are unaffected.
+        let runningStartLine = pendingCommandPromptIndex[selectedSession.id]
+        return terminalCommandBlocks()
+            .filter { $0.startLine != runningStartLine }
+            .map { block in
             let outputLines = selectedSession.lines.enumerated().compactMap { index, line -> TerminalLine? in
                 guard index > block.startLine,
                       index <= block.endLine else {
@@ -1052,15 +1156,34 @@ final class TermyStore: ObservableObject {
                     return nil
                 }
             }
+            let snapshot = terminalBlockSnapshots[selectedSession.id]?[block.startLine]
+            let ctx = commandContext(forSession: selectedSession.id, startLine: block.startLine)
+            let effectiveOutputLines: [TerminalLine] = {
+                guard let snapshot else { return outputLines }     // no snapshot (running / unsnapshotted) → re-parse
+                // Whitespace-only (incl. a newline-joined run of blank rows, e.g.
+                // "\n\n…\n") is blank restored-screen residue, NOT output: after an
+                // alt-screen TUI (`claude`/`vim`) exits, the shell's primary-screen
+                // repaint accumulates a range of blank rows that `BufferSnapshot`
+                // joins as newlines — non-empty yet visually empty. Treating it as
+                // output rendered a tall blank body AND suppressed the compact
+                // `▦ ran fullscreen` annotation. `.isEmpty` alone misses this.
+                guard !snapshot.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return [] }
+                return [TerminalLine(role: .stdout, text: snapshot)]
+            }()
             return TerminalRenderedCommandBlock(
                 command: block.command,
                 startLine: block.startLine,
                 endLine: block.endLine,
                 exitCode: block.exitCode,
                 duration: commandDuration(forSession: selectedSession.id, startLine: block.startLine),
-                outputLines: outputLines,
+                outputLines: effectiveOutputLines,
                 isSelected: selectedTerminalBlockStartLine == block.startLine,
-                isFolded: foldedTerminalBlockStartLines.contains(block.startLine)
+                isFolded: foldedTerminalBlockStartLines.contains(block.startLine),
+                contextCwd: commandStartCwd(forSession: selectedSession.id, startLine: block.startLine),
+                branch: ctx?.branch,
+                gitStatus: ctx?.gitStatus,
+                node: ctx?.node,
+                enteredAltScreen: commandUsedAltScreen(forSession: selectedSession.id, startLine: block.startLine)
             )
         }
     }
@@ -1116,6 +1239,9 @@ final class TermyStore: ObservableObject {
         statusMessage = "Selected command block."
     }
 
+    // Slice-3b: copy reads the CLEAN buffer snapshot (via `cleanBlockOutput`),
+    // identical to the rendered card — no more copy/display residue divergence.
+    // Falls back to the re-parse only for a still-running, unsnapshotted block.
     func copyLastCommandOutput() {
         guard let block = terminalCommandBlocks().last else {
             statusMessage = "No command block available to copy."
@@ -1151,9 +1277,71 @@ final class TermyStore: ObservableObject {
         statusMessage = "Copied terminal screen."
     }
 
+    /// Slice-3b/3c-1: clean displayed output of a finished block for the SELECTED
+    /// session (copy/explain/search). Delegates to the session-scoped form.
+    func cleanBlockOutput(forBlock block: TerminalCommandBlock) -> String {
+        cleanBlockOutput(forBlock: block, inSession: selectedSession?.id)
+    }
+
+    /// Slice-3c-2: clean output of a block in an ARBITRARY session (restore persists
+    /// per-session, possibly not the selected one). The Slice-1 snapshot, ANSI-stripped
+    /// through the SAME parser the card renders with; falls back to the re-parse
+    /// `block.output` ONLY when no snapshot exists (running/unsnapshotted block).
+    func cleanBlockOutput(forBlock block: TerminalCommandBlock, inSession sessionID: UUID?) -> String {
+        guard let sessionID,
+              let snapshot = terminalBlockSnapshots[sessionID]?[block.startLine] else {
+            return block.output
+        }
+        return ANSITextParser().parse(snapshot).map(\.text).joined()
+    }
+
+    /// Slice-3c-2: the residue-free scrollback persisted (and thereby replayed) on
+    /// restore for a rawPTY session. Walks `session.lines` and substitutes each finished
+    /// block's raw `.stdout`/`.stderr` output run with the clean buffer snapshot
+    /// (`cleanBlockOutput`), keeping prompt/system/exit marker lines so the rebuilt
+    /// transcript still re-indexes into blocks (and the SwiftTerm replay is clean too).
+    /// A still-running/unsnapshotted block keeps its raw `.output` (no snapshot yet —
+    /// acceptable edge). For non-rawPTY (stream) sessions there is no snapshot source —
+    /// `session.lines` IS the clean surface, returned unchanged.
+    private func cleanScrollbackLines(for session: TermySession) -> [TerminalLine] {
+        guard session.interactionMode == .rawPTY else { return session.lines }
+        let blocks = terminalCommandBlocks(forSession: session.id)
+        guard !blocks.isEmpty else { return session.lines }
+        let startToBlock = Dictionary(blocks.map { ($0.startLine, $0) },
+                                      uniquingKeysWith: { first, _ in first })
+        var replacedOutputIndices = Set<Int>()
+        for block in blocks {
+            for index in session.lines.indices where index > block.startLine && index <= block.endLine {
+                switch session.lines[index].role {
+                case .stdout, .stderr: replacedOutputIndices.insert(index)
+                case .prompt, .system: break
+                }
+            }
+        }
+        var out: [TerminalLine] = []
+        for (index, line) in session.lines.enumerated() {
+            if replacedOutputIndices.contains(index) { continue }   // raw output dropped; clean output emitted at the prompt
+            out.append(line)
+            if let block = startToBlock[index] {
+                let clean = cleanBlockOutput(forBlock: block, inSession: session.id)
+                if !clean.isEmpty {
+                    for row in clean.split(separator: "\n", omittingEmptySubsequences: false) {
+                        out.append(TerminalLine(role: .stdout, text: String(row)))
+                    }
+                }
+            }
+        }
+        return out
+    }
+
+    /// Test seam for `cleanScrollbackLines` (private).
+    func cleanScrollbackLinesForTesting(for session: TermySession) -> [TerminalLine] {
+        cleanScrollbackLines(for: session)
+    }
+
     private func copyCommandOutput(_ block: TerminalCommandBlock) {
         NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(block.output, forType: .string)
+        NSPasteboard.general.setString(cleanBlockOutput(forBlock: block), forType: .string)
         statusMessage = "Copied output for \(block.command)."
     }
 
@@ -1758,14 +1946,88 @@ final class TermyStore: ObservableObject {
         }
     }
 
+    /// Monotonic token for Files-tree rebuilds. Every rebuild request (sync or
+    /// async) bumps it; an async result only publishes if its captured token is
+    /// still the latest. Without this, two background rebuilds on the *concurrent*
+    /// global queue can complete out of order and a stale `visibleTree` snapshot
+    /// can stomp a newer expand/collapse state (open chevron, missing children).
+    /// Mirrors the terminal's `noteSessionProcessExited(generation:)` guard.
+    private var fileTreeGeneration = 0
+
     func refreshFiles() {
+        fileTreeGeneration += 1   // a synchronous refresh is authoritative now → invalidate any in-flight async rebuild
         do {
             let service = LocalFileService(root: projectRoot)
-            let tree = try service.tree()
-            fileTreeItems = tree
-            fileItems = tree.map(\.item)
+            // Navigable Finder-lite view: only root + currently-expanded dirs.
+            fileTreeItems = try service.visibleTree(expanded: expandedFileDirectories)
+            // Search corpus: the full bounded flat list (search spans the whole tree,
+            // not just what is expanded). NOTE: tree() caps at depth 8, so files
+            // nested deeper than 8 under a manually-expanded chain are navigable but
+            // not matched by search — an accepted bound for runaway safety.
+            fileItems = try service.tree().map(\.item)
         } catch {
             statusMessage = "File refresh failed: \(error.localizedDescription)"
+        }
+    }
+
+    /// Background variant for UI entry points (e.g. opening the Files module):
+    /// the recursive directory walk can enumerate thousands of entries in a
+    /// large project tree and must not block the main thread. Mirrors
+    /// `pullCurrentGitBranch` — capture the Sendable root, walk off the main
+    /// actor, publish results back on main.
+    func refreshFilesAsync() {
+        fileTreeGeneration += 1
+        let generation = fileTreeGeneration
+        let root = projectRoot
+        let expanded = expandedFileDirectories
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = Result { () -> ([LocalFileTreeItem], [LocalFileItem]) in
+                let service = LocalFileService(root: root)
+                let visible = try service.visibleTree(expanded: expanded)
+                let all = try service.tree().map(\.item)
+                return (visible, all)
+            }
+            DispatchQueue.main.async {
+                guard generation == self.fileTreeGeneration else { return }  // a newer rebuild superseded this one
+                switch result {
+                case .success(let (visible, all)):
+                    self.fileTreeItems = visible
+                    self.fileItems = all
+                case .failure(let error):
+                    self.statusMessage = "File refresh failed: \(error.localizedDescription)"
+                }
+            }
+        }
+    }
+
+    /// True when the Files tree directory at `relativePath` is expanded.
+    func isFileDirectoryExpanded(_ relativePath: String) -> Bool {
+        expandedFileDirectories.contains(relativePath)
+    }
+
+    /// Toggle a directory open/closed in the Files tree and rebuild the visible
+    /// (lazy) tree off the main thread. Listing one newly-expanded directory is
+    /// cheap, but a huge folder could still hitch, so it runs on a background queue.
+    func toggleFileDirectory(_ relativePath: String) {
+        if expandedFileDirectories.contains(relativePath) {
+            // Collapse: drop this dir AND any now-hidden descendants from the set,
+            // so re-expanding the parent doesn't silently re-open nested children.
+            expandedFileDirectories = expandedFileDirectories.filter {
+                $0 != relativePath && !$0.hasPrefix(relativePath + "/")
+            }
+        } else {
+            expandedFileDirectories.insert(relativePath)
+        }
+        fileTreeGeneration += 1
+        let generation = fileTreeGeneration
+        let root = projectRoot
+        let expanded = expandedFileDirectories
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = Result { try LocalFileService(root: root).visibleTree(expanded: expanded) }
+            DispatchQueue.main.async {
+                guard generation == self.fileTreeGeneration else { return }  // stale — a newer toggle/refresh won
+                if case .success(let visible) = result { self.fileTreeItems = visible }
+            }
         }
     }
 
@@ -2527,6 +2789,13 @@ final class TermyStore: ObservableObject {
         var selection: Int
     }
 
+    /// B4 (Warp parity): the menu opens with NO highlighted row. A sentinel of
+    /// -1 means "nothing selected" — `CompletionMenuRow` renders `idx == -1` as
+    /// unselected for every row, Return passes through to zsh verbatim, and
+    /// `terminalMenuAcceptedSuffix` returns nil (its `selection >= 0` guard).
+    /// ↓ (or Tab) is what first enters the list and lands on row 0.
+    static let menuNoSelection = -1
+
     private var terminalMenuStates: [UUID: MenuState] = [:]
 
     // MARK: - v3 block terminal: per-command timing
@@ -2536,9 +2805,51 @@ final class TermyStore: ObservableObject {
     private var commandStartTimes: [UUID: [Int: Date]] = [:]
     private var commandDurations: [UUID: [Int: TimeInterval]] = [:]
     private var pendingCommandPromptIndex: [UUID: Int] = [:]
+    /// Slice-2a: the directory each command was LAUNCHED in, keyed by prompt line
+    /// index. Captured at `.commandStarted` — at that instant the session's
+    /// `currentWorkingDirectory` still holds the prior command's exit-pwd, so this
+    /// is the honest per-block launch dir (the next `.commandFinished` advances cwd).
+    private var commandStartCwd: [UUID: [Int: String]] = [:]
+    /// Slice-2a: prompt indices whose command drove the alternate screen
+    /// (claude/vim/htop). Lets the card distinguish "ran fullscreen" from "no output".
+    private var commandUsedAltScreen: [UUID: Set<Int>] = [:]
+    /// Slice-2c: per-command git/node context for the Warp header, captured at
+    /// preexec (OSC 133 C) and keyed by prompt line index. git is genuinely
+    /// per-block; `node` is per-session (probed once — see ShellIntegrationScript).
+    struct TerminalBlockContext: Equatable {
+        var branch: String?
+        var gitStatus: String?
+        var node: String?
+    }
+    private var commandContext: [UUID: [Int: TerminalBlockContext]] = [:]
+
+    func commandContext(forSession id: UUID, startLine: Int) -> TerminalBlockContext? {
+        commandContext[id]?[startLine]
+    }
+
+    /// Bug 1 (Slice-2): LIVE prompt context fed by the precmd (D marker), which
+    /// fires before EVERY prompt incl. the first — so a `cd` into another repo
+    /// refreshes the pinned-bar branch/node WITHOUT waiting for a command, and a
+    /// `cd` into a non-repo clears it (the marker carries empty fields). Distinct
+    /// from per-block `commandContext` (captured at the command's own preexec).
+    private var livePromptContext: [UUID: TerminalBlockContext] = [:]
+
+    /// The pinned input bar's live header context. nil before the first precmd is
+    /// seen → the bar degrades to cwd-only, never a stale command's branch.
+    func livePromptContext(for id: UUID) -> TerminalBlockContext? {
+        livePromptContext[id]
+    }
 
     func commandDuration(forSession id: UUID, startLine: Int) -> TimeInterval? {
         commandDurations[id]?[startLine]
+    }
+
+    func commandStartCwd(forSession id: UUID, startLine: Int) -> String? {
+        commandStartCwd[id]?[startLine]
+    }
+
+    func commandUsedAltScreen(forSession id: UUID, startLine: Int) -> Bool {
+        commandUsedAltScreen[id]?.contains(startLine) ?? false
     }
 
     /// v3 block terminal: render-only clear of the live SwiftTerm VIEW (not the
@@ -2553,11 +2864,36 @@ final class TermyStore: ObservableObject {
     /// (vim/htop/fzf). Pushed from SwiftTerm's post-render hook; drives the live
     /// zone's full-area takeover.
     private var terminalAltScreen: [UUID: Bool] = [:]
+    /// Sessions whose `.output` is suppressed until the next command starts — set
+    /// when a full-screen TUI leaves the alternate screen (see `setTerminalAltScreen`).
+    /// LOAD-BEARING — DO NOT DELETE as "retired suppression machinery" (spec §9 is stale
+    /// here). This keeps the RETAINED `session.lines` (the rebuild kept it for stream/SSH
+    /// render + the running-block fallback + 3c-2 restore structure) free of the alt-exit
+    /// transition residue (the straddling `ESC[78G…` → bare `78`). Removing it regresses
+    /// 3c-2 restore: the indexer ignores post-`Exit` output (TerminalCommandBlockIndexer
+    /// `currentCommand == nil`), so the residue becomes a LOOSE `.output` line attached to
+    /// no block, which `cleanScrollbackLines` preserves → restored scrollback re-acquires
+    /// `78`. Not scaffolding for a deleted path; upkeep for a deliberately-kept surface.
+    private var suppressOutputUntilCommand: Set<UUID> = []
     func terminalAltScreenActive(for id: UUID) -> Bool { terminalAltScreen[id] ?? false }
     func setTerminalAltScreen(_ active: Bool, for id: UUID) {
         guard terminalAltScreen[id] != active else { return }
         objectWillChange.send()
+        let wasActive = terminalAltScreen[id] ?? false
         terminalAltScreen[id] = active
+        // Slice-2a: if a command is in flight when the alt screen turns on, tag its
+        // block so the card shows a compact "ran fullscreen" line (its snapshot is
+        // intentionally empty) rather than reading as a no-output command.
+        if active, let promptIndex = pendingCommandPromptIndex[id] {
+            commandUsedAltScreen[id, default: []].insert(promptIndex)
+        }
+        // P2a follow-up: a full-screen TUI (claude/vim/htop) OWNED the display while
+        // on the alternate screen, so its command block has no meaningful inline
+        // output. On EXIT, the bytes captured around the alt↔normal transition (a
+        // CHA escape fragmented across a `dataReceived` slice, etc.) are noise — they
+        // surface as residue like `787878%`. Suppress this session's `.output` until
+        // the next command starts (a fresh prompt), so the TUI's block stays clean.
+        if wasActive && !active { suppressOutputUntilCommand.insert(id) }
     }
 
     /// v3 block terminal: shift every line-keyed entry DOWN by `overflow` (the
@@ -2612,7 +2948,9 @@ final class TermyStore: ObservableObject {
         // false (no engine for local sessions), letting Tab pass through to zsh.
         let items = completionSuggestionsForMenu(text: buf.text, sessionID: sessionID)
         guard !items.isEmpty else { return false }
-        terminalMenuStates[sessionID] = MenuState(items: items, selection: 0)
+        // B4 (Warp parity): open with NOTHING selected (sentinel -1). Return then
+        // submits the typed line verbatim; ↓/Tab is what first enters the list.
+        terminalMenuStates[sessionID] = MenuState(items: items, selection: Self.menuNoSelection)
         objectWillChange.send()
         return true
     }
@@ -2620,9 +2958,16 @@ final class TermyStore: ObservableObject {
     func terminalMenuMoveSelection(for sessionID: UUID, by delta: Int) {
         guard var s = terminalMenuStates[sessionID], !s.items.isEmpty else { return }
         let n = s.items.count
-        // Wrap arithmetic that handles arbitrary positive/negative delta.
-        let raw = (s.selection + delta) % n
-        s.selection = raw < 0 ? raw + n : raw
+        // B4 (Warp parity): from the "nothing selected" sentinel (-1), the first
+        // move ENTERS the list — forward (↓/Tab) lands on row 0, backward
+        // (↑/Shift-Tab) lands on the last row. Thereafter it wraps normally.
+        if s.selection < 0 {
+            s.selection = delta >= 0 ? 0 : n - 1
+        } else {
+            // Wrap arithmetic that handles arbitrary positive/negative delta.
+            let raw = (s.selection + delta) % n
+            s.selection = raw < 0 ? raw + n : raw
+        }
         terminalMenuStates[sessionID] = s
         objectWillChange.send()
     }
@@ -2670,6 +3015,18 @@ final class TermyStore: ObservableObject {
     static func lastWhitespaceToken(_ text: String) -> String {
         guard let spaceIdx = text.lastIndex(of: " ") else { return text }
         return String(text[text.index(after: spaceIdx)...])
+    }
+
+    /// Bug 2: whether a candidate would insert ≥1 char at the current token — i.e.
+    /// it actually EXTENDS what the user typed. Handles both candidate shapes
+    /// (full-buffer "git status" and last-token "status"), mirroring
+    /// `terminalMenuAcceptedSuffix`. A candidate equal to the buffer/token adds
+    /// nothing and must not re-surface the menu (the just-accepted-token bug).
+    static func candidateExtendsCurrentToken(_ c: CompletionCandidate, buffer: String) -> Bool {
+        if c.replacement.hasPrefix(buffer) { return c.replacement.count > buffer.count }
+        let token = lastWhitespaceToken(buffer)
+        if c.replacement.hasPrefix(token) { return c.replacement.count > token.count }
+        return true   // different shape → assume it contributes
     }
 
     /// The ghost-text suffix to display/accept for `sessionID`, or nil when
@@ -2815,10 +3172,6 @@ final class TermyStore: ObservableObject {
         } catch {
             statusMessage = "Save failed: \(error.localizedDescription)"
         }
-    }
-
-    func editorSyntaxTokens() -> [SyntaxToken] {
-        SyntaxHighlighter().highlight(scratchText, fileName: editorFilePath ?? "Scratch.md")
     }
 
     func setEditorVimEnabled(_ enabled: Bool) {
@@ -3044,7 +3397,7 @@ final class TermyStore: ObservableObject {
                 let client = localAIClient(endpoint: endpoint)
                 let explanation = try await client.explainFailedCommand(
                     command: failedBlock.command,
-                    output: failedBlock.output,
+                    output: cleanBlockOutput(forBlock: failedBlock),
                     projectGuidance: aiGuidanceContext
                 )
                 aiExplanation = explanation.text
@@ -3208,12 +3561,25 @@ final class TermyStore: ObservableObject {
         }
     }
 
+    /// Slice-2a block hover action "Rerun": EXECUTE a finished block's command
+    /// again at the live prompt (writes `command\r` via the input sink). Unlike
+    /// `insertCommandAtPrompt` this runs immediately, matching Warp's "rerun".
+    /// No-op without a live input sink (e.g. a `.commandLine` SSH session).
+    func rerunCommand(_ command: String) {
+        let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, let id = selectedSessionID,
+              let sink = terminalInputSinks[id] else { return }
+        sink(trimmed + "\r")
+        statusMessage = "Rerunning \"\(trimmed)\"."
+    }
+
     /// v3 Shell §6.1 Find action: reveal the on-demand find/output toolbar and
     /// ask its field to take focus. The field (`TerminalSearchBar`) observes the
     /// monotonic token; the toolbar is gated on `terminalSearchVisible`.
     func requestTerminalSearchFocus() {
         objectWillChange.send()
         terminalSearchVisible = true
+        refreshTerminalIndex()      // surface is fresh on open (append-driven refresh is gated off while hidden)
         terminalSearchFocusToken += 1
     }
 
@@ -3829,9 +4195,16 @@ final class TermyStore: ObservableObject {
         terminalInputHighlights = [:]
         terminalCaretOriginProviders = [:]
         terminalInputSinks = [:]
+        terminalBlockSnapshots = [:]
+        terminalBlockSnapshotProviders = [:]
+        terminalBlockArmHandlers = [:]
         terminalMenuStates = [:]
         commandStartTimes = [:]
         commandDurations = [:]
+        commandStartCwd = [:]
+        commandUsedAltScreen = [:]
+        commandContext = [:]
+        livePromptContext = [:]
         pendingCommandPromptIndex = [:]
         terminalLocalClearSinks = [:]
         terminalAltScreen = [:]
@@ -4055,7 +4428,7 @@ final class TermyStore: ObservableObject {
             profileReference: restoreProfileReference(for: session),
             workingDirectory: restoreWorkingDirectory(for: session, descriptor: descriptor),
             launch: restoreLaunch(for: session, descriptor: descriptor),
-            scrollback: session.lines.map(restoreLine),
+            scrollback: cleanScrollbackLines(for: session).map(restoreLine),
             scrollbackBytes: 0,
             lastExitCode: session.lastExitCode.map(Int.init),
             capturedAt: capturedAt
@@ -4701,6 +5074,8 @@ final class TermyStore: ObservableObject {
         terminalInputHighlights[sessionID] = nil
         terminalCaretOriginProviders[sessionID] = nil
         terminalInputSinks[sessionID] = nil
+        terminalBlockSnapshots[sessionID] = nil
+        clearTerminalBlockProviders(for: sessionID)
 
         // F-4: tear down per-session sidecar.
         sidecarDebounceTasks[sessionID]?.cancel()
@@ -4718,9 +5093,14 @@ final class TermyStore: ObservableObject {
         // v3 block terminal: clear per-command timing state.
         commandStartTimes[sessionID] = nil
         commandDurations[sessionID] = nil
+        commandStartCwd[sessionID] = nil
+        commandUsedAltScreen[sessionID] = nil
+        commandContext[sessionID] = nil
+        livePromptContext[sessionID] = nil
         pendingCommandPromptIndex[sessionID] = nil
         terminalLocalClearSinks[sessionID] = nil
         terminalAltScreen[sessionID] = nil
+        suppressOutputUntilCommand.remove(sessionID)
 
         // FB-3-2: tear down per-session agent state.
         agentQuiescenceTasks[sessionID]?.cancel()
@@ -5214,11 +5594,19 @@ final class TermyStore: ObservableObject {
         sidecarLastAppliedId[sessionID] = id
 
         // Always cache the latest items so recomputeSidecarGhost has them even
-        // when the menu is closed (debounce not yet elapsed).
+        // when the menu is closed (debounce not yet elapsed). The ghost path drops
+        // its own empty-suffix candidate (recomputeSidecarGhost), so the cache stays
+        // unfiltered.
         sidecarLastCandidates[sessionID] = items
 
-        if items.isEmpty {
-            // Zero items: close menu if open.
+        // Bug 2: the MENU drops candidates that add nothing to the current token
+        // (an already-complete word, e.g. accepting "Projects" then the shell echoes
+        // it back). Without this the just-accepted token re-surfaces the menu.
+        let buffer = terminalInputBuffers[sessionID]?.text ?? ""
+        let menuItems = items.filter { Self.candidateExtendsCurrentToken($0, buffer: buffer) }
+
+        if menuItems.isEmpty {
+            // Nothing to add: close menu if open.
             if terminalMenuStates[sessionID] != nil {
                 terminalMenuStates[sessionID] = nil
                 objectWillChange.send()
@@ -5226,13 +5614,18 @@ final class TermyStore: ObservableObject {
         } else {
             let debounceReady = sidecarDebounceElapsed.contains(sessionID)
             if let prev = terminalMenuStates[sessionID] {
-                // Refresh an already-open menu.
-                let clamped = max(0, min(prev.selection, items.count - 1))
-                terminalMenuStates[sessionID] = MenuState(items: items, selection: clamped)
+                // Refresh an already-open menu. B4: preserve the "nothing
+                // selected" sentinel across refreshes — a naive max(0,…) would
+                // reset -1 back to 0 on the next sidecar result and reintroduce
+                // the hijack mid-typing.
+                let clamped = prev.selection < 0
+                    ? Self.menuNoSelection
+                    : max(0, min(prev.selection, menuItems.count - 1))
+                terminalMenuStates[sessionID] = MenuState(items: menuItems, selection: clamped)
                 objectWillChange.send()
             } else if debounceReady {
-                // Auto-open when debounce elapsed.
-                terminalMenuStates[sessionID] = MenuState(items: items, selection: 0)
+                // Auto-open when debounce elapsed — Warp parity: NOTHING selected.
+                terminalMenuStates[sessionID] = MenuState(items: menuItems, selection: Self.menuNoSelection)
                 objectWillChange.send()
             }
             // If debounce not yet elapsed, items cached above; menu opens on next debounce.
@@ -5327,7 +5720,7 @@ final class TermyStore: ObservableObject {
         guard let index = sessions.firstIndex(where: { $0.id == sessionID }) else { return }
         sessions[index].lines.append(line)
         trimTerminalTranscriptIfNeeded(at: index)
-        if sessionID == selectedSessionID {
+        if sessionID == selectedSessionID && terminalSearchVisible {
             refreshTerminalIndex()
         }
     }
@@ -5348,6 +5741,18 @@ final class TermyStore: ObservableObject {
         }
         if let durations = commandDurations[sessionID] {
             commandDurations[sessionID] = Self.shiftLineKeys(durations, by: overflow)
+        }
+        if let snaps = terminalBlockSnapshots[sessionID] {
+            terminalBlockSnapshots[sessionID] = Self.shiftLineKeys(snaps, by: overflow)
+        }
+        if let cwds = commandStartCwd[sessionID] {
+            commandStartCwd[sessionID] = Self.shiftLineKeys(cwds, by: overflow)
+        }
+        if let alt = commandUsedAltScreen[sessionID] {
+            commandUsedAltScreen[sessionID] = Set(alt.compactMap { $0 >= overflow ? $0 - overflow : nil })
+        }
+        if let ctx = commandContext[sessionID] {
+            commandContext[sessionID] = Self.shiftLineKeys(ctx, by: overflow)
         }
         if let pending = pendingCommandPromptIndex[sessionID] {
             pendingCommandPromptIndex[sessionID] = pending >= overflow ? pending - overflow : nil
@@ -5374,8 +5779,10 @@ final class TermyStore: ObservableObject {
         for event in events {
             switch event {
             case .output(let text):
+                if suppressOutputUntilCommand.contains(sessionID) { break }  // drop post-alt-screen transition noise
                 appendLine(TerminalLine(role: .stdout, text: text), to: sessionID)
             case .commandStarted(let command):
+                suppressOutputUntilCommand.remove(sessionID)   // fresh prompt → resume capturing
                 appendLine(TerminalLine(role: .prompt, text: "$ \(command)"), to: sessionID)
                 // v3 block terminal: record the prompt line index as timing key.
                 // The prompt was just appended, so it's the last line in the session.
@@ -5383,7 +5790,14 @@ final class TermyStore: ObservableObject {
                     let promptIndex = sessions[si].lines.count - 1
                     pendingCommandPromptIndex[sessionID] = promptIndex
                     commandStartTimes[sessionID, default: [:]][promptIndex] = Date()
+                    // Slice-2a: record the launch dir. At command start the session's
+                    // cwd still reflects the PRIOR command's exit-pwd (advanced only at
+                    // the next commandFinished), so this is where THIS command runs.
+                    if let cwd = sessions[si].currentWorkingDirectory, !cwd.isEmpty {
+                        commandStartCwd[sessionID, default: [:]][promptIndex] = cwd
+                    }
                 }
+                terminalBlockArmHandlers[sessionID]?()   // Slice-1: arm buffer capture at OSC 133 C
                 statusMessage = "Running \(command)"
                 // F-2: history is now the persistent HistoryStore; cwd is the
                 // session's currentWorkingDirectory at command-start time (last
@@ -5408,6 +5822,16 @@ final class TermyStore: ObservableObject {
                 guard let index = sessions.firstIndex(where: { $0.id == sessionID }) else { return }
                 sessions[index].lastExitCode = exitCode
                 sessions[index].currentWorkingDirectory = workingDirectory
+                // Slice-1: snapshot finished output from the authoritative SwiftTerm buffer.
+                // ALWAYS store when a provider exists (coalesce nil → ""): a pure TUI command
+                // (`claude`) leaves no captured range after alt-screen gating, and an EMPTY
+                // snapshot is the correct CLEAN result — it must NOT fall back to the
+                // residue-prone re-parse. Independent `if let` (not folded into the duration
+                // block): a commandFinished without a recorded start must still capture.
+                if let promptIndex = pendingCommandPromptIndex[sessionID],
+                   let provider = terminalBlockSnapshotProviders[sessionID] {
+                    terminalBlockSnapshots[sessionID, default: [:]][promptIndex] = provider() ?? ""
+                }
                 // v3 block terminal: finalize duration for the pending prompt index.
                 if let promptIndex = pendingCommandPromptIndex[sessionID],
                    let start = commandStartTimes[sessionID]?[promptIndex] {
@@ -5457,7 +5881,11 @@ final class TermyStore: ObservableObject {
                         if fresh.isEmpty {
                             terminalMenuStates[sessionID] = nil
                         } else {
-                            let clamped = max(0, min(prev.selection, fresh.count - 1))
+                            // B4: preserve the "nothing selected" sentinel across
+                            // live-narrow refreshes (see applyCompletionResponse).
+                            let clamped = prev.selection < 0
+                                ? Self.menuNoSelection
+                                : max(0, min(prev.selection, fresh.count - 1))
                             terminalMenuStates[sessionID] = MenuState(items: fresh, selection: clamped)
                         }
                         objectWillChange.send()
@@ -5466,6 +5894,20 @@ final class TermyStore: ObservableObject {
             case .inputHighlightsChanged(let spans):
                 // FB-1: store the live-input highlight spans for the live block.
                 terminalInputHighlights[sessionID] = spans
+                objectWillChange.send()
+            case .commandContext(let branch, let gitStatus, let node):
+                // Slice-2c: emitted right after `.commandStarted`, so the pending
+                // prompt index is set — key the git/node header context to it.
+                if let promptIndex = pendingCommandPromptIndex[sessionID] {
+                    commandContext[sessionID, default: [:]][promptIndex] =
+                        TerminalBlockContext(branch: branch, gitStatus: gitStatus, node: node)
+                }
+            case .promptContext(let branch, let gitStatus, let node):
+                // Bug 1: precmd's live context for the CURRENT prompt — drives the
+                // pinned input bar's header. Always overwrite (incl. all-nil) so a
+                // `cd` into a non-repo clears a stale branch.
+                livePromptContext[sessionID] =
+                    TerminalBlockContext(branch: branch, gitStatus: gitStatus, node: node)
                 objectWillChange.send()
             }
         }
@@ -5570,6 +6012,27 @@ final class TermyStore: ObservableObject {
         terminalCaretOriginProviders[id]?()
     }
 
+    // Slice-1: SwiftTerm-buffer snapshots of finished command blocks, keyed by
+    // the block's start line (the prompt line index). Replaces re-parsed output
+    // for finished blocks in `renderedTerminalCommandBlocks()`.
+    private var terminalBlockSnapshots: [UUID: [Int: String]] = [:]
+    private var terminalBlockSnapshotProviders: [UUID: () -> String?] = [:]
+    private var terminalBlockArmHandlers: [UUID: () -> Void] = [:]
+
+    func registerTerminalBlockSnapshotProvider(_ provider: @escaping () -> String?, for id: UUID) {
+        terminalBlockSnapshotProviders[id] = provider
+    }
+    func registerTerminalBlockArmHandler(_ handler: @escaping () -> Void, for id: UUID) {
+        terminalBlockArmHandlers[id] = handler
+    }
+    func clearTerminalBlockProviders(for id: UUID) {
+        terminalBlockSnapshotProviders[id] = nil
+        terminalBlockArmHandlers[id] = nil
+    }
+    func terminalBlockSnapshotForTesting(sessionID: UUID) -> [Int: String]? {
+        terminalBlockSnapshots[sessionID]
+    }
+
     /// F-1: SwiftTerm finished rendering a visual change. Refresh the ghost
     /// overlay so it re-reads the now-fresh `caretFrame`. Gated on an active
     /// prompt buffer so heavy command output (suggestion already cleared on
@@ -5637,12 +6100,24 @@ final class TermyStore: ObservableObject {
         try? FileManager.default.removeItem(
             at: agentStateRoot.appendingPathComponent("\(sessionID.uuidString).state"))
         cleanupAgentWorktreeIfNeeded(for: sessionID)
+        // v3 block terminal: the child is gone, so SwiftTerm will never switch
+        // back from the alternate screen on its own. Clear the alt-screen flag
+        // (mirrors closeSession) so `ShellTermWindow` re-reveals the block
+        // transcript instead of leaving the now-stale raw SwiftTerm buffer
+        // exposed (which renders as garbled overlapping text).
+        terminalAltScreen[sessionID] = nil
+        suppressOutputUntilCommand.remove(sessionID)
         // Slice 5: the child is already gone — evict its surface (frees the launch
         // temp; the processIsDead guard skips a re-kill). No-op for non-pooled
         // (.commandLine SSH/tunnel) sessions, and a no-op in the restart case
         // (the generation guard above returns before reaching here).
         let exitedGeneration = generation ?? (terminalLaunchGenerations[sessionID] ?? 0)
-        terminalSurfacePool.terminate(forKey: "\(sessionID.uuidString)#\(exitedGeneration)")
+        let exitedKey = "\(sessionID.uuidString)#\(exitedGeneration)"
+        // Drain any partial OSC 133 marker still buffered in the stream bridge
+        // before the surface is torn down, so the final command block parses
+        // cleanly rather than leaving a dangling unterminated block.
+        terminalSurfacePool.surface(forKey: exitedKey)?.view?.streamBridge?.flush()
+        terminalSurfacePool.terminate(forKey: exitedKey)
     }
 
     // MARK: - FB-3-2 agent state machine driving

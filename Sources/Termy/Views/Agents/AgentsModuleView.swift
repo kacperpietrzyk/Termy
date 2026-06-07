@@ -63,10 +63,16 @@ struct AgentsModuleView: View {
             }
             .buttonStyle(TermyCommandButtonStyle())
         }
-        Button { store.isCommandCenterPresented = true } label: {
+        Menu {
+            Button("Run Claude Code here") { store.perform("run-claude-code-here") }
+            Button("Run Claude Code in worktree") { store.perform("run-claude-code-worktree") }
+            Button("Run Codex here") { store.perform("run-codex-here") }
+            Button("Run Codex in worktree") { store.perform("run-codex-worktree") }
+        } label: {
             Label("Spawn agent", systemImage: "plus")
         }
-        .buttonStyle(TermyCommandButtonStyle(emphasized: true))
+        .menuStyle(.borderlessButton)
+        .fixedSize()
     }
 
     private var emptyBody: some View {

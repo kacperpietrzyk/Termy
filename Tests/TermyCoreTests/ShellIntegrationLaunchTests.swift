@@ -14,7 +14,9 @@ final class ShellIntegrationLaunchTests: XCTestCase {
         defer { launch.cleanup() }
         let zdotdir = try XCTUnwrap(launch.zdotdir)
         let zshrc = try String(contentsOf: zdotdir.appendingPathComponent(".zshrc"), encoding: .utf8)
-        XCTAssertTrue(zshrc.contains("133;C;cmd="), "must emit OSC 133 command-start with cmd=")
+        // Slice-2c: the C marker now leads with git/node context and ends with cmd=.
+        XCTAssertTrue(zshrc.contains("133;C;branch="), "must emit OSC 133 command-start with context fields")
+        XCTAssertTrue(zshrc.contains(";cmd=%s"), "command must be the LAST C-marker field (first-wins parsing)")
         XCTAssertTrue(zshrc.contains("133;D;exit="), "must emit OSC 133 command-end with exit=")
         XCTAssertEqual(launch.environment["ZDOTDIR"], zdotdir.path)
         XCTAssertEqual(launch.environment["TERM"], "xterm-256color")

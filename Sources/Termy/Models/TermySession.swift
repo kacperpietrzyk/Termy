@@ -1,6 +1,12 @@
 import Foundation
 import TermyCore
 
+/// Poziom 1: optional per-session color tag (Warp-style swatch). UI-agnostic —
+/// the view layer maps each case to a concrete color. `.none` = no tag.
+enum SessionColorTag: String, CaseIterable, Codable, Equatable {
+    case none, red, orange, yellow, green, blue, purple, pink
+}
+
 struct TermySession: Identifiable {
     enum InteractionMode {
         case commandLine
@@ -28,6 +34,8 @@ struct TermySession: Identifiable {
     /// FB-3-4: when `agentActivity` last changed (drives "waiting 24s"). Stamped in
     /// `TermyStore.feedAgentEvent`.
     var stateChangedAt: Date = Date()
+    /// Poziom 1: optional color tag set from the session context menu. Default none.
+    var colorTag: SessionColorTag = .none
 
     init(
         id: UUID = UUID(),
@@ -85,6 +93,18 @@ struct TerminalRenderedCommandBlock: Identifiable {
     let outputLines: [TerminalLine]
     let isSelected: Bool
     let isFolded: Bool
+    /// Slice-2a Warp context header. `contextCwd` = the directory the command was
+    /// LAUNCHED in (captured at command start, not the session's current cwd).
+    /// `branch`/`gitStatus`/`node` are populated by Slice-2c (nil until then); the
+    /// header renders gracefully over whatever is present.
+    var contextCwd: String? = nil
+    var branch: String? = nil
+    var gitStatus: String? = nil
+    var node: String? = nil
+    /// True when this command drove the alternate screen (claude/vim/htop). Its
+    /// snapshot is intentionally empty; the card shows a compact "ran fullscreen"
+    /// annotation instead of nothing.
+    var enteredAltScreen: Bool = false
 
     var id: Int { startLine }
 }

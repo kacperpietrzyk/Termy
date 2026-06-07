@@ -774,4 +774,31 @@ final class TermyStoreSessionRestoreTests: XCTestCase {
         XCTAssertNil(store.sessionRestoreStatus)
         XCTAssertEqual(store.statusMessage, "No previous session to restore.")
     }
+
+    func testRestoreScrollbackIsResidueFreeForRawPTYBlock() throws {
+        let restoreStore = try temporaryRestoreStore()
+        defer { removeTemporaryRestoreStore(restoreStore) }
+        let store = TermyStore(startInitialPTY: false, sessionRestoreStore: restoreStore)
+        let id = try XCTUnwrap(store.selectedSessionID)
+        store.registerTerminalLaunch(localDescriptor(workingDirectory: "/tmp"), for: id)  // arm persistence
+        store.registerTerminalBlockArmHandler({}, for: id)
+        store.registerTerminalBlockSnapshotProvider({ "clean-restore-out" }, for: id)
+        store.ingestShellIntegrationEvents([
+            .commandStarted("git status"),
+            .output("78residue\n"),                          // re-parse residue (simulates post-3c-3 .output)
+            .commandFinished(exitCode: 0, workingDirectory: "/tmp"),
+        ], for: id)
+
+        try store.captureSessionRestoreSnapshotNow(capturedAt: Date(timeIntervalSince1970: 10))
+
+        let snapshot = try XCTUnwrap(try restoreStore.load())
+        let entry = try XCTUnwrap(snapshot.sessions.first { $0.id == id })
+        let scrollbackText = entry.scrollback.map(\.text).joined(separator: "\n")
+        XCTAssertTrue(scrollbackText.contains("clean-restore-out"),
+                      "persisted scrollback carries the clean snapshot output")
+        XCTAssertTrue(scrollbackText.contains("git status"),
+                      "the command/prompt is preserved so restored history re-indexes into a block")
+        XCTAssertFalse(scrollbackText.contains("78residue"),
+                       "persisted scrollback must NOT carry re-parse residue")
+    }
 }
