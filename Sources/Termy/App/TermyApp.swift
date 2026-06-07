@@ -211,7 +211,11 @@ struct TermyApp: App {
                 Button("Check for Updates…") {
                     store.appModel.update.checkForUpdates()
                 }
-                .disabled(!store.appModel.update.canCheckForUpdates)
+                // Disabled until the live Sparkle updater is active — i.e. only
+                // in a release build with a configured SUFeedURL. Dev/unsigned
+                // builds keep it greyed out so a manual click can't error.
+                .disabled(!store.appModel.update.isLiveUpdaterActive
+                          || !store.appModel.update.canCheckForUpdates)
             }
 
             // Settings is an in-shell module reached via the fixed glass rail
