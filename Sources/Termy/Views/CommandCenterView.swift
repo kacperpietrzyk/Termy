@@ -12,26 +12,6 @@ struct CommandCenterView: View {
             VStack(spacing: 0) {
                 VStack(alignment: .leading, spacing: 12) {
                     HStack(spacing: 10) {
-                        Image(systemName: "command")
-                            .foregroundStyle(TermyDesign.accent)
-                            .font(Typography.ui(18, weight: .semibold))
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Command Center")
-                                .font(Typography.ui(15, weight: .semibold))
-                            Text("Actions, sessions, panels, and settings")
-                                .font(Typography.ui(12))
-                                .foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        Text("Esc")
-                            .font(Typography.mono(12))
-                            .foregroundStyle(.secondary)
-                            .padding(.horizontal, 7)
-                            .padding(.vertical, 4)
-                            .background(DesignTokens.Glass.fillChip, in: RoundedRectangle(cornerRadius: DesignTokens.Radius.sm))
-                    }
-
-                    HStack(spacing: 10) {
                         Image(systemName: "magnifyingglass")
                             .foregroundStyle(.secondary)
                         TextField("Search commands, sessions, and settings", text: $store.commandQuery)
@@ -44,16 +24,12 @@ struct CommandCenterView: View {
                                 }
                             }
                     }
-                    .padding(12)
-                    .background(TermyDesign.surface, in: RoundedRectangle(cornerRadius: TermyDesign.cornerRadius))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: TermyDesign.cornerRadius)
-                            .stroke(TermyDesign.border, lineWidth: 1)
-                    )
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 11)
+                    .background(DesignTokens.Glass.fillControl, in: Capsule())
+                    .overlay(Capsule().stroke(DesignTokens.Glass.hairline, lineWidth: 1))
                 }
                 .padding(16)
-
-                Divider()
 
                 if store.filteredCommandCenterItems.isEmpty {
                     ContentUnavailableView(
@@ -102,10 +78,13 @@ private struct CommandCenterItemRow: View {
     let item: CommandCenterItem
 
     private var leadingTint: Color {
+        // Raycast-style restraint: chrome stays monochrome, color comes only from
+        // real status. Keep the agent activity hue (waiting/running/idle is a true
+        // signal); neutralize the per-area tint that made every row carry a colour.
         if case .agentSession(let vitals) = item {
             return TermyDesign.agentActivityColor(vitals.state)
         }
-        return TermyDesign.areaColor(item.area)
+        return Color(DesignTokens.fg2)
     }
 
     var body: some View {
@@ -123,7 +102,6 @@ private struct CommandCenterItemRow: View {
                     .lineLimit(1)
             }
             Spacer()
-            TermyPill(title: item.area.rawValue.uppercased(), tint: TermyDesign.areaColor(item.area))
             if let shortcut = item.shortcut {
                 Text(shortcut.displayValue)
                     .font(Typography.mono(12))
