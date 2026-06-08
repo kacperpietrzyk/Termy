@@ -30,8 +30,8 @@ enum DesignTokens {
     // MARK: Neutrals (near-neutral charcoal — DESIGN.md surfaces 0–3)
     // OKLCH greys (tiny cool tint) tuned to the glass-deep…overlay ramp; the exact
     // sRGB equivalents live in `Glass` below and are the source of truth for new chrome.
-    static let bg0 = OKLCH(l: 0.15,  c: 0.002, h: 285)   // glass-deep   #0d0d0d (deepest recess)
-    static let bg1 = OKLCH(l: 0.205, c: 0.002, h: 285)   // glass-base   #161616 (window body)
+    static let bg0 = OKLCH(l: 0.13,  c: 0.002, h: 285)   // glass-deep   #0a0a0a (deepest recess)
+    static let bg1 = OKLCH(l: 0.185, c: 0.002, h: 285)   // glass-base   #121212 (window body)
     static let bg2 = OKLCH(l: 0.255, c: 0.003, h: 285)   // glass-raised #1f1f1f (panels/cards)
     static let bg3 = OKLCH(l: 0.30,  c: 0.003, h: 285)   // glass-overlay#282828 (controls/raised)
     static let bg4 = OKLCH(l: 0.35,  c: 0.004, h: 285)   // hover / elevated
@@ -86,8 +86,8 @@ enum DesignTokens {
     /// actual translucency is provided by `GlassMaterial` (NSVisualEffectView);
     /// these tints layer on top of it.
     enum Glass {
-        static let deep    = Color(hex6: 0x0D0D0D)
-        static let base    = Color(hex6: 0x161616)
+        static let deep    = Color(hex6: 0x0A0A0A)
+        static let base    = Color(hex6: 0x121212)
         static let raised  = Color(hex6: 0x1F1F1F)
         static let overlay = Color(hex6: 0x282828)
         static let divider = Color(hex6: 0x3A3A3A)
@@ -119,10 +119,10 @@ enum DesignTokens {
         static let xs: CGFloat = 4
         static let sm: CGFloat = 6     // keycap / chip / icon
         static let md: CGFloat = 10    // selected row / control-ish
-        static let control: CGFloat = 8
+        static let control: CGFloat = 10
         static let row: CGFloat = 10
         static let lg: CGFloat = 14
-        static let panel: CGFloat = 18
+        static let panel: CGFloat = 20
         static let xl: CGFloat = 20
         static let window: CGFloat = 22
         static let xxl: CGFloat = 28

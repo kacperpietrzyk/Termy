@@ -274,9 +274,10 @@ private struct TerminalSearchBar: View {
                             searchFieldFocused = true
                         }
                 }
-                .padding(.horizontal, 9)
+                .padding(.horizontal, 11)
                 .padding(.vertical, 6)
-                .background(.quaternary, in: RoundedRectangle(cornerRadius: TermyDesign.controlRadius))
+                .background(DesignTokens.Glass.fillControl, in: Capsule())
+                .overlay(Capsule().stroke(DesignTokens.Glass.hairline, lineWidth: 1))
 
                 TermyPill(title: "\(store.terminalSearchResults.count) matches", systemImage: "text.magnifyingglass", tint: Color(DesignTokens.git.base))
                 TermyPill(title: "\(store.terminalCommandBlocks().count) blocks", systemImage: "square.stack.3d.up", tint: Color(DesignTokens.host.base))

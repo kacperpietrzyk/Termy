@@ -4,6 +4,7 @@ import TermyCore
 struct CommandCenterView: View {
     @ObservedObject var store: TermyStore
     @FocusState private var focused: Bool
+    @State private var selectedIndex = 0
 
     var body: some View {
         VStack {
@@ -12,48 +13,20 @@ struct CommandCenterView: View {
             VStack(spacing: 0) {
                 VStack(alignment: .leading, spacing: 12) {
                     HStack(spacing: 10) {
-                        Image(systemName: "command")
-                            .foregroundStyle(TermyDesign.accent)
-                            .font(Typography.ui(18, weight: .semibold))
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Command Center")
-                                .font(Typography.ui(15, weight: .semibold))
-                            Text("Actions, sessions, panels, and settings")
-                                .font(Typography.ui(12))
-                                .foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        Text("Esc")
-                            .font(Typography.mono(12))
-                            .foregroundStyle(.secondary)
-                            .padding(.horizontal, 7)
-                            .padding(.vertical, 4)
-                            .background(DesignTokens.Glass.fillChip, in: RoundedRectangle(cornerRadius: DesignTokens.Radius.sm))
-                    }
-
-                    HStack(spacing: 10) {
                         Image(systemName: "magnifyingglass")
                             .foregroundStyle(.secondary)
                         TextField("Search commands, sessions, and settings", text: $store.commandQuery)
                             .textFieldStyle(.plain)
                             .font(Typography.ui(16, weight: .semibold))
                             .focused($focused)
-                            .onSubmit {
-                                if let item = store.filteredCommandCenterItems.first {
-                                    store.performCommandCenterItem(item)
-                                }
-                            }
+                            .onSubmit { runSelected() }
                     }
-                    .padding(12)
-                    .background(TermyDesign.surface, in: RoundedRectangle(cornerRadius: TermyDesign.cornerRadius))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: TermyDesign.cornerRadius)
-                            .stroke(TermyDesign.border, lineWidth: 1)
-                    )
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 11)
+                    .background(DesignTokens.Glass.fillControl, in: Capsule())
+                    .overlay(Capsule().stroke(DesignTokens.Glass.hairline, lineWidth: 1))
                 }
                 .padding(16)
-
-                Divider()
 
                 if store.filteredCommandCenterItems.isEmpty {
                     ContentUnavailableView(
@@ -63,16 +36,29 @@ struct CommandCenterView: View {
                     )
                     .frame(height: 360)
                 } else {
-                    List(store.filteredCommandCenterItems) { item in
-                        Button {
-                            store.performCommandCenterItem(item)
-                        } label: {
-                            CommandCenterItemRow(item: item)
+                    ScrollViewReader { proxy in
+                        ScrollView {
+                            LazyVStack(spacing: 2) {
+                                ForEach(Array(store.filteredCommandCenterItems.enumerated()),
+                                        id: \.element.id) { index, item in
+                                    Button {
+                                        store.performCommandCenterItem(item)
+                                    } label: {
+                                        CommandCenterItemRow(item: item, isSelected: index == selectedIndex)
+                                    }
+                                    .buttonStyle(.plain)
+                                    .id(index)
+                                    .onHover { if $0 { selectedIndex = index } }
+                                }
+                            }
+                            .padding(.horizontal, 8)
+                            .padding(.bottom, 8)
                         }
-                        .buttonStyle(.plain)
+                        .frame(height: 360)
+                        .onChange(of: selectedIndex) { _, i in
+                            withAnimation(DesignTokens.Motion.easeOut) { proxy.scrollTo(i, anchor: .center) }
+                        }
                     }
-                    .listStyle(.plain)
-                    .frame(height: 360)
                 }
             }
             .frame(width: 700)
@@ -86,6 +72,9 @@ struct CommandCenterView: View {
                     .stroke(DesignTokens.Glass.hairline, lineWidth: 1)
             )
             .shadow(color: DesignTokens.Shadow.popColor, radius: DesignTokens.Shadow.popRadius, y: DesignTokens.Shadow.popY)
+            .onKeyPress(.downArrow) { moveSelection(1); return .handled }
+            .onKeyPress(.upArrow) { moveSelection(-1); return .handled }
+            .onChange(of: store.commandQuery) { _, _ in selectedIndex = 0 }
 
             Spacer()
         }
@@ -96,16 +85,35 @@ struct CommandCenterView: View {
             store.isCommandCenterPresented = false
         }
     }
+
+    /// Move the keyboard highlight, clamped to the current result range.
+    private func moveSelection(_ delta: Int) {
+        let count = store.filteredCommandCenterItems.count
+        guard count > 0 else { return }
+        selectedIndex = max(0, min(selectedIndex + delta, count - 1))
+    }
+
+    /// Run the highlighted item (falls back to the first if the index drifted).
+    private func runSelected() {
+        let items = store.filteredCommandCenterItems
+        guard let item = items.indices.contains(selectedIndex) ? items[selectedIndex] : items.first
+        else { return }
+        store.performCommandCenterItem(item)
+    }
 }
 
 private struct CommandCenterItemRow: View {
     let item: CommandCenterItem
+    var isSelected = false
 
     private var leadingTint: Color {
+        // Raycast-style restraint: chrome stays monochrome, color comes only from
+        // real status. Keep the agent activity hue (waiting/running/idle is a true
+        // signal); neutralize the per-area tint that made every row carry a colour.
         if case .agentSession(let vitals) = item {
             return TermyDesign.agentActivityColor(vitals.state)
         }
-        return TermyDesign.areaColor(item.area)
+        return Color(DesignTokens.fg2)
     }
 
     var body: some View {
@@ -123,7 +131,6 @@ private struct CommandCenterItemRow: View {
                     .lineLimit(1)
             }
             Spacer()
-            TermyPill(title: item.area.rawValue.uppercased(), tint: TermyDesign.areaColor(item.area))
             if let shortcut = item.shortcut {
                 Text(shortcut.displayValue)
                     .font(Typography.mono(12))
@@ -133,8 +140,11 @@ private struct CommandCenterItemRow: View {
                     .background(DesignTokens.Glass.fillChip, in: RoundedRectangle(cornerRadius: DesignTokens.Radius.sm))
             }
         }
-        .padding(.vertical, 7)
-        .padding(.horizontal, 2)
+        .padding(.vertical, 8)
+        .padding(.horizontal, 10)
+        .background(isSelected ? DesignTokens.Glass.fillSelection : Color.clear,
+                    in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md))
+        .contentShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.md))
     }
 }
 

@@ -135,10 +135,10 @@ struct ModuleSubRailView<Items: View>: View {
                 }
             }
             .foregroundStyle(Color(DesignTokens.fg3))
-            .padding(.horizontal, 9)
+            .padding(.horizontal, 11)
             .frame(height: 30)
-            .background(Color(DesignTokens.bg2), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.sm))
-            .overlay(RoundedRectangle(cornerRadius: DesignTokens.Radius.sm).stroke(Color(DesignTokens.hair2), lineWidth: 1))
+            .background(Color(DesignTokens.bg2), in: Capsule())
+            .overlay(Capsule().stroke(Color(DesignTokens.hair2), lineWidth: 1))
 
             ScrollView { VStack(alignment: .leading, spacing: 6) { items() } }
             Spacer()
