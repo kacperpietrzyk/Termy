@@ -4,6 +4,7 @@ import TermyCore
 struct CommandCenterView: View {
     @ObservedObject var store: TermyStore
     @FocusState private var focused: Bool
+    @State private var selectedIndex = 0
 
     var body: some View {
         VStack {
@@ -18,11 +19,7 @@ struct CommandCenterView: View {
                             .textFieldStyle(.plain)
                             .font(Typography.ui(16, weight: .semibold))
                             .focused($focused)
-                            .onSubmit {
-                                if let item = store.filteredCommandCenterItems.first {
-                                    store.performCommandCenterItem(item)
-                                }
-                            }
+                            .onSubmit { runSelected() }
                     }
                     .padding(.horizontal, 16)
                     .padding(.vertical, 11)
@@ -39,16 +36,29 @@ struct CommandCenterView: View {
                     )
                     .frame(height: 360)
                 } else {
-                    List(store.filteredCommandCenterItems) { item in
-                        Button {
-                            store.performCommandCenterItem(item)
-                        } label: {
-                            CommandCenterItemRow(item: item)
+                    ScrollViewReader { proxy in
+                        ScrollView {
+                            LazyVStack(spacing: 2) {
+                                ForEach(Array(store.filteredCommandCenterItems.enumerated()),
+                                        id: \.element.id) { index, item in
+                                    Button {
+                                        store.performCommandCenterItem(item)
+                                    } label: {
+                                        CommandCenterItemRow(item: item, isSelected: index == selectedIndex)
+                                    }
+                                    .buttonStyle(.plain)
+                                    .id(index)
+                                    .onHover { if $0 { selectedIndex = index } }
+                                }
+                            }
+                            .padding(.horizontal, 8)
+                            .padding(.bottom, 8)
                         }
-                        .buttonStyle(.plain)
+                        .frame(height: 360)
+                        .onChange(of: selectedIndex) { _, i in
+                            withAnimation(DesignTokens.Motion.easeOut) { proxy.scrollTo(i, anchor: .center) }
+                        }
                     }
-                    .listStyle(.plain)
-                    .frame(height: 360)
                 }
             }
             .frame(width: 700)
@@ -62,6 +72,9 @@ struct CommandCenterView: View {
                     .stroke(DesignTokens.Glass.hairline, lineWidth: 1)
             )
             .shadow(color: DesignTokens.Shadow.popColor, radius: DesignTokens.Shadow.popRadius, y: DesignTokens.Shadow.popY)
+            .onKeyPress(.downArrow) { moveSelection(1); return .handled }
+            .onKeyPress(.upArrow) { moveSelection(-1); return .handled }
+            .onChange(of: store.commandQuery) { _, _ in selectedIndex = 0 }
 
             Spacer()
         }
@@ -72,10 +85,26 @@ struct CommandCenterView: View {
             store.isCommandCenterPresented = false
         }
     }
+
+    /// Move the keyboard highlight, clamped to the current result range.
+    private func moveSelection(_ delta: Int) {
+        let count = store.filteredCommandCenterItems.count
+        guard count > 0 else { return }
+        selectedIndex = max(0, min(selectedIndex + delta, count - 1))
+    }
+
+    /// Run the highlighted item (falls back to the first if the index drifted).
+    private func runSelected() {
+        let items = store.filteredCommandCenterItems
+        guard let item = items.indices.contains(selectedIndex) ? items[selectedIndex] : items.first
+        else { return }
+        store.performCommandCenterItem(item)
+    }
 }
 
 private struct CommandCenterItemRow: View {
     let item: CommandCenterItem
+    var isSelected = false
 
     private var leadingTint: Color {
         // Raycast-style restraint: chrome stays monochrome, color comes only from
@@ -111,8 +140,11 @@ private struct CommandCenterItemRow: View {
                     .background(DesignTokens.Glass.fillChip, in: RoundedRectangle(cornerRadius: DesignTokens.Radius.sm))
             }
         }
-        .padding(.vertical, 7)
-        .padding(.horizontal, 2)
+        .padding(.vertical, 8)
+        .padding(.horizontal, 10)
+        .background(isSelected ? DesignTokens.Glass.fillSelection : Color.clear,
+                    in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md))
+        .contentShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.md))
     }
 }
 
