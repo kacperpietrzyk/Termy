@@ -186,9 +186,9 @@ private struct FileExplorerPanel: View {
                 Image(systemName: "magnifyingglass").font(.system(size: 11)).foregroundStyle(DesignTokens.Glass.textTertiary)
                 TextField("Search files", text: $store.fileSearchQuery).textFieldStyle(.plain).font(Typography.ui(13))
             }
-            .padding(.horizontal, 9).frame(height: 28).frame(maxWidth: 280)
-            .background(DesignTokens.Glass.fillControl, in: RoundedRectangle(cornerRadius: DesignTokens.Radius.control))
-            .overlay(RoundedRectangle(cornerRadius: DesignTokens.Radius.control).stroke(DesignTokens.Glass.hairline, lineWidth: 1))
+            .padding(.horizontal, 11).frame(height: 28).frame(maxWidth: 280)
+            .background(DesignTokens.Glass.fillControl, in: Capsule())
+            .overlay(Capsule().stroke(DesignTokens.Glass.hairline, lineWidth: 1))
 
             Button { showNewItem = true } label: { Label("New", systemImage: "plus") }
                 .popover(isPresented: $showNewItem, arrowEdge: .bottom) { newItemPopover }
