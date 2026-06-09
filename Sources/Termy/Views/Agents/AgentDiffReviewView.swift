@@ -7,15 +7,35 @@ import TermyCore
 /// `SyntaxHighlighter` (+ `SyntaxTokenColor`) to tint code line content under the
 /// add/remove background.
 ///
-/// Read-only by construction (AD-4 adds the comment→steering loop). The diff is
-/// loaded off the main actor via `.task(id:)` keyed to the agent so drilling
-/// between agents re-loads exactly once and never blocks the UI. Committed agent
-/// work (HEAD advanced) is intentionally not shown — see `GitRepository.fileDiffs()`.
+/// AD-4 adds the comment→steering loop on top: attach an inline comment to a
+/// file, then SEND the composed comment set as one steering instruction into the
+/// live agent PTY (`store.sendSteeringInstruction`). B4: nothing is sent without
+/// an explicit press; the diff is otherwise read-only. The diff is loaded off the
+/// main actor via `.task(id:)` keyed to the agent so drilling between agents
+/// re-loads exactly once and never blocks the UI. Committed agent work (HEAD
+/// advanced) is intentionally not shown — see `GitRepository.fileDiffs()`.
 struct AgentDiffReviewView: View {
+    @ObservedObject var store: TermyStore
     let vitals: AgentSessionVitals
 
     @State private var phase: Phase = .loading
     @State private var collapsed: Set<String> = []
+    /// AD-4: per-file in-progress comment bodies, keyed by file path. A file is
+    /// "commented" once its body is non-blank.
+    @State private var commentDrafts: [String: String] = [:]
+    /// AD-4: which file rows currently show their comment composer.
+    @State private var commenting: Set<String> = []
+
+    private var agentExited: Bool { vitals.state == .exited }
+
+    /// AD-4: the composed, ordered comment set for the currently-loaded files.
+    private func pendingComments(_ files: [GitFileDiff]) -> [AgentSteering.Comment] {
+        files.compactMap { file in
+            let body = (commentDrafts[file.path] ?? "")
+            guard !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+            return AgentSteering.Comment(filePath: file.path, body: body)
+        }
+    }
 
     private enum Phase: Equatable {
         case loading
@@ -69,10 +89,65 @@ struct AgentDiffReviewView: View {
                     AgentDiffFileSection(
                         file: file,
                         isCollapsed: collapsed.contains(file.id),
-                        toggle: { toggle(file.id) }
+                        toggle: { toggle(file.id) },
+                        isCommenting: commenting.contains(file.id),
+                        commentBody: bindingForComment(file.path),
+                        toggleCommenting: { toggleCommenting(file.id) },
+                        disabled: agentExited
                     )
                 }
+                steeringBar(files)
             }
+        }
+    }
+
+    /// AD-4: the explicit-send footer. Shows only once at least one file carries a
+    /// non-blank comment; honest no-op messaging is left to the store when the
+    /// agent has exited (the button disables instead).
+    @ViewBuilder private func steeringBar(_ files: [GitFileDiff]) -> some View {
+        let comments = pendingComments(files)
+        if !comments.isEmpty {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 8) {
+                    Image(systemName: "arrowshape.turn.up.right.fill")
+                        .font(.system(size: 11)).foregroundStyle(Color(DesignTokens.agent.base))
+                    Text("\(comments.count) review \(comments.count == 1 ? "comment" : "comments") staged")
+                        .font(Typography.ui(12)).foregroundStyle(Color(DesignTokens.fg2))
+                    Spacer(minLength: 8)
+                    Button("Send to \(vitals.agentType.displayName)") { send(comments) }
+                        .buttonStyle(TermyCommandButtonStyle(emphasized: true))
+                        .disabled(agentExited)
+                }
+                HStack(spacing: 6) {
+                    Image(systemName: "lock").font(.system(size: 9))
+                    Text("steered into ").foregroundStyle(Color(DesignTokens.fg4))
+                    + Text(vitals.agentType.displayName).foregroundStyle(Color(DesignTokens.fg2))
+                    + Text(" — your auth, no Termy account, no relay").foregroundStyle(Color(DesignTokens.fg4))
+                }
+                .font(Typography.mono(10)).foregroundStyle(Color(DesignTokens.fg4))
+            }
+            .padding(.horizontal, 10).padding(.vertical, 9)
+            .background(Color(DesignTokens.bg2).opacity(0.6), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.sm))
+            .overlay(RoundedRectangle(cornerRadius: DesignTokens.Radius.sm)
+                .stroke(Color(DesignTokens.agent.base).opacity(0.45), lineWidth: 1))
+        }
+    }
+
+    private func bindingForComment(_ path: String) -> Binding<String> {
+        Binding(get: { commentDrafts[path] ?? "" }, set: { commentDrafts[path] = $0 })
+    }
+
+    private func toggleCommenting(_ id: String) {
+        if commenting.contains(id) { commenting.remove(id) } else { commenting.insert(id) }
+    }
+
+    /// AD-4 explicit send (B4). On a real send, clear the staged comments and
+    /// collapse the composers; on a no-op (agent exited mid-review) keep them.
+    private func send(_ comments: [AgentSteering.Comment]) {
+        let sent = store.sendSteeringInstruction(comments, to: vitals.id)
+        if sent {
+            for c in comments { commentDrafts[c.filePath] = nil }
+            commenting.removeAll()
         }
     }
 
@@ -119,10 +194,20 @@ private struct AgentDiffFileSection: View {
     let file: GitFileDiff
     let isCollapsed: Bool
     let toggle: () -> Void
+    // AD-4 comment affordance.
+    let isCommenting: Bool
+    @Binding var commentBody: String
+    let toggleCommenting: () -> Void
+    let disabled: Bool
+
+    private var hasComment: Bool {
+        !commentBody.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Button(action: toggle) { header }.buttonStyle(.plain)
+            header
+            if isCommenting || hasComment { commentComposer }
             if !isCollapsed {
                 Rectangle().fill(Color(DesignTokens.hair)).frame(height: 1)
                 VStack(alignment: .leading, spacing: 0) {
@@ -142,27 +227,63 @@ private struct AgentDiffFileSection: View {
             }
         }
         .background(Color(DesignTokens.bg2).opacity(0.5), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.sm))
-        .overlay(RoundedRectangle(cornerRadius: DesignTokens.Radius.sm).stroke(Color(DesignTokens.hair), lineWidth: 1))
+        .overlay(RoundedRectangle(cornerRadius: DesignTokens.Radius.sm)
+            .stroke(hasComment ? Color(DesignTokens.agent.base).opacity(0.5) : Color(DesignTokens.hair),
+                    lineWidth: 1))
+    }
+
+    // AD-4: a one-line comment field anchored to this file. Single-line by design
+    // (the steering instruction is one line); newlines are flattened on compose.
+    private var commentComposer: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "text.bubble").font(.system(size: 10))
+                .foregroundStyle(Color(DesignTokens.agent.base))
+            TextField("Instruction for \(file.path)…", text: $commentBody)
+                .textFieldStyle(.plain).font(Typography.ui(12))
+            if hasComment {
+                Button { commentBody = "" } label: {
+                    Image(systemName: "xmark.circle.fill").font(.system(size: 11))
+                        .foregroundStyle(Color(DesignTokens.fg4))
+                }.buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, 10).padding(.vertical, 7)
+        .background(Color(DesignTokens.bg1).opacity(0.6))
     }
 
     private var header: some View {
         HStack(spacing: 8) {
-            Image(systemName: isCollapsed ? "chevron.right" : "chevron.down")
-                .font(.system(size: 9, weight: .semibold)).foregroundStyle(Color(DesignTokens.fg4))
-                .frame(width: 10)
-            StatusBadge(status: file.status)
-            Text(displayPath).font(Typography.mono(11.5)).foregroundStyle(Color(DesignTokens.fg1))
-                .lineLimit(1).truncationMode(.middle)
-            Spacer(minLength: 8)
-            if file.addedCount > 0 {
-                Text("+\(file.addedCount)").font(Typography.mono(11)).foregroundStyle(Color(DesignTokens.sync.base))
+            Button(action: toggle) {
+                HStack(spacing: 8) {
+                    Image(systemName: isCollapsed ? "chevron.right" : "chevron.down")
+                        .font(.system(size: 9, weight: .semibold)).foregroundStyle(Color(DesignTokens.fg4))
+                        .frame(width: 10)
+                    StatusBadge(status: file.status)
+                    Text(displayPath).font(Typography.mono(11.5)).foregroundStyle(Color(DesignTokens.fg1))
+                        .lineLimit(1).truncationMode(.middle)
+                    Spacer(minLength: 8)
+                    if file.addedCount > 0 {
+                        Text("+\(file.addedCount)").font(Typography.mono(11)).foregroundStyle(Color(DesignTokens.sync.base))
+                    }
+                    if file.removedCount > 0 {
+                        Text("−\(file.removedCount)").font(Typography.mono(11)).foregroundStyle(Color(DesignTokens.error.base))
+                    }
+                }
+                .contentShape(Rectangle())
             }
-            if file.removedCount > 0 {
-                Text("−\(file.removedCount)").font(Typography.mono(11)).foregroundStyle(Color(DesignTokens.error.base))
+            .buttonStyle(.plain)
+
+            // AD-4 comment toggle.
+            Button(action: toggleCommenting) {
+                Image(systemName: hasComment ? "text.bubble.fill" : "text.bubble")
+                    .font(.system(size: 11))
+                    .foregroundStyle(hasComment ? Color(DesignTokens.agent.base) : Color(DesignTokens.fg4))
             }
+            .buttonStyle(.plain)
+            .disabled(disabled)
+            .help(disabled ? "Agent exited — steering unavailable" : "Comment on this file")
         }
         .padding(.horizontal, 10).frame(height: 30)
-        .contentShape(Rectangle())
     }
 
     private var displayPath: String {
