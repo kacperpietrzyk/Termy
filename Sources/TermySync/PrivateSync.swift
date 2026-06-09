@@ -6,6 +6,7 @@ public enum PrivateSyncDataset: String, Hashable, Sendable {
     case appearanceAndKeymap
     case snippetsAndPrompts
     case workspaces
+    case agentArchives
     case secrets
     case terminalScrollback
     case projectFiles
@@ -129,6 +130,63 @@ public struct SyncWorkspace: Equatable, Sendable {
     }
 }
 
+/// AD-7: the bounded, syncable view of an archived agent session. The full
+/// worktree `diff` is deliberately EXCLUDED — it is kept local-only (it can be
+/// large, hits CKRecord field limits, and the worktree it came from does not
+/// exist on another Mac). Only metadata + plan + touched ride CloudKit. The
+/// `modifiedAt` field is NOT carried here: it is overlaid at stage time by
+/// `overlaySyncModifiedAt` from the per-record edit stamp (the D1 single source
+/// of truth — never stamped at stage/adoption time), exactly like every other
+/// record family.
+public struct AgentArchiveSyncRecord: Equatable, Sendable {
+    public let archive: AgentArchiveRecord
+
+    public init(archive: AgentArchiveRecord) {
+        self.archive = archive
+    }
+
+    /// Decode a synced record back into an archive with an empty diff (diff is
+    /// local-only and absent from the synced payload — `AgentHistoryView` renders
+    /// a synced-in record honestly: metadata/plan/touched only).
+    public init?(record: PrivateSyncRecord) {
+        guard record.recordType == "AgentArchive",
+              record.recordName.hasPrefix("agent-archive-"),
+              let agentType = record.fields["agentType"].flatMap(CLIAgent.init(rawValue:)),
+              let finalState = record.fields["finalState"].flatMap(AgentActivityState.init(rawValue:)),
+              let startedAt = record.fields["startedAt"].flatMap(Self.parseDate),
+              let archivedAt = record.fields["archivedAt"].flatMap(Self.parseDate) else {
+            return nil
+        }
+        let id = String(record.recordName.dropFirst("agent-archive-".count))
+        let plan = PrivateSyncFieldCodec.decodeMatrix(record.fields["plan"] ?? "")?
+            .compactMap { row -> AgentArchivePlanStep? in
+                guard row.count >= 3 else { return nil }
+                let sub = row.count >= 4 && !row[3].isEmpty ? row[3] : nil
+                return AgentArchivePlanStep(id: row[0], text: row[1], state: row[2], sub: sub)
+            } ?? []
+        let touched = PrivateSyncFieldCodec.decodeArray(record.fields["touched"] ?? "", legacySeparator: "\n")
+            .filter { !$0.isEmpty }
+        self.init(archive: AgentArchiveRecord(
+            id: id,
+            name: record.fields["name"] ?? id,
+            agentType: agentType,
+            finalState: finalState,
+            cwd: record.fields["cwd"],
+            branch: record.fields["branch"],
+            worktreePath: record.fields["worktreePath"],
+            startedAt: startedAt,
+            archivedAt: archivedAt,
+            exitCode: record.fields["exitCode"].flatMap(Int.init),
+            plan: plan,
+            touched: touched,
+            diff: ""))
+    }
+
+    private static func parseDate(_ raw: String) -> Date? {
+        ISO8601DateFormatter().date(from: raw)
+    }
+}
+
 public struct PrivateSyncSnapshot: Equatable, Sendable {
     public let profiles: [ConnectionProfile]
     public let terminalThemeID: String
@@ -143,6 +201,7 @@ public struct PrivateSyncSnapshot: Equatable, Sendable {
     public let keymapBindings: [String: ShortcutDescriptor]
     public let snippets: [SyncSnippet]
     public let workspaces: [SyncWorkspace]
+    public let agentArchives: [AgentArchiveSyncRecord]
     public let terminalScrollback: [String]
     public let aiConversationHistory: [String]
 
@@ -160,6 +219,7 @@ public struct PrivateSyncSnapshot: Equatable, Sendable {
         keymapBindings: [String: ShortcutDescriptor] = [:],
         snippets: [SyncSnippet],
         workspaces: [SyncWorkspace],
+        agentArchives: [AgentArchiveSyncRecord] = [],
         terminalScrollback: [String],
         aiConversationHistory: [String]
     ) {
@@ -177,6 +237,7 @@ public struct PrivateSyncSnapshot: Equatable, Sendable {
         self.keymapBindings = keymapBindings
         self.snippets = snippets
         self.workspaces = workspaces
+        self.agentArchives = agentArchives
         self.terminalScrollback = terminalScrollback
         self.aiConversationHistory = aiConversationHistory
     }
@@ -196,6 +257,7 @@ public struct PrivateSyncRestoredSnapshot: Equatable, Sendable {
     public let keymapBindings: [String: ShortcutDescriptor]
     public let snippets: [SyncSnippet]
     public let workspaces: [SyncWorkspace]
+    public let agentArchives: [AgentArchiveSyncRecord]
     public let aiConversationHistory: [String]
 }
 
@@ -253,6 +315,7 @@ public struct PrivateSyncSnapshotRestorer: Sendable {
             keymapBindings: restoreKeymap(from: appearanceRecord?.fields["keymapBindings"] ?? ""),
             snippets: records.compactMap(SyncSnippet.init(record:)).sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending },
             workspaces: records.compactMap(SyncWorkspace.init(record:)).sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending },
+            agentArchives: records.compactMap(AgentArchiveSyncRecord.init(record:)).sorted { $0.archive.archivedAt > $1.archive.archivedAt },
             aiConversationHistory: records
                 .filter { $0.recordType == "AIConversation" }
                 // D2: order by the numeric suffix of `ai-history-<offset>`, not
@@ -722,6 +785,7 @@ public struct PrivateSyncAppEventCoordinator: Sendable {
         "Appearance",
         "Snippet",
         "Workspace",
+        "AgentArchive",
         "AIConversation"
     ]
 
@@ -1120,6 +1184,7 @@ public struct PrivateSyncPlanner: Sendable {
         records.append(appearanceRecord(from: snapshot))
         records.append(contentsOf: snapshot.snippets.map(snippetRecord))
         records.append(contentsOf: snapshot.workspaces.map(workspaceRecord))
+        records.append(contentsOf: snapshot.agentArchives.map(agentArchiveRecord))
         records.append(contentsOf: snapshot.aiConversationHistory.enumerated().map(aiHistoryRecord))
 
         return PrivateSyncPlan(
@@ -1128,6 +1193,7 @@ public struct PrivateSyncPlanner: Sendable {
                 .appearanceAndKeymap: .cloudKitPrivateDatabase,
                 .snippetsAndPrompts: .cloudKitPrivateDatabase,
                 .workspaces: .cloudKitPrivateDatabase,
+                .agentArchives: .cloudKitPrivateDatabase,
                 .secrets: .iCloudKeychain,
                 .terminalScrollback: .localOnly,
                 .projectFiles: .localOnly,
@@ -1238,6 +1304,32 @@ public struct PrivateSyncPlanner: Sendable {
             recordName: "workspace-\(workspace.id)",
             fields: fields
         )
+    }
+
+    /// AD-7: bounded archive record (metadata + plan + touched). The full diff is
+    /// NOT serialized here — it stays local-only (size + the worktree is gone on
+    /// the other Mac). `modifiedAt` is overlaid at stage time, not written here.
+    private func agentArchiveRecord(_ record: AgentArchiveSyncRecord) -> PrivateSyncRecord {
+        let a = record.archive
+        var fields: [String: String] = [
+            "name": a.name,
+            "agentType": a.agentType.rawValue,
+            "finalState": a.finalState.rawValue,
+            "startedAt": ISO8601DateFormatter().string(from: a.startedAt),
+            "archivedAt": ISO8601DateFormatter().string(from: a.archivedAt),
+            "plan": PrivateSyncFieldCodec.encode(matrix: a.plan.map {
+                [$0.id, $0.text, $0.state, $0.sub ?? ""]
+            }),
+            "touched": PrivateSyncFieldCodec.encode(a.touched)
+        ]
+        if let cwd = a.cwd { fields["cwd"] = cwd }
+        if let branch = a.branch { fields["branch"] = branch }
+        if let worktreePath = a.worktreePath { fields["worktreePath"] = worktreePath }
+        if let exitCode = a.exitCode { fields["exitCode"] = String(exitCode) }
+        return PrivateSyncRecord(
+            recordType: "AgentArchive",
+            recordName: "agent-archive-\(a.id)",
+            fields: fields)
     }
 
     private func aiHistoryRecord(offset: Int, element: String) -> PrivateSyncRecord {
