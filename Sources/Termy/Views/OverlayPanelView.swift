@@ -435,7 +435,7 @@ private struct GitPanel: View {
                         GitChangesPane(store: store)
                             .frame(width: 340)
                         Divider().overlay(Color(DesignTokens.hair))
-                        GitHistoryView(commits: store.gitRecentCommits)
+                        GitHistoryView(store: store, showDiff: $showDiff)
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
                 }
@@ -449,6 +449,9 @@ private struct GitPanel: View {
         }
         .buttonStyle(TermyCompactButtonStyle())
         .onAppear { store.refreshGitStatus() }
+        // M2: re-refresh when the active session's cwd crosses into/out of a repo
+        // (gitTrackedRootPath changes), so the module follows the live session.
+        .onChange(of: store.gitTrackedRootPath) { store.refreshGitStatus() }
         .sheet(isPresented: $showDiff) {
             GitDiffSheet(store: store) { showDiff = false }
         }
@@ -562,9 +565,11 @@ private struct GitChangesPane: View {
 
 /// Right pane: commit history with a graph rail (node + spine) and ref chips.
 private struct GitHistoryView: View {
-    let commits: [GitLogEntry]
+    @ObservedObject var store: TermyStore
+    @Binding var showDiff: Bool
 
     var body: some View {
+        let commits = store.gitRecentCommits
         if commits.isEmpty {
             ContentUnavailableView("No commits", systemImage: "clock")
         } else {
@@ -572,7 +577,13 @@ private struct GitHistoryView: View {
             ScrollView {
                 LazyVStack(spacing: 0) {
                     ForEach(layout.rows) { row in
+                        // M2: lazy per-commit diff — `git show` runs only on tap.
                         GitGraphRowView(row: row, maxLanes: layout.maxLanes)
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                store.loadDiff(forCommit: row.commit.hash)
+                                showDiff = true
+                            }
                     }
                 }
                 .padding(.vertical, 8).padding(.trailing, 16)
@@ -690,7 +701,7 @@ private struct GitDiffSheet: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Text("Diff").font(Typography.ui(14, weight: .semibold))
+                Text(store.gitDiffTitle).font(Typography.ui(14, weight: .semibold))
                 Spacer()
                 Button { store.explainGitConflictsWithLocalAI() } label: { Label("Explain Conflicts", systemImage: "sparkles") }
                     .buttonStyle(TermyCompactButtonStyle())

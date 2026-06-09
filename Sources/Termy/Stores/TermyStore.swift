@@ -291,6 +291,10 @@ final class TermyStore: ObservableObject {
         get { appModel.git.gitDiff }
         set { objectWillChange.send(); appModel.git.gitDiff = newValue }
     }
+    var gitDiffTitle: String {
+        get { appModel.git.gitDiffTitle }
+        set { objectWillChange.send(); appModel.git.gitDiffTitle = newValue }
+    }
     var gitConflictExplanation: String {
         get { appModel.git.gitConflictExplanation }
         set { objectWillChange.send(); appModel.git.gitConflictExplanation = newValue }
@@ -1835,6 +1839,7 @@ final class TermyStore: ObservableObject {
 
     func refreshGitDiff() {
         let repository = GitRepository(root: gitWorkingRoot)
+        gitDiffTitle = "Working Tree"
         DispatchQueue.global(qos: .userInitiated).async {
             let result = Result { try repository.diff() }
             DispatchQueue.main.async {
@@ -1844,6 +1849,27 @@ final class TermyStore: ObservableObject {
                     self.statusMessage = "Git diff refreshed."
                 case .failure(let error):
                     self.statusMessage = "Git diff failed: \(error.localizedDescription)"
+                }
+            }
+        }
+    }
+
+    /// M2: lazy per-commit diff. Runs `git show <hash>` only when the user clicks
+    /// a commit row in the graph, then surfaces it in the existing GitDiffSheet.
+    func loadDiff(forCommit hash: String) {
+        let repository = GitRepository(root: gitWorkingRoot)
+        let shortHash = String(hash.prefix(7))
+        gitDiffTitle = "Commit \(shortHash)"
+        gitConflictExplanation = ""
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = Result { try repository.diff(commit: hash) }
+            DispatchQueue.main.async {
+                switch result {
+                case .success(let diff):
+                    self.gitDiff = diff.isEmpty ? "No changes in this commit." : diff
+                    self.statusMessage = "Showing commit \(shortHash)."
+                case .failure(let error):
+                    self.statusMessage = "Git show failed: \(error.localizedDescription)"
                 }
             }
         }
@@ -4733,16 +4759,16 @@ final class TermyStore: ObservableObject {
     }
 
     /// Walk up from `url` looking for a `.git` entry; returns the repo root or nil.
+    /// Delegates to the pure, unit-tested `GitRepository.enclosingGitRoot(of:)`.
     private static func enclosingGitRoot(of url: URL) -> URL? {
-        var dir = url.standardizedFileURL
-        while dir.path != "/" {
-            if FileManager.default.fileExists(atPath: dir.appendingPathComponent(".git").path) {
-                return dir
-            }
-            dir = dir.deletingLastPathComponent()
-        }
-        return nil
+        GitRepository.enclosingGitRoot(of: url)
     }
+
+    /// M2: public resolved repo root the Git module currently tracks (the active
+    /// session's cwd when it sits inside a repo, else the home/project fallback —
+    /// nil when neither resolves to a repo). Views observe this so the module
+    /// re-refreshes when the selected session's cwd crosses a repo boundary.
+    var gitTrackedRootPath: String? { Self.enclosingGitRoot(of: gitWorkingRoot)?.path }
 
     private func localAIClient(endpoint: LocalAIEndpoint) -> LocalAIClient {
         LocalAIClient(endpoint: endpoint, model: aiModel, session: localAISession)
