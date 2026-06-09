@@ -3068,6 +3068,32 @@ final class TermyStore: ObservableObject {
         return HistoryStore.nextComponent(of: suffix)
     }
 
+    /// T4: the single unified ghost reader. There are two ghost sources —
+    /// the F-2 history ghost (`terminalInlineSuggestionSuffix`, whole-buffer
+    /// prefix-match against history) and the F-4 live-zsh sidecar ghost
+    /// (`terminalSidecarGhost`, the top candidate's suffix-after-token, which
+    /// covers partial sub-commands like `git sta` → `tus`). Before T4 every
+    /// display and accept path read ONLY the history source, so an unambiguous
+    /// sidecar prefix (`git sta`) showed the floating menu but no inline ghost.
+    /// This reader prefers the history ghost and falls through to the sidecar
+    /// ghost, so the ghost renders on ANY unambiguous prefix. The sidecar ghost
+    /// now coexists with the open menu (the menu-open suppression was dropped in
+    /// `recomputeSidecarGhost`), so `git sta` shows the inline ghost while the
+    /// menu stays a parallel offer — Warp parity, owner D4 "aggressive in
+    /// offering, never in taking over".
+    func terminalCombinedGhost(for sessionID: UUID) -> String? {
+        if let history = terminalInlineSuggestionSuffix(for: sessionID) { return history }
+        return terminalSidecarGhost(for: sessionID)
+    }
+
+    /// T4: Ctrl-→ component accept routed through the unified ghost reader so it
+    /// accepts one whitespace-/path-segment-bounded token of whichever source
+    /// (history or sidecar) is currently driving the inline ghost.
+    func terminalCombinedGhostNextComponent(for sessionID: UUID) -> String? {
+        guard let suffix = terminalCombinedGhost(for: sessionID) else { return nil }
+        return HistoryStore.nextComponent(of: suffix)
+    }
+
     /// v3 §6.1 block terminal: the live line-editor buffer (text + cursor index)
     /// for `sessionID`, or nil when nothing is being typed. Rendered as the live
     /// block's `❯ <text>` + caret. Source: OSC 133 T (the F-1 buffer publish).
@@ -5716,11 +5742,12 @@ final class TermyStore: ObservableObject {
             sidecarGhosts[sessionID] = nil
             return
         }
-        // Menu open suppresses ghost.
-        if terminalMenuStates[sessionID] != nil {
-            sidecarGhosts[sessionID] = nil
-            return
-        }
+        // T4: the sidecar ghost now COEXISTS with the open menu (Warp parity).
+        // Previously an open menu suppressed the sidecar ghost, which is exactly
+        // why `git sta` (auto-opens the menu with status/stash) showed no inline
+        // ghost. The menu remains a parallel offer; the inline ghost shows the
+        // top candidate's suffix. The unified reader `terminalCombinedGhost`
+        // surfaces it regardless of menu state.
         let items = sidecarLastItems(sessionID: sessionID)
         guard let top = items.first else {
             sidecarGhosts[sessionID] = nil

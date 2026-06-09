@@ -295,9 +295,12 @@ final class TermyStoreCompletionSidecarTests: XCTestCase {
             "History ghost takes priority; sidecar ghost must be nil.")
     }
 
-    // MARK: - 8. Open menu suppresses sidecar ghost
+    // MARK: - 8. Open menu COEXISTS with sidecar ghost (T4)
 
-    func test_openMenu_suppressesSidecarGhost() async {
+    func test_openMenu_sidecarGhostCoexists() async {
+        // T4 behavior change (was: open menu suppressed the sidecar ghost).
+        // Warp parity / owner D4: the menu is a parallel offer; the inline ghost
+        // still renders the top candidate's suffix while the menu is open.
         let store = makeStore()
         let sid = store.testAddRawPtySession(cwd: "/tmp")
         store.testSetInputBuffer(sid, text: "pu", cursor: 2)
@@ -311,9 +314,9 @@ final class TermyStoreCompletionSidecarTests: XCTestCase {
         XCTAssertTrue(store.testMenuIsOpen(for: sid),
             "Precondition: menu must be open.")
 
-        // Ghost must be nil when menu is open.
-        XCTAssertNil(store.terminalSidecarGhost(for: sid),
-            "Open menu suppresses sidecar ghost.")
+        // T4: the sidecar ghost now coexists with the open menu.
+        XCTAssertEqual(store.terminalSidecarGhost(for: sid), "sh",
+            "Open menu must NOT suppress the sidecar ghost (T4 coexistence).")
     }
 
     // MARK: - 9. Disabled sidecar updates sidecarDisabledSessions
@@ -392,5 +395,128 @@ final class TermyStoreCompletionSidecarTests: XCTestCase {
         XCTAssertTrue(store.testMenuIsOpen(for: sid), "an extending candidate still opens the menu")
         XCTAssertEqual(store.terminalMenuSnapshot(for: sid)?.items.map(\.replacement), ["Projects/Nexus"],
             "the zero-contribution exact match is filtered out of the menu")
+    }
+
+    // MARK: - T4: unified ghost reader (history + sidecar in one source)
+
+    /// History present → the combined reader returns the history suffix
+    /// (history wins over the sidecar). Menu is NOT open here.
+    func test_combinedGhost_historyPresent_returnsHistorySuffix() {
+        let store = makeStore()
+        let sid = store.testAddRawPtySession(cwd: "/tmp")
+        store.historyStore.record(command: "git status", cwd: nil)
+        store.testSetInputBuffer(sid, text: "git", cursor: 3)
+
+        let history = store.terminalInlineSuggestionSuffix(for: sid)
+        XCTAssertNotNil(history, "Precondition: history ghost must be present.")
+        XCTAssertEqual(store.terminalCombinedGhost(for: sid), history,
+            "When history ghost exists, the combined reader returns it.")
+    }
+
+    /// The combined reader is `history ?? sidecar`: it returns the history
+    /// suffix when present, otherwise the sidecar ghost. Asserted as the
+    /// invariant so it does not depend on the developer's on-disk history
+    /// (makeStore reads the real history.jsonl).
+    func test_combinedGhost_fallsThroughToSidecar_whenNoHistory() {
+        let store = makeStore()
+        // A token vanishingly unlikely to be in real history, so the history
+        // ghost is nil and the fall-through to the sidecar is exercised.
+        let sid = store.testAddRawPtySession(cwd: "/tmp")
+        store.testSetInputBuffer(sid, text: "zqxw", cursor: 4)
+        store.applySidecarEventForTesting(.result(id: 1, items: [
+            CompletionCandidate(title: "zqxwvous", replacement: "zqxwvous", kind: .command)
+        ]), sessionID: sid)
+
+        let history = store.terminalInlineSuggestionSuffix(for: sid)
+        if let history {
+            // Extremely unlikely, but keep the invariant honest.
+            XCTAssertEqual(store.terminalCombinedGhost(for: sid), history)
+        } else {
+            XCTAssertEqual(store.terminalSidecarGhost(for: sid), "vous",
+                "Precondition: sidecar ghost populated.")
+            XCTAssertEqual(store.terminalCombinedGhost(for: sid), "vous",
+                "With no history, the combined reader surfaces the sidecar ghost.")
+        }
+    }
+
+    /// THE T4 regression guard: a partial sub-command token (`git sta`) shows the
+    /// inline ghost via the combined reader even though there is no whole-buffer
+    /// history hit.
+    func test_combinedGhost_partialSubCommandToken_showsInlineGhost() {
+        let store = makeStore()
+        let sid = store.testAddRawPtySession(cwd: "/tmp")
+        store.testSetInputBuffer(sid, text: "git sta", cursor: 7)
+        store.applySidecarEventForTesting(.result(id: 1, items: [
+            CompletionCandidate(title: "status", replacement: "status", kind: .command)
+        ]), sessionID: sid)
+
+        XCTAssertEqual(store.terminalCombinedGhost(for: sid), "tus",
+            "git sta must show an inline ghost (the regression T4 fixes).")
+    }
+
+    /// Coexistence (owner-gated): the inline ghost shows the top candidate even
+    /// while the menu is auto-open with multiple candidates.
+    func test_combinedGhost_menuOpen_stillShowsSidecarGhost() {
+        let store = makeStore()
+        let sid = store.testAddRawPtySession(cwd: "/tmp")
+        store.testSetInputBuffer(sid, text: "git sta", cursor: 7)
+        store.testMarkDebounceElapsed(sid)   // menu auto-opens
+        store.applySidecarEventForTesting(.result(id: 1, items: [
+            CompletionCandidate(title: "status", replacement: "status", kind: .command),
+            CompletionCandidate(title: "stash", replacement: "stash", kind: .command)
+        ]), sessionID: sid)
+
+        XCTAssertTrue(store.testMenuIsOpen(for: sid),
+            "Precondition: the menu must be open (2 candidates).")
+        XCTAssertEqual(store.terminalCombinedGhost(for: sid), "tus",
+            "The inline ghost coexists with the open menu (Warp parity).")
+    }
+
+    /// No candidates anywhere → the combined reader is nil.
+    func test_combinedGhost_nilWhenNoCandidates() {
+        let store = makeStore()
+        let sid = store.testAddRawPtySession(cwd: "/tmp")
+        store.testSetInputBuffer(sid, text: "zzz", cursor: 3)
+        store.applySidecarEventForTesting(.result(id: 1, items: []), sessionID: sid)
+
+        XCTAssertNil(store.terminalCombinedGhost(for: sid),
+            "No history and no sidecar candidates → no ghost.")
+    }
+
+    /// Ctrl-→ component accept routes through the combined reader for a
+    /// sidecar-sourced suffix.
+    func test_combinedGhostNextComponent_sidecarSourced() {
+        let store = makeStore()
+        let sid = store.testAddRawPtySession(cwd: "/tmp")
+        store.testSetInputBuffer(sid, text: "git sta", cursor: 7)
+        store.applySidecarEventForTesting(.result(id: 1, items: [
+            CompletionCandidate(title: "status", replacement: "status", kind: .command)
+        ]), sessionID: sid)
+
+        XCTAssertEqual(store.terminalCombinedGhost(for: sid), "tus")
+        XCTAssertEqual(store.terminalCombinedGhostNextComponent(for: sid),
+            HistoryStore.nextComponent(of: "tus"),
+            "Ctrl-→ next-component reads through the combined ghost.")
+    }
+
+    /// The optimistic accept is source-agnostic: accepting a sidecar-sourced
+    /// suffix appends to the buffer and arms the optimistic insert.
+    func test_acceptInlineSuffix_sidecarSourcedSuffix_appendsToBuffer() {
+        let store = makeStore()
+        let sid = store.testAddRawPtySession(cwd: "/tmp")
+        store.testSetInputBuffer(sid, text: "git sta", cursor: 7)
+        store.applySidecarEventForTesting(.result(id: 1, items: [
+            CompletionCandidate(title: "status", replacement: "status", kind: .command)
+        ]), sessionID: sid)
+
+        guard let suffix = store.terminalCombinedGhost(for: sid) else {
+            return XCTFail("Precondition: combined ghost must be present.")
+        }
+        store.acceptInlineSuffix(suffix, for: sid)
+
+        XCTAssertEqual(store.testInputBufferText(sid), "git status",
+            "Accepting the sidecar-sourced suffix completes the buffer.")
+        XCTAssertTrue(store.testHasPendingInlineOptimistic(sid),
+            "Source-agnostic accept arms the optimistic insert.")
     }
 }
