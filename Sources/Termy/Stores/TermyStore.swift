@@ -3885,6 +3885,31 @@ final class TermyStore: ObservableObject {
         statusMessage = "Sent to \(session.title)."
     }
 
+    /// AD-4 (the moat): compose the diff-review comments into ONE steering
+    /// instruction line and route it into the live agent's PTY via the same sink
+    /// `sendAgentReply` uses (the agent's own auth — no Termy relay, no API).
+    /// B4: this only runs on an explicit user send; there is no auto-send.
+    /// Honest no-op (returns `false`) when nothing composes or the agent has
+    /// exited, so the UI can keep the comments for the user to revise. The
+    /// single-line composition is what keeps a multi-comment review from firing
+    /// partial turns into the agent REPL.
+    @discardableResult
+    func sendSteeringInstruction(_ comments: [AgentSteering.Comment], to sessionID: UUID) -> Bool {
+        guard let instruction = AgentSteering.compose(comments),
+              let session = sessions.first(where: { $0.id == sessionID }),
+              session.agentType != nil, session.agentActivity != .exited,
+              // Never claim a steer we can't actually deliver: require a live PTY
+              // input sink. This is the moat — the "Steered" status must be true.
+              let sink = terminalInputSinks[sessionID] else {
+            statusMessage = "No live agent to steer — review comments kept."
+            return false
+        }
+        sink(instruction + "\r")
+        let n = comments.filter { AgentSteering.compose([$0]) != nil }.count
+        statusMessage = "Steered \(session.title) with \(n) review \(n == 1 ? "comment" : "comments")."
+        return true
+    }
+
     /// v3 Shell §6.1 History action: place a chosen command at the selected
     /// session's live prompt WITHOUT executing it (no CR — the user reviews then
     /// presses Enter). Falls back to the pasteboard when the session has no live

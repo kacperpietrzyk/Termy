@@ -91,7 +91,7 @@ private struct AgentBodyView: View {
                     header
                     AgentVitalsStripView(vitals: vitals)
                     grid
-                    AgentDiffReviewView(vitals: vitals)
+                    AgentDiffReviewView(store: store, vitals: vitals)
                 }
                 .padding(.horizontal, 28).padding(.top, 24).padding(.bottom, 18)
             }
