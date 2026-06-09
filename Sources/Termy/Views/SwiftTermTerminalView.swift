@@ -108,10 +108,10 @@ struct SwiftTermTerminalView: NSViewRepresentable {
             view?.send(txt: text)
         }
         view.inlineAcceptHandler = { [weak storeRef] in
-            storeRef?.terminalInlineSuggestionSuffix(for: sessionID)
+            storeRef?.terminalCombinedGhost(for: sessionID)
         }
         view.inlineAcceptComponentHandler = { [weak storeRef] in
-            storeRef?.terminalInlineSuggestionNextComponent(for: sessionID)
+            storeRef?.terminalCombinedGhostNextComponent(for: sessionID)
         }
         view.inlineAcceptApply = { [weak storeRef] suffix in
             storeRef?.acceptInlineSuffix(suffix, for: sessionID)

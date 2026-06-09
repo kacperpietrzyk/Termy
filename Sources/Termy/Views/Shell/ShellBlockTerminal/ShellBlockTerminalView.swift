@@ -34,7 +34,7 @@ struct ShellBlockTranscript: View {
     private var liveInput: (text: String, cursor: Int) {
         store.terminalLiveInput(for: session.id) ?? ("", 0)
     }
-    private var ghost: String? { store.terminalInlineSuggestionSuffix(for: session.id) }
+    private var ghost: String? { store.terminalCombinedGhost(for: session.id) }
     private var highlights: [InputHighlightSpan] { store.terminalLiveHighlights(for: session.id) }
 
     // §12.1 live pinned-input context header: real live cwd + the precmd-fed
@@ -179,7 +179,7 @@ struct PinnedInputBar: View {
 /// The live (currently-typed) command: `❯ <buffer>` + a blinking caret + dimmed
 /// F-1 ghost text (the cwd/branch/node live above it in `PinnedInputBar`'s
 /// header). Text comes from `TermyStore.terminalLiveInput` (OSC 133 T, the F-1
-/// buffer publish); the ghost from `terminalInlineSuggestionSuffix`.
+/// buffer publish); the ghost from `terminalCombinedGhost` (T4: history ?? sidecar).
 struct ShellLiveBlock: View {
     let text: String
     let cursor: Int

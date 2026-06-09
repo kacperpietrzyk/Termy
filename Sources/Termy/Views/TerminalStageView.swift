@@ -200,7 +200,7 @@ struct LiveTerminalSurface: View {
                 initialTranscriptReplay: store.initialTerminalTranscriptReplay(for: session.id),
                 onInitialTranscriptReplayed: { store.clearInitialTerminalTranscriptReplay(for: session.id) }
             )
-            if let suffix = store.terminalInlineSuggestionSuffix(for: session.id),
+            if let suffix = store.terminalCombinedGhost(for: session.id),
                let origin = store.terminalCaretOrigin(for: session.id) {
                 Text(suffix)
                     .font(.init(terminalFontResolved))
