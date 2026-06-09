@@ -714,6 +714,11 @@ private struct EditorPanel: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            editorTabStrip
+                .padding(.horizontal, 12).padding(.top, 8).padding(.bottom, 4)
+
+            Divider()
+
             HStack(spacing: 8) {
                 Image(systemName: store.editorFilePath == nil ? "doc.text" : "doc")
                     .font(.system(size: 12)).foregroundStyle(Color(DesignTokens.fg3))
@@ -882,6 +887,77 @@ private struct EditorPanel: View {
         }
         .buttonStyle(TermyCompactButtonStyle())
         .padding(12)
+    }
+
+    /// Multi-file tab strip (M3). One pill per open buffer: active = filled,
+    /// others ghost; per-tab dirty dot; close (x) button. ⌘1-9 / ⌘⇧[ ⌘⇧] switch.
+    private var editorTabStrip: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                ForEach(Array(store.openBuffers.enumerated()), id: \.element.id) { index, buffer in
+                    if index < 9 {
+                        editorTab(buffer, index: index)
+                            .keyboardShortcut(KeyEquivalent(Character("\(index + 1)")), modifiers: .command)
+                    } else {
+                        editorTab(buffer, index: index)
+                    }
+                }
+                Button { store.newScratchBuffer() } label: {
+                    Image(systemName: "plus").font(.system(size: 11, weight: .medium))
+                }
+                .buttonStyle(TermyCompactButtonStyle())
+                .help("New scratch buffer")
+            }
+        }
+        .background {
+            // Hidden keyboard-only switchers for ⌘⇧[ / ⌘⇧] (prev/next tab).
+            Group {
+                Button("") { switchBuffer(by: -1) }.keyboardShortcut("[", modifiers: [.command, .shift])
+                Button("") { switchBuffer(by: 1) }.keyboardShortcut("]", modifiers: [.command, .shift])
+            }
+            .opacity(0).frame(width: 0, height: 0)
+        }
+    }
+
+    private func editorTab(_ buffer: EditorBuffer, index: Int) -> some View {
+        let isActive = buffer.id == store.activeBufferID
+        let name = buffer.filePath.map { ($0 as NSString).lastPathComponent } ?? "Scratch"
+        return HStack(spacing: 6) {
+            if buffer.isDirty {
+                Circle().fill(Color(DesignTokens.primary2)).frame(width: 6, height: 6)
+            }
+            Text(name)
+                .font(Typography.ui(12, weight: isActive ? .medium : .regular))
+                .foregroundStyle(Color(isActive ? DesignTokens.fg1 : DesignTokens.fg3))
+                .lineLimit(1)
+            if store.openBuffers.count > 1 {
+                Button { store.closeEditorBuffer(buffer.id) } label: {
+                    Image(systemName: "xmark").font(.system(size: 8, weight: .bold))
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(Color(DesignTokens.fg4))
+                .help("Close buffer")
+            }
+        }
+        .padding(.horizontal, 10).padding(.vertical, 5)
+        .background(
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .fill(Color(isActive ? DesignTokens.bg2 : DesignTokens.bg1))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .strokeBorder(Color(DesignTokens.hair), lineWidth: isActive ? 1 : 0)
+                )
+        )
+        .contentShape(Rectangle())
+        .onTapGesture { store.selectEditorBuffer(buffer.id) }
+    }
+
+    private func switchBuffer(by delta: Int) {
+        guard let current = store.openBuffers.firstIndex(where: { $0.id == store.activeBufferID }),
+              !store.openBuffers.isEmpty else { return }
+        let count = store.openBuffers.count
+        let next = ((current + delta) % count + count) % count
+        store.selectEditorBuffer(store.openBuffers[next].id)
     }
 
     private var editorText: Binding<String> {
