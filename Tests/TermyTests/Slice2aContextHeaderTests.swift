@@ -335,4 +335,112 @@ final class Slice2aContextHeaderTests: XCTestCase {
             node: nil, cwd: "\(home)/Projects/Termy", branch: nil, gitStatus: nil, duration: nil)
         XCTAssertEqual(header, "~/Projects/Termy")
     }
+
+    // MARK: - T1: context PILLS (folder / branch / ±N diff / node / duration)
+
+    func testPillsAllFieldsPresentInOrderWithIcons() {
+        let pills = ShellModuleModel.blockContextPills(
+            node: "v20", cwd: "/repo", branch: "main", gitStatus: "3", duration: 4.2)
+        XCTAssertEqual(pills.map(\.kind), [.folder, .branch, .diff, .node, .duration])
+        XCTAssertEqual(pills[0].icon, "folder")
+        XCTAssertEqual(pills[0].label, "/repo")
+        XCTAssertEqual(pills[1].icon, "arrow.triangle.branch")
+        XCTAssertEqual(pills[1].label, "main")
+        XCTAssertEqual(pills[2].icon, "plusminus")
+        XCTAssertEqual(pills[2].label, "±3")
+        XCTAssertEqual(pills[3].icon, "cube")
+        XCTAssertEqual(pills[3].label, "v20")
+        XCTAssertNil(pills[4].icon)            // duration is text-only
+        XCTAssertEqual(pills[4].label, "4.2s")
+    }
+
+    func testPillsTildeAbbreviatesCwd() {
+        let home = NSHomeDirectory()
+        let pills = ShellModuleModel.blockContextPills(
+            node: nil, cwd: "\(home)/Projects/Termy", branch: nil, gitStatus: nil, duration: nil)
+        XCTAssertEqual(pills.map(\.label), ["~/Projects/Termy"])
+    }
+
+    func testPillsCountedDiffRendersPlusMinusN() {
+        let pills = ShellModuleModel.blockContextPills(
+            node: nil, cwd: nil, branch: "dev", gitStatus: "3", duration: nil)
+        XCTAssertEqual(pills.first { $0.kind == .diff }?.label, "±3")
+    }
+
+    func testPillsZeroCountWithBranchShowsPlusMinusZeroWarpParity() {
+        // Warp shows `± 0` whenever you're in a repo, clean tree included.
+        let pills = ShellModuleModel.blockContextPills(
+            node: nil, cwd: "/repo", branch: "main", gitStatus: "0", duration: nil)
+        XCTAssertEqual(pills.first { $0.kind == .diff }?.label, "±0",
+                       "clean in-repo → shown as ±0, not omitted")
+    }
+
+    func testPillsNoBranchNoStatusYieldsNoBranchNoDiffPill() {
+        // Not in a repo → no branch pill, no diff pill.
+        let pills = ShellModuleModel.blockContextPills(
+            node: nil, cwd: "/tmp", branch: nil, gitStatus: nil, duration: nil)
+        XCTAssertEqual(pills.map(\.kind), [.folder])
+    }
+
+    func testPillsLegacyStarFlagRendersBareMarkerWithoutCrash() {
+        // Back-compat: a pre-T1 session still carrying the bare "*" dirty flag must
+        // render a generic `±` marker, never crash on the Int parse.
+        let pills = ShellModuleModel.blockContextPills(
+            node: nil, cwd: nil, branch: "main", gitStatus: "*", duration: nil)
+        XCTAssertEqual(pills.first { $0.kind == .diff }?.label, "±")
+    }
+
+    func testPillsCwdOnlyYieldsSingleFolderPill() {
+        let pills = ShellModuleModel.blockContextPills(
+            node: nil, cwd: "/work", branch: nil, gitStatus: nil, duration: nil)
+        XCTAssertEqual(pills.count, 1)
+        XCTAssertEqual(pills[0].kind, .folder)
+    }
+
+    func testPillsAllNilYieldsEmpty() {
+        let pills = ShellModuleModel.blockContextPills(
+            node: nil, cwd: nil, branch: nil, gitStatus: nil, duration: nil)
+        XCTAssertTrue(pills.isEmpty, "no fields → no row")
+    }
+
+    // MARK: - T1: counted gitstatus round-trips through the real ingest gate
+
+    func testCountedGitStatusRoundTripsThroughIngest() throws {
+        let store = TermyStore(startInitialPTY: false)
+        guard let id = store.selectedSessionID else { return XCTFail("expected a session") }
+        // The new script emits a decimal count; it must reach the block verbatim.
+        store.ingestShellIntegrationEvents([
+            .commandStarted("git status"),
+            .commandContext(branch: "main", gitStatus: "5", node: nil),
+            .commandFinished(exitCode: 0, workingDirectory: "/repo"),
+        ], for: id)
+
+        let block = try XCTUnwrap(store.renderedTerminalCommandBlocks().first)
+        XCTAssertEqual(block.gitStatus, "5", "counted gitstatus survives ingest as the new format")
+
+        let pills = ShellModuleModel.blockContextPills(
+            node: block.node, cwd: block.contextCwd, branch: block.branch,
+            gitStatus: block.gitStatus, duration: block.duration)
+        XCTAssertEqual(pills.first { $0.kind == .diff }?.label, "±5")
+    }
+
+    // MARK: - T1: blockContextHeader String fn UNCHANGED (regression guard)
+
+    func testHeaderStringFunctionUnchangedByPillsAddition() {
+        // The flat-String header still backs copy/legacy callers verbatim.
+        let header = ShellModuleModel.blockContextHeader(
+            node: "v20", cwd: "/repo", branch: "main", gitStatus: "3", duration: 4.2)
+        XCTAssertEqual(header, "v20 · /repo · main · 3 · 4.2s")
+    }
+
+    // MARK: - T1: live status-bar dirtiness interprets the counted format
+
+    @MainActor
+    func testLiveContextIsDirtyInterpretsCountedFormat() {
+        let store = TermyStore(startInitialPTY: false)
+        XCTAssertFalse(store.liveContextIsDirty("0"), "count 0 = clean in-repo")
+        XCTAssertTrue(store.liveContextIsDirty("3"), "positive count = dirty")
+        XCTAssertTrue(store.liveContextIsDirty("*"), "legacy flag still reads dirty")
+        XCTAssertFalse(store.liveContextIsDirty(""), "empty = not dirty")
+    }
 }

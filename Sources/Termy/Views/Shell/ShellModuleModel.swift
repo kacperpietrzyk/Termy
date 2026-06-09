@@ -167,6 +167,56 @@ enum ShellModuleModel {
         return parts.joined(separator: " · ")
     }
 
+    // MARK: §12.2 T1 — Warp context PILLS (folder / branch / ±N diff / node / duration).
+
+    /// The semantic class of a context pill — drives icon choice and (in the view)
+    /// tinting. Pure data; no SwiftUI here so the builder stays unit-testable.
+    enum ContextPillKind: Equatable { case folder, branch, diff, node, duration }
+
+    /// One capsule chip in the input-block context row. `icon` is an SF Symbol name
+    /// (nil = text-only, e.g. duration). `label` is the rendered text.
+    struct ContextPill: Equatable {
+        let icon: String?
+        let label: String
+        let kind: ContextPillKind
+    }
+
+    /// T1: the pure pill model behind the input-block context row, in fixed order
+    /// folder → branch → diff → node → duration, omitting every absent field.
+    /// cwd is tilde-abbreviated. The diff pill parses the counted git status
+    /// (`gitStatus` carries a decimal count post-Slice-T1: "3" → `±3`, "0" → `±0`
+    /// for Warp in-repo parity) and tolerates the legacy `*` flag (→ bare `±`,
+    /// never crashes). `blockContextHeader` (the flat String) stays the source of
+    /// truth for copy/tests; this lives alongside it for the chip render.
+    static func blockContextPills(
+        node: String?,
+        cwd: String?,
+        branch: String?,
+        gitStatus: String?,
+        duration: TimeInterval?
+    ) -> [ContextPill] {
+        var pills: [ContextPill] = []
+        if let cwd, !cwd.isEmpty {
+            pills.append(.init(icon: "folder", label: abbreviateTilde(cwd), kind: .folder))
+        }
+        if let branch, !branch.isEmpty {
+            pills.append(.init(icon: "arrow.triangle.branch", label: branch, kind: .branch))
+        }
+        if let gitStatus, !gitStatus.isEmpty {
+            let label: String
+            if let n = Int(gitStatus) { label = "±\(n)" }   // counted form (Warp ±N)
+            else { label = "±" }                            // legacy "*"/unknown → bare marker
+            pills.append(.init(icon: "plusminus", label: label, kind: .diff))
+        }
+        if let node, !node.isEmpty {
+            pills.append(.init(icon: "cube", label: node, kind: .node))
+        }
+        if let duration {
+            pills.append(.init(icon: nil, label: formatBlockDuration(duration), kind: .duration))
+        }
+        return pills
+    }
+
     // MARK: §6.1 block footer — duration display.
     /// Block footer duration: sub-second → "Nms"; under a minute → "N.Ns";
     /// else "Xm Ys". Matches the handoff's "8ms" / "4.2s".
