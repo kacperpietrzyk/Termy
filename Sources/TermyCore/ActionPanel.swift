@@ -207,3 +207,62 @@ public enum ActionPanelResolver {
         return actions
     }
 }
+
+// MARK: - Dispatch (CK-S5)
+
+/// CK-S5 — the structured intent a `SecondaryAction.handlerID` resolves to, plus
+/// a PURE parser. The S4 resolver emits opaque `"<domain>.<verb>:<payload>"`
+/// strings so the model can live in TermyCore without importing the app target;
+/// the S5 dispatch site needs the structured form to call the matching
+/// `TermyStore` method. Keeping the parser here (not inline in the store) makes
+/// the id→intent contract unit-testable without a store, a view, or AppKit.
+///
+/// The payload is either a command id (hyphenated, e.g. `toggle-git-panel`) or a
+/// session/profile UUID. Neither contains a colon, and the verb segment is fixed,
+/// so splitting on the FIRST colon cleanly separates `domain.verb` from payload.
+public enum SecondaryActionIntent: Sendable, Equatable {
+    // action targets carry a command id
+    case performAction(String)
+    case copyActionID(String)
+    case setAlias(String)
+    // profile / agent targets carry a UUID
+    case connectProfile(UUID)
+    case sftpProfile(UUID)
+    case tunnelProfile(UUID)
+    case editProfile(UUID)
+    case focusAgent(UUID)
+    case interruptAgent(UUID)
+    case restartAgent(UUID)
+    case reviewAgent(UUID)
+    case steerAgent(UUID)
+    case closeAgent(UUID)
+
+    /// Parse a `SecondaryAction.handlerID` into its structured intent. Returns
+    /// `nil` for an unknown verb or a UUID-domain id whose payload is not a valid
+    /// UUID — the dispatch site treats `nil` as "ignore" rather than guessing.
+    public init?(handlerID: String) {
+        guard let colon = handlerID.firstIndex(of: ":") else { return nil }
+        let key = String(handlerID[handlerID.startIndex..<colon])
+        let payload = String(handlerID[handlerID.index(after: colon)...])
+        guard !payload.isEmpty else { return nil }
+
+        func uuid() -> UUID? { UUID(uuidString: payload) }
+
+        switch key {
+        case "action.perform": self = .performAction(payload)
+        case "action.copy-id": self = .copyActionID(payload)
+        case "action.set-alias": self = .setAlias(payload)
+        case "profile.connect": guard let u = uuid() else { return nil }; self = .connectProfile(u)
+        case "profile.sftp": guard let u = uuid() else { return nil }; self = .sftpProfile(u)
+        case "profile.tunnel": guard let u = uuid() else { return nil }; self = .tunnelProfile(u)
+        case "profile.edit": guard let u = uuid() else { return nil }; self = .editProfile(u)
+        case "agent.focus": guard let u = uuid() else { return nil }; self = .focusAgent(u)
+        case "agent.interrupt": guard let u = uuid() else { return nil }; self = .interruptAgent(u)
+        case "agent.restart": guard let u = uuid() else { return nil }; self = .restartAgent(u)
+        case "agent.review": guard let u = uuid() else { return nil }; self = .reviewAgent(u)
+        case "agent.steer": guard let u = uuid() else { return nil }; self = .steerAgent(u)
+        case "agent.close": guard let u = uuid() else { return nil }; self = .closeAgent(u)
+        default: return nil
+        }
+    }
+}

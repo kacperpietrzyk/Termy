@@ -1815,6 +1815,89 @@ final class TermyStore: ObservableObject {
         }
     }
 
+    // MARK: - CK-S5 Action Panel
+
+    /// CK-S5: the contextual secondary-action set for a palette row. Bridges the
+    /// app-target `CommandCenterItem` onto the TermyCore `ActionPanelTarget` and
+    /// the pure `ActionPanelResolver`. The first element is the primary (what ↵
+    /// already does); the rest are what ⌘K/→ reveals.
+    func secondaryActions(for item: CommandCenterItem) -> [SecondaryAction] {
+        let target: ActionPanelTarget
+        switch item {
+        case .action(let action): target = .action(action)
+        case .profile(let profile): target = .profile(profile)
+        case .agentSession(let vitals): target = .agentSession(vitals)
+        }
+        return ActionPanelResolver.resolve(target)
+    }
+
+    /// CK-S5: run one Action Panel secondary action. `originatingItem` is the
+    /// palette row the panel was opened from, so we learn frecency on the same id
+    /// the primary path records (local-only, P1). The `handlerID` is parsed by the
+    /// pure `SecondaryActionIntent` and dispatched to the existing store seam; an
+    /// unparseable id is ignored (never a guessed effect). Profile/agent intents
+    /// close the palette themselves — only `action.perform` rides `perform()`'s
+    /// own tail-close.
+    func performSecondaryAction(_ action: SecondaryAction,
+                                originatingItem item: CommandCenterItem) {
+        paletteFrecency.record(itemID: item.id)
+        guard let intent = SecondaryActionIntent(handlerID: action.handlerID) else { return }
+        switch intent {
+        case .performAction(let id):
+            // `perform(_:)` closes the palette in its tail.
+            perform(id)
+        case .copyActionID(let id):
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(id, forType: .string)
+            statusMessage = "Copied command id \(id)."
+            isCommandCenterPresented = false
+        case .setAlias:
+            // S8 seam: strict-prefix user aliases (iCloud-synced) are not built
+            // yet. Honest no-op with a status note rather than a fake binding.
+            statusMessage = "Aliases arrive in a later update."
+            isCommandCenterPresented = false
+        case .connectProfile(let id):
+            if let profile = profiles.first(where: { $0.id == id }) { openConnection(profile) }
+            isCommandCenterPresented = false
+        case .sftpProfile(let id):
+            if let profile = profiles.first(where: { $0.id == id && $0.kind == .ssh }) {
+                openSFTPSession(profile)
+            }
+            isCommandCenterPresented = false
+        case .tunnelProfile(let id):
+            if let profile = profiles.first(where: { $0.id == id && $0.kind == .ssh }) {
+                openLocalTunnel(profile)
+            }
+            isCommandCenterPresented = false
+        case .editProfile(let id):
+            if let profile = profiles.first(where: { $0.id == id }) {
+                selectConnectionProfileForEditing(profile)
+            }
+            isCommandCenterPresented = false
+        case .focusAgent(let id), .reviewAgent(let id):
+            // Both focus the agent in the Agents module; the diff-review card
+            // lives in that module's surface (AD-3), so "Review Diff…" is honestly
+            // a focus-then-compose, not a separate sheet.
+            focusAgentSession(id)
+            isCommandCenterPresented = false
+        case .interruptAgent(let id):
+            interruptAgent(sessionID: id)
+            isCommandCenterPresented = false
+        case .restartAgent(let id):
+            restartAgent(sessionID: id)
+            isCommandCenterPresented = false
+        case .steerAgent(let id):
+            // Steering composes from the diff-review comments (AD-4); from the
+            // palette we focus the agent so the user can compose + send (B4: an
+            // explicit foreground action, never an auto-send).
+            focusAgentSession(id)
+            isCommandCenterPresented = false
+        case .closeAgent(let id):
+            closeSession(sessionID: id)
+            isCommandCenterPresented = false
+        }
+    }
+
     /// Frecency-ranked commands for the active cwd — backs the Home "Frequent
     /// commands" section (real history, no fabrication).
     func frequentCommands(limit: Int = 6) -> [String] {

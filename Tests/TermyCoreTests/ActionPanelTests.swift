@@ -119,4 +119,70 @@ final class ActionPanelTests: XCTestCase {
         XCTAssertTrue(a.children.isEmpty)
         XCTAssertNil(a.inlineHotkey)
     }
+
+    // MARK: CK-S5 — handlerID → intent parser
+
+    func testActionIntentsCarryCommandID() {
+        XCTAssertEqual(SecondaryActionIntent(handlerID: "action.perform:toggle-git-panel"),
+                       .performAction("toggle-git-panel"))
+        XCTAssertEqual(SecondaryActionIntent(handlerID: "action.copy-id:toggle-git-panel"),
+                       .copyActionID("toggle-git-panel"))
+        XCTAssertEqual(SecondaryActionIntent(handlerID: "action.set-alias:toggle-git-panel"),
+                       .setAlias("toggle-git-panel"))
+    }
+
+    func testProfileIntentsParseUUID() {
+        let id = UUID()
+        XCTAssertEqual(SecondaryActionIntent(handlerID: "profile.connect:\(id.uuidString)"),
+                       .connectProfile(id))
+        XCTAssertEqual(SecondaryActionIntent(handlerID: "profile.sftp:\(id.uuidString)"),
+                       .sftpProfile(id))
+        XCTAssertEqual(SecondaryActionIntent(handlerID: "profile.tunnel:\(id.uuidString)"),
+                       .tunnelProfile(id))
+        XCTAssertEqual(SecondaryActionIntent(handlerID: "profile.edit:\(id.uuidString)"),
+                       .editProfile(id))
+    }
+
+    func testAgentIntentsParseUUID() {
+        let id = UUID()
+        XCTAssertEqual(SecondaryActionIntent(handlerID: "agent.focus:\(id.uuidString)"),
+                       .focusAgent(id))
+        XCTAssertEqual(SecondaryActionIntent(handlerID: "agent.interrupt:\(id.uuidString)"),
+                       .interruptAgent(id))
+        XCTAssertEqual(SecondaryActionIntent(handlerID: "agent.restart:\(id.uuidString)"),
+                       .restartAgent(id))
+        XCTAssertEqual(SecondaryActionIntent(handlerID: "agent.review:\(id.uuidString)"),
+                       .reviewAgent(id))
+        XCTAssertEqual(SecondaryActionIntent(handlerID: "agent.steer:\(id.uuidString)"),
+                       .steerAgent(id))
+        XCTAssertEqual(SecondaryActionIntent(handlerID: "agent.close:\(id.uuidString)"),
+                       .closeAgent(id))
+    }
+
+    func testIntentRejectsUnknownVerbAndMalformedID() {
+        XCTAssertNil(SecondaryActionIntent(handlerID: "agent.frobnicate:\(UUID().uuidString)"))
+        XCTAssertNil(SecondaryActionIntent(handlerID: "no-colon-here"))
+        XCTAssertNil(SecondaryActionIntent(handlerID: "agent.focus:"))
+        // UUID-domain id with a non-UUID payload → nil, never a guessed dispatch.
+        XCTAssertNil(SecondaryActionIntent(handlerID: "profile.connect:not-a-uuid"))
+    }
+
+    /// The whole point: every handlerID the resolver can emit must parse back to a
+    /// dispatchable intent (no resolver/parser drift).
+    func testEveryResolvedActionParsesToAnIntent() {
+        let id = UUID()
+        let targets: [ActionPanelTarget] = [
+            .action(action(id: "toggle-git-panel")),
+            .profile(.ssh(name: "p", host: "h", user: "u", identity: .keychain("k"))),
+            .profile(.rdp(name: "w", host: "h", user: "u", gateway: nil, credential: .keychain("k"))),
+            .agentSession(vitals(state: .working, id: id)),
+            .agentSession(vitals(state: .exited, id: id))
+        ]
+        for target in targets {
+            for secondary in ActionPanelResolver.resolve(target) {
+                XCTAssertNotNil(SecondaryActionIntent(handlerID: secondary.handlerID),
+                                "unparseable handlerID: \(secondary.handlerID)")
+            }
+        }
+    }
 }
