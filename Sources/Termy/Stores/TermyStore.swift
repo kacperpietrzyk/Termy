@@ -3877,6 +3877,23 @@ final class TermyStore: ObservableObject {
         statusMessage = "Created RDP profile \(profile.name)."
     }
 
+    /// M4: remove a saved SSH/RDP profile, making grouped connections genuinely
+    /// editable post-creation (re-create under another group via the create sheet's
+    /// group field). The always-present `.local` shell is never deletable. Mirrors
+    /// the create-side sync path: `stampSyncEdit` + `stagePrivateSyncSnapshot` rebuild
+    /// `privateSyncRecords` from the live (now-shorter) `profiles`, so the removed
+    /// record drops out of the next staged snapshot. NOTE: this stages no tombstone,
+    /// so a cross-device delete does not yet propagate — another Mac re-adds the host
+    /// on the next inbound sync (owner decision; out of scope for this slice).
+    func deleteProfile(_ id: UUID) {
+        guard let profile = profiles.first(where: { $0.id == id }), profile.kind != .local else { return }
+        profiles.removeAll { $0.id == id }
+        if selectedConnectionProfileID == id { selectedConnectionProfileID = nil }
+        stampSyncEdit("connection-\(id.uuidString)")
+        stagePrivateSyncSnapshot()
+        statusMessage = "Removed connection \(profile.name)."
+    }
+
     func selectConnectionProfileForEditing(_ profile: ConnectionProfile) {
         selectedConnectionProfileID = profile.id
         sshOptionsDraft = ConnectionProfile.serializedSSHOptions(profile.sshOptions)

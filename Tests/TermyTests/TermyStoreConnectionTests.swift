@@ -145,4 +145,62 @@ final class TermyStoreConnectionTests: XCTestCase {
         XCTAssertEqual(store.profiles.count, 1)
         XCTAssertEqual(store.profiles.first?.kind, .local)
     }
+
+    // ----- M4: real profile delete (editable groups) -----
+
+    @MainActor
+    func testDeleteProfileRemovesItAndRestagesSync() {
+        let ssh = ConnectionProfile.ssh(
+            name: "Production",
+            host: "bastion.example.test",
+            user: "deploy",
+            port: 22,
+            identity: .keychain("ssh.identity.prod"),
+            groupPath: "Production/Bastions"
+        )
+        let store = TermyStore(startInitialPTY: false)
+        store.profiles = [.local(), ssh]
+
+        store.deleteProfile(ssh.id)
+
+        XCTAssertFalse(store.profiles.contains { $0.id == ssh.id })
+        XCTAssertEqual(store.profiles.count, 1)
+        XCTAssertEqual(store.statusMessage, "Removed connection Production.")
+        // stagePrivateSyncSnapshot rebuilds records from the live (now-shorter)
+        // profiles, so the deleted connection's record drops out of the snapshot
+        // (no tombstone is staged — cross-device delete does not yet propagate).
+        XCTAssertNil(
+            store.privateSyncRecords.first { $0.recordName == "connection-\(ssh.id.uuidString)" }
+        )
+    }
+
+    @MainActor
+    func testDeleteProfileNeverRemovesLocalShell() {
+        let store = TermyStore(startInitialPTY: false)
+        let local = store.profiles.first { $0.kind == .local }
+        let localID = try? XCTUnwrap(local?.id)
+
+        store.deleteProfile(localID ?? UUID())
+
+        XCTAssertTrue(store.profiles.contains { $0.kind == .local })
+        XCTAssertEqual(store.profiles.count, 1)
+    }
+
+    @MainActor
+    func testDeleteSelectedProfileClearsSelection() {
+        let ssh = ConnectionProfile.ssh(
+            name: "Production",
+            host: "bastion.example.test",
+            user: "deploy",
+            port: 22,
+            identity: .keychain("ssh.identity.prod")
+        )
+        let store = TermyStore(startInitialPTY: false)
+        store.profiles = [.local(), ssh]
+        store.selectedConnectionProfileID = ssh.id
+
+        store.deleteProfile(ssh.id)
+
+        XCTAssertNil(store.selectedConnectionProfileID)
+    }
 }

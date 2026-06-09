@@ -1095,6 +1095,10 @@ struct ConnectionCard: View {
                     Button { store.openLocalTunnel(profile) } label: { Label("Tunnel", systemImage: "arrow.left.arrow.right") }
                 }
                 Spacer()
+                Button(role: .destructive) { store.deleteProfile(profile.id) } label: {
+                    Label("Remove", systemImage: "trash")
+                }
+                .help("Remove this connection")
             }
         }
         .padding(14)
