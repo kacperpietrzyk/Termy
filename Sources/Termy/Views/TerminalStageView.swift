@@ -713,6 +713,63 @@ struct CompletionMenuRow: View {
     }
 }
 
+/// T5: pure, testable placement geometry for `CompletionMenuOverlay`.
+///
+/// The block-transcript caret is pinned at the viewport BOTTOM, so the menu
+/// always flips upward. The old inline math walked up by only `totalHeight +
+/// rowHeight`, which butted the menu directly onto the immediately-preceding
+/// command block with zero clearance — the reported symptom (the prior `cd`
+/// block fully covered by the opaque menu). This type:
+///   • reserves a clear `reservedGap` band ABOVE the caret line (upward case),
+///   • clamps the top to the viewport (`max(0, …)` so a tall menu never grows
+///     off-screen),
+///   • exposes `effectiveVisibleRows` so the menu shrinks-to-fit the room above
+///     the caret instead of overrunning it when the caret sits near the top.
+/// The downward case (legacy raw-PTY mid-viewport caret) keeps a full caret-line
+/// offset so the menu never overlaps the line it completes.
+struct CompletionMenuPlacement {
+    let anchor: CGPoint          // caret top-left (SwiftUI coords)
+    let viewportSize: CGSize
+    let totalHeight: CGFloat     // menuBody + footer (post-clamp)
+    let width: CGFloat
+    var reservedGap: CGFloat = 8 // band kept clear above the caret line
+    var caretLineHeight: CGFloat = 22 // the input line the caret occupies
+
+    /// Flip up when there's no room below (true for the bottom-pinned block bar).
+    var flipUpward: Bool {
+        anchor.y + caretLineHeight + reservedGap + totalHeight > viewportSize.height
+    }
+
+    /// Upward: bottom edge sits `reservedGap` ABOVE the caret line top; never
+    /// above the viewport top. Downward: a full caret line below the caret top
+    /// so the menu never sits on the line it completes.
+    var resolvedTop: CGFloat {
+        flipUpward
+            ? max(0, anchor.y - reservedGap - totalHeight)
+            : anchor.y + caretLineHeight + reservedGap
+    }
+
+    var centerX: CGFloat {
+        min(max(anchor.x + width / 2, width / 2 + 4),
+            viewportSize.width - width / 2 - 4)
+    }
+
+    var centerY: CGFloat { resolvedTop + totalHeight / 2 }
+
+    /// Rows that fit in the room above the caret (upward case), so the menu
+    /// shrinks instead of covering blocks it has no room for. Returns the
+    /// requested count when there is ample room (the common bottom-pinned case).
+    func effectiveVisibleRows(rowHeight: CGFloat,
+                              footerHeight: CGFloat,
+                              verticalInset: CGFloat,
+                              requested: Int) -> Int {
+        guard flipUpward else { return requested }
+        let roomAbove = max(0, anchor.y - reservedGap - footerHeight - 2 * verticalInset)
+        let fit = max(1, Int(roomAbove / rowHeight))
+        return min(requested, fit)
+    }
+}
+
 /// F-3: keyboard-navigable Tab completion menu, composited above the
 /// SwiftTerm view. Anchored via the same caret-origin callback the F-1
 /// ghost-text overlay uses. Auto-flips upward when it would clip the bottom
@@ -739,8 +796,26 @@ struct CompletionMenuOverlay: View {
         hasAnyDescription ? 480 : 320
     }
 
+    /// T5: rows actually shown, capped by both `maxVisibleRows` and the room
+    /// available above the caret (so an upward menu shrinks-to-fit rather than
+    /// overrunning the prior block). Computed from anchor/viewport in one pass
+    /// using a footer estimate (the footer is at most `footerWithDescHeight`),
+    /// which resolves the maxHeight↔totalHeight cycle: the cap binds only when
+    /// the caret is near the top, where the estimate is safe.
+    private var effectiveVisibleRows: Int {
+        // Pre-placement uses a worst-case footer so the clamp never undershoots.
+        let probe = CompletionMenuPlacement(
+            anchor: anchor, viewportSize: viewportSize,
+            totalHeight: 0, width: width)
+        return probe.effectiveVisibleRows(
+            rowHeight: rowHeight,
+            footerHeight: footerWithDescHeight,
+            verticalInset: verticalInset,
+            requested: maxVisibleRows)
+    }
+
     private var maxHeight: CGFloat {
-        let visibleItems = snapshot.items.prefix(maxVisibleRows)
+        let visibleItems = snapshot.items.prefix(effectiveVisibleRows)
         let totalRows = visibleItems.reduce(0) { sum, item in
             sum + ((item.description?.isEmpty == false) ? descriptionRowHeight : rowHeight)
         }
@@ -767,14 +842,12 @@ struct CompletionMenuOverlay: View {
 
     private var totalHeight: CGFloat { maxHeight + footerHeight }
 
-    private var flipUpward: Bool {
-        anchor.y + totalHeight > viewportSize.height
-    }
-
-    private var resolvedTop: CGFloat {
-        flipUpward
-            ? max(0, anchor.y - totalHeight - rowHeight)  // above the caret
-            : anchor.y + rowHeight                         // below the caret
+    /// T5: single source of placement geometry (flip / reserved gap / clamp).
+    private var placement: CompletionMenuPlacement {
+        CompletionMenuPlacement(
+            anchor: anchor, viewportSize: viewportSize,
+            totalHeight: totalHeight, width: width,
+            caretLineHeight: rowHeight)
     }
 
     var body: some View {
@@ -786,9 +859,7 @@ struct CompletionMenuOverlay: View {
             .frame(width: width)
             .background(menuBackground)
             .overlay(menuBorder)
-            .position(x: min(max(anchor.x + width / 2, width / 2 + 4),
-                             viewportSize.width - width / 2 - 4),
-                      y: resolvedTop + totalHeight / 2)
+            .position(x: placement.centerX, y: placement.centerY)
     }
 
     private var menuContent: some View {

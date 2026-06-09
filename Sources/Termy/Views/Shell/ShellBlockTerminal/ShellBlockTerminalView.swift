@@ -37,6 +37,17 @@ struct ShellBlockTranscript: View {
     private var ghost: String? { store.terminalCombinedGhost(for: session.id) }
     private var highlights: [InputHighlightSpan] { store.terminalLiveHighlights(for: session.id) }
 
+    // T5: the completion menu flips ABOVE the bottom-pinned caret, so without
+    // help it floats over the most-recent block (opaque bg2 → block invisible).
+    // The caret lives in the PINNED bar, not in scroll content, so reserving a
+    // band at the BOTTOM of the bottom-anchored transcript pushes the newest
+    // block UP and clear of the menu — without moving the caret or the menu.
+    private var menuOpen: Bool { store.terminalMenuSnapshot(for: session.id) != nil }
+    // Safe upper bound for the menu's height (≤ 8 description rows + footer +
+    // insets ≈ 340). Over-reserving is harmless: the space above is intentional
+    // void, so the block simply rises a touch higher than strictly required.
+    private static let menuClearance: CGFloat = 340
+
     // §12.1 live pinned-input context header: real live cwd + the precmd-fed
     // live branch/node for the CURRENT prompt (Bug 1: refreshes on `cd`, clears
     // in a non-repo; nil before the first precmd → cwd-only, never stale).
@@ -89,7 +100,14 @@ struct ShellBlockTranscript: View {
                                 onCopyBranch: { copyToPasteboard(block.branch) })
                                 .id(block.startLine)
                         }
-                        Color.clear.frame(height: 1).id(Self.bottomID)
+                        // T5: reserve a clear band below the newest block while
+                        // the completion menu is open so the menu (which flips
+                        // above the pinned caret) no longer covers that block.
+                        // The bottom anchor targets the END of this band, so the
+                        // newest block is pushed up by `menuClearance`.
+                        Color.clear
+                            .frame(height: menuOpen ? Self.menuClearance : 1)
+                            .id(Self.bottomID)
                     }
                     .padding(.horizontal, 18).padding(.top, 14).padding(.bottom, 8)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -100,6 +118,9 @@ struct ShellBlockTranscript: View {
                 .defaultScrollAnchor(.bottom)
                 .onChange(of: blocks.count) { proxy.scrollTo(Self.bottomID, anchor: .bottom) }
                 .onChange(of: executing) { proxy.scrollTo(Self.bottomID, anchor: .bottom) }
+                // T5: when the menu opens, scroll the newest block up past the
+                // reserved band so it sits clear of the upward-flipped menu.
+                .onChange(of: menuOpen) { proxy.scrollTo(Self.bottomID, anchor: .bottom) }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             PinnedInputBar(
