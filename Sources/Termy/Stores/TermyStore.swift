@@ -1429,7 +1429,9 @@ final class TermyStore: ObservableObject {
 
     /// FB-3-4: live agent vitals (state from sessions, git from the cache).
     var agentVitals: [AgentSessionVitals] {
-        mergeAgentVitals(snapshots: agentVitalsSnapshots(), gitCache: appModel.agents.gitCache)
+        mergeAgentVitals(snapshots: agentVitalsSnapshots(),
+                         gitCache: appModel.agents.gitCache,
+                         usageCache: appModel.agents.usageCache)
     }
 
     /// AD-2: agents that need attention (waiting / finished / failed), waiting-first,
