@@ -142,6 +142,21 @@ final class PaletteRankerTests: XCTestCase {
         XCTAssertEqual(ids(ranked).first, "strong")
     }
 
+    func testLiveAgentsBoostFloatsAIActionsButAgentsStayAbove() {
+        // With agents live, `.ai` actions get the boost and float above other
+        // actions; agent sessions (boost + resume nudge) still outrank them.
+        let agent = PaletteRanker.Candidate(
+            id: "agent-1", title: "Agent", fields: ["agent-1", "Agent", ""], kind: .agentSession)
+        let aiAction = action("ai", "Explain", area: "ai")
+        let fileAction = action("file", "Files", area: "files")
+        let ranked = PaletteRanker.rank(
+            candidates: [fileAction, aiAction, agent],
+            query: "",
+            frecency: [:],
+            context: .init(hasLiveAgents: true))
+        XCTAssertEqual(ids(ranked), ["agent-1", "ai", "file"])
+    }
+
     // MARK: - Empty-query order (zero-signal tie-break)
 
     func testEmptyQueryPreservesFamilyOrderAgentsActionsProfiles() {

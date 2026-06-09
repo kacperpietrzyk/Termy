@@ -1479,10 +1479,10 @@ final class TermyStore: ObservableObject {
     /// CK-S3: the ⌘K feed, ranking-driven (not a fixed agents/profiles/actions
     /// concat). `PaletteRanker` blends the shared fuzzy score, per-item
     /// exp-decay frecency, and live-context boosts into one order; the matched
-    /// title ranges ride along for the row's highlighted glyph runs. Computing
-    /// the ranking once here keeps the snapshot self-consistent across the
-    /// per-render reads of `filteredCommandCenterItems` / `commandCenterTitleRanges`.
-    private var rankedCommandCenterFeed: (items: [CommandCenterItem], ranges: [String: [Range<Int>]]) {
+    /// title ranges ride along for the row's highlighted glyph runs. The view
+    /// reads this once per body eval and reuses the tuple for both the items and
+    /// the highlight ranges, so the ranking runs once per render.
+    var rankedCommandCenterFeed: (items: [CommandCenterItem], ranges: [String: [Range<Int>]]) {
         let query = commandQuery
 
         // Candidate pool: actions (availability-gated, keymap-applied), remote

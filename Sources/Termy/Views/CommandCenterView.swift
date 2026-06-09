@@ -7,7 +7,10 @@ struct CommandCenterView: View {
     @State private var selectedIndex = 0
 
     var body: some View {
-        VStack {
+        // Snapshot the ranking once per body eval; reuse for the empty check,
+        // the rows, and the highlight ranges so the ranker runs once per render.
+        let feed = store.rankedCommandCenterFeed
+        return VStack {
             Spacer(minLength: 64)
 
             VStack(spacing: 0) {
@@ -28,7 +31,7 @@ struct CommandCenterView: View {
                 }
                 .padding(16)
 
-                if store.filteredCommandCenterItems.isEmpty {
+                if feed.items.isEmpty {
                     ContentUnavailableView(
                         "No Results",
                         systemImage: "command",
@@ -36,11 +39,11 @@ struct CommandCenterView: View {
                     )
                     .frame(height: 360)
                 } else {
-                    let titleRanges = store.commandCenterTitleRanges
+                    let titleRanges = feed.ranges
                     ScrollViewReader { proxy in
                         ScrollView {
                             LazyVStack(spacing: 2) {
-                                ForEach(Array(store.filteredCommandCenterItems.enumerated()),
+                                ForEach(Array(feed.items.enumerated()),
                                         id: \.element.id) { index, item in
                                     Button {
                                         store.performCommandCenterItem(item)
