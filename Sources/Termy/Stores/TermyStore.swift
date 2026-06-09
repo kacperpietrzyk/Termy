@@ -205,6 +205,11 @@ final class TermyStore: ObservableObject {
         get { appModel.editor.editorVimState }
         set { objectWillChange.send(); appModel.editor.editorVimState = newValue }
     }
+    // M3 multi-file buffers: read-forwarders for the tab strip. Mutations go
+    // through the openFileInEditorBuffer/selectEditorBuffer/closeEditorBuffer/
+    // newScratchBuffer methods (each sends objectWillChange like the setters).
+    var openBuffers: [EditorBuffer] { appModel.editor.openBuffers }
+    var activeBufferID: UUID { appModel.editor.activeBufferID }
     // M2c-1 strangler facade → `appModel.ai`. Computed forwarders; the
     // canonical bypass invariant + rationale is at the `let appModel`
     // comment below. Transient — deleted in the final M2c sub-plan.
@@ -3224,15 +3229,61 @@ final class TermyStore: ObservableObject {
 
     func openSelectedFileInEditor() {
         guard let selectedFilePath else { return }
+        openFileInEditorBuffer(selectedFilePath)
+    }
+
+    /// Open `path` in its own editor buffer (M3 multi-file). If the path is
+    /// already open it is reused (no duplicate tab); otherwise a fresh buffer is
+    /// appended and made active. Routes through the editor module tab.
+    func openFileInEditorBuffer(_ path: String) {
         do {
-            scratchText = try LocalFileService(root: projectRoot).readText(selectedFilePath)
-            editorVimState = VimEditorState(buffer: scratchText)
-            editorFilePath = selectedFilePath
+            let text = try LocalFileService(root: projectRoot).readText(path)
+            objectWillChange.send()
+            if let existing = appModel.editor.openBuffers.firstIndex(where: { $0.filePath == path }) {
+                appModel.editor.openBuffers[existing].text = text
+                appModel.editor.openBuffers[existing].vimState = VimEditorState(buffer: text)
+                appModel.editor.openBuffers[existing].isDirty = false
+                appModel.editor.activeBufferID = appModel.editor.openBuffers[existing].id
+            } else {
+                let buffer = EditorBuffer(filePath: path, text: text)
+                appModel.editor.openBuffers.append(buffer)
+                appModel.editor.activeBufferID = buffer.id
+            }
             openModuleTab(.editor)
-            statusMessage = "Opened \(selectedFilePath)."
+            statusMessage = "Opened \(path)."
         } catch {
             statusMessage = "Open file failed: \(error.localizedDescription)"
         }
+    }
+
+    /// Switch the active editor buffer (M3 multi-file tab strip / ⌘1-9).
+    func selectEditorBuffer(_ id: UUID) {
+        guard appModel.editor.openBuffers.contains(where: { $0.id == id }) else { return }
+        objectWillChange.send()
+        appModel.editor.activeBufferID = id
+    }
+
+    /// Close an editor buffer (M3). Never removes the last buffer; if the active
+    /// buffer is closed, an adjacent buffer becomes active.
+    func closeEditorBuffer(_ id: UUID) {
+        guard appModel.editor.openBuffers.count > 1,
+              let index = appModel.editor.openBuffers.firstIndex(where: { $0.id == id }) else { return }
+        objectWillChange.send()
+        let wasActive = appModel.editor.activeBufferID == id
+        appModel.editor.openBuffers.remove(at: index)
+        if wasActive {
+            let neighbor = appModel.editor.openBuffers[min(index, appModel.editor.openBuffers.count - 1)]
+            appModel.editor.activeBufferID = neighbor.id
+        }
+    }
+
+    /// Open a fresh unsaved scratch buffer and make it active (M3).
+    func newScratchBuffer() {
+        objectWillChange.send()
+        let buffer = EditorBuffer(filePath: nil, text: "")
+        appModel.editor.openBuffers.append(buffer)
+        appModel.editor.activeBufferID = buffer.id
+        openModuleTab(.editor)
     }
 
     func saveEditorFile() {
@@ -3242,6 +3293,10 @@ final class TermyStore: ObservableObject {
         }
         do {
             try LocalFileService(root: projectRoot).writeText(scratchText, to: editorFilePath)
+            objectWillChange.send()
+            if let index = appModel.editor.openBuffers.firstIndex(where: { $0.id == appModel.editor.activeBufferID }) {
+                appModel.editor.openBuffers[index].isDirty = false
+            }
             refreshFiles()
             statusMessage = "Saved \(editorFilePath)."
         } catch {

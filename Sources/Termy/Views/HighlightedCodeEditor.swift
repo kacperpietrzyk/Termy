@@ -31,14 +31,24 @@ struct HighlightedCodeEditor: NSViewRepresentable {
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
-    func makeNSView(context: Context) -> NSScrollView {
+    /// Build the editor's scroll view + text view + line-number gutter. Pulled
+    /// out of `makeNSView` so the gutter wiring is testable without a SwiftUI
+    /// `Context` (which is not directly constructible). Returns the scroll view;
+    /// its `documentView` is the configured `NSTextView`.
+    static func makeScrollViewWithGutter(text: String) -> NSScrollView {
         let scroll = NSTextView.scrollableTextView()
         scroll.borderType = .noBorder
         scroll.drawsBackground = true
         scroll.backgroundColor = NSColor(Color(DesignTokens.bg1))
         guard let textView = scroll.documentView as? NSTextView else { return scroll }
 
-        textView.delegate = context.coordinator
+        // Line-number gutter: the most basic "this is a code editor" signal (M3).
+        // Pure AppKit NSRulerView — no dependency (P3 lean).
+        let ruler = LineNumberRulerView(textView: textView)
+        scroll.verticalRulerView = ruler
+        scroll.hasVerticalRuler = true
+        scroll.rulersVisible = true
+
         textView.isRichText = false
         textView.isAutomaticQuoteSubstitutionEnabled = false
         textView.isAutomaticDashSubstitutionEnabled = false
@@ -52,6 +62,13 @@ struct HighlightedCodeEditor: NSViewRepresentable {
         textView.insertionPointColor = NSColor(Color(DesignTokens.primary2))
         textView.textContainerInset = NSSize(width: 8, height: 8)
         textView.string = text
+        return scroll
+    }
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let scroll = Self.makeScrollViewWithGutter(text: text)
+        guard let textView = scroll.documentView as? NSTextView else { return scroll }
+        textView.delegate = context.coordinator
         context.coordinator.applyHighlight(to: textView)
         return scroll
     }
@@ -69,6 +86,7 @@ struct HighlightedCodeEditor: NSViewRepresentable {
             let caret = min(previous.location, nsText.length)
             textView.setSelectedRange(NSRange(location: caret, length: 0))
             context.coordinator.applyHighlight(to: textView)
+            scroll.verticalRulerView?.needsDisplay = true
         }
     }
 
@@ -83,6 +101,7 @@ struct HighlightedCodeEditor: NSViewRepresentable {
             guard let textView = notification.object as? NSTextView else { return }
             parent.text = textView.string
             applyHighlight(to: textView)
+            textView.enclosingScrollView?.verticalRulerView?.needsDisplay = true
         }
 
         /// Re-tokenize the whole buffer and recolor. Guards against a tokenizer
@@ -118,6 +137,84 @@ struct HighlightedCodeEditor: NSViewRepresentable {
                 }
             }
             storage.endEditing()
+        }
+    }
+}
+
+/// A line-number gutter for the editor's `NSTextView`, drawn as the scroll view's
+/// vertical ruler. Pure AppKit (no dependency, P3 lean). Numbers are 1-based,
+/// monospaced `fg3` against the editor's `bg1`, and stay aligned to each line's
+/// laid-out glyph rect so they track soft-wrapping and scrolling.
+final class LineNumberRulerView: NSRulerView {
+    private weak var textView: NSTextView?
+
+    init(textView: NSTextView) {
+        self.textView = textView
+        super.init(scrollView: textView.enclosingScrollView, orientation: .verticalRuler)
+        clientView = textView
+        ruleThickness = 40
+    }
+
+    @available(*, unavailable)
+    required init(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    /// 1-based line number for each line whose glyph rect intersects the visible
+    /// region, used both for drawing and as the gate's "ruler reports >=1 label".
+    func visibleLineLabels() -> [(number: Int, y: CGFloat)] {
+        guard let textView,
+              let layoutManager = textView.layoutManager,
+              let container = textView.textContainer else { return [] }
+
+        let nsString = textView.string as NSString
+        let fullGlyphRange = layoutManager.glyphRange(for: container)
+        guard fullGlyphRange.length > 0 || nsString.length == 0 else { return [] }
+
+        var labels: [(Int, CGFloat)] = []
+        let inset = textView.textContainerInset.height
+        var lineNumber = 1
+        var charIndex = 0
+
+        // Walk character lines; for each, find the glyph rect of its first glyph.
+        while charIndex < nsString.length {
+            let lineRange = nsString.lineRange(for: NSRange(location: charIndex, length: 0))
+            let glyphRange = layoutManager.glyphRange(forCharacterRange: lineRange, actualCharacterRange: nil)
+            let rect = layoutManager.boundingRect(forGlyphRange: NSRange(location: glyphRange.location, length: 0), in: container)
+            labels.append((lineNumber, rect.minY + inset))
+            lineNumber += 1
+            charIndex = NSMaxRange(lineRange)
+        }
+
+        // Trailing empty line (string ends in a newline, or is empty).
+        if nsString.length == 0 || nsString.hasSuffix("\n") {
+            let rect = layoutManager.boundingRect(
+                forGlyphRange: NSRange(location: layoutManager.numberOfGlyphs, length: 0), in: container)
+            labels.append((lineNumber, rect.minY + inset))
+        }
+        return labels
+    }
+
+    override func drawHashMarksAndLabels(in rect: NSRect) {
+        guard let textView, let scrollView = textView.enclosingScrollView else { return }
+
+        NSColor(Color(DesignTokens.bg1)).setFill()
+        rect.fill()
+
+        let font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: font,
+            .foregroundColor: NSColor(Color(DesignTokens.fg3)),
+        ]
+
+        let relativePoint = convert(NSZeroPoint, from: textView)
+        let visibleRect = scrollView.contentView.bounds
+
+        for label in visibleLineLabels() {
+            let y = label.y + relativePoint.y
+            guard y + font.boundingRectForFont.height >= 0, y <= visibleRect.height else { continue }
+            let text = "\(label.number)" as NSString
+            let size = text.size(withAttributes: attributes)
+            let drawX = ruleThickness - size.width - 6
+            text.draw(at: NSPoint(x: drawX, y: y), withAttributes: attributes)
         }
     }
 }
