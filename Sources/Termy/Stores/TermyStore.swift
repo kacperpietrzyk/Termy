@@ -233,6 +233,12 @@ final class TermyStore: ObservableObject {
         get { appModel.ai.aiExplanation }
         set { objectWillChange.send(); appModel.ai.aiExplanation = newValue }
     }
+    /// True while a streaming AI operation is in flight (AI-S5). Read by the
+    /// (future S9) Cancel/Esc affordance + streaming indicator.
+    var aiStreaming: Bool {
+        get { appModel.ai.aiStreaming }
+        set { objectWillChange.send(); appModel.ai.aiStreaming = newValue }
+    }
     var lastTerminalExplain: TerminalExplainRecord? {
         get { appModel.ai.lastTerminalExplain }
         set { objectWillChange.send(); appModel.ai.lastTerminalExplain = newValue }
@@ -754,6 +760,14 @@ final class TermyStore: ObservableObject {
     /// Debounce + per-request timeout + LRU cache in front of the local-AI FIM
     /// completion path, so editor completion requests dedupe and cache.
     private let completionLatencyLane = CompletionLatencyLane()
+    /// The single in-flight streaming AI operation (AI-S5). A new streaming
+    /// request cancels its predecessor; `cancelAIRequest()` (Esc) cancels it.
+    private var aiRequestTask: Task<Void, Never>?
+    /// Generation token guarding against stale completions overwriting state,
+    /// mirroring the FB-3-6 terminal stale-gen pattern. Bumped on every start
+    /// and every cancel; a token append/finalize only applies when its captured
+    /// generation still matches.
+    private var aiRequestGeneration = 0
     private var privateSyncCoordinator = PrivateSyncAppEventCoordinator()
     private var privateSyncEngineRuntime = PrivateSyncEngineRuntime()
     #if canImport(CloudKit)
@@ -1880,51 +1894,77 @@ final class TermyStore: ObservableObject {
 
     func suggestGitCommitMessageWithLocalAI() {
         let repository = GitRepository(root: gitWorkingRoot)
-        Task {
+        let endpointString = aiEndpoint
+        Task { [weak self] in
+            guard let self else { return }
+            let diff: String
             do {
-                let diff = try await Task.detached(priority: .userInitiated) {
+                diff = try await Task.detached(priority: .userInitiated) {
                     try repository.diff()
                 }.value
-                guard !diff.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                    statusMessage = "No diff available for a commit message."
-                    return
-                }
-                let endpoint = try LocalAIEndpoint(urlString: aiEndpoint)
-                let client = localAIClient(endpoint: endpoint)
-                let suggestion = try await client.suggestCommitMessage(forDiff: diff)
-                gitCommitMessage = suggestion.text
-                statusMessage = "Local AI suggested a commit message."
             } catch {
-                statusMessage = "Commit message suggestion failed: \(error.localizedDescription)"
+                self.statusMessage = "Commit message suggestion failed: \(error.localizedDescription)"
+                return
             }
+            guard !diff.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                self.statusMessage = "No diff available for a commit message."
+                return
+            }
+            self.runStreamingAIRequest(
+                into: \.gitCommitMessage,
+                makeStream: { [weak self] in
+                    guard let self else { throw LocalAIClientError.invalidResponse }
+                    let endpoint = try LocalAIEndpoint(urlString: endpointString)
+                    return self.localAIClient(endpoint: endpoint).suggestCommitMessageStream(forDiff: diff)
+                },
+                onFinish: { [weak self] message in
+                    self?.gitCommitMessage = message.trimmingCharacters(in: .whitespacesAndNewlines)
+                    self?.statusMessage = "Local AI suggested a commit message."
+                },
+                onError: { [weak self] error in
+                    self?.statusMessage = "Commit message suggestion failed: \(error.localizedDescription)"
+                }
+            )
         }
     }
 
     func explainGitConflictsWithLocalAI() {
         let repository = GitRepository(root: gitWorkingRoot)
-        Task {
+        let guidance = aiGuidanceContext
+        let endpointString = aiEndpoint
+        Task { [weak self] in
+            guard let self else { return }
+            let hunks: [GitConflictHunk]
             do {
-                let hunks = try await Task.detached(priority: .userInitiated) {
+                hunks = try await Task.detached(priority: .userInitiated) {
                     try repository.conflictHunks()
                 }.value
-                guard !hunks.isEmpty else {
-                    gitConflictExplanation = "No merge conflict markers found in conflicted files."
-                    statusMessage = "No git conflicts found."
-                    return
-                }
-
-                let endpoint = try LocalAIEndpoint(urlString: aiEndpoint)
-                let client = localAIClient(endpoint: endpoint)
-                let explanation = try await client.explainGitConflict(
-                    hunks: hunks,
-                    projectGuidance: aiGuidanceContext
-                )
-                gitConflictExplanation = explanation.text
-                statusMessage = "Local AI explained git conflict(s)."
             } catch {
-                gitConflictExplanation = ""
-                statusMessage = "Git conflict explanation failed: \(error.localizedDescription)"
+                self.gitConflictExplanation = ""
+                self.statusMessage = "Git conflict explanation failed: \(error.localizedDescription)"
+                return
             }
+            guard !hunks.isEmpty else {
+                self.gitConflictExplanation = "No merge conflict markers found in conflicted files."
+                self.statusMessage = "No git conflicts found."
+                return
+            }
+            self.runStreamingAIRequest(
+                into: \.gitConflictExplanation,
+                makeStream: { [weak self] in
+                    guard let self else { throw LocalAIClientError.invalidResponse }
+                    let endpoint = try LocalAIEndpoint(urlString: endpointString)
+                    return self.localAIClient(endpoint: endpoint).explainGitConflictStream(hunks: hunks, projectGuidance: guidance)
+                },
+                onFinish: { [weak self] explanation in
+                    self?.gitConflictExplanation = explanation.trimmingCharacters(in: .whitespacesAndNewlines)
+                    self?.statusMessage = "Local AI explained git conflict(s)."
+                },
+                onError: { [weak self] error in
+                    self?.gitConflictExplanation = ""
+                    self?.statusMessage = "Git conflict explanation failed: \(error.localizedDescription)"
+                }
+            )
         }
     }
 
@@ -3384,33 +3424,45 @@ final class TermyStore: ObservableObject {
         let instruction = editorAIInstruction.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !instruction.isEmpty else { return }
 
-        Task {
-            do {
-                let endpoint = try LocalAIEndpoint(urlString: aiEndpoint)
-                let client = localAIClient(endpoint: endpoint)
-                let proposal = try await client.suggestEditorEdit(
+        // Editor edit accumulates the FULL response before resolving — the
+        // proposal resolver / diff preview need the whole text, so this does not
+        // stream into a visible buffer. It still gets the AI-S5 cancel +
+        // stale-gen guard via `runAccumulatingAIRequest`.
+        let buffer = scratchText
+        let guidance = aiGuidanceContext
+        let endpointString = aiEndpoint
+        runAccumulatingAIRequest(
+            makeStream: { [weak self] in
+                guard let self else { throw LocalAIClientError.invalidResponse }
+                let endpoint = try LocalAIEndpoint(urlString: endpointString)
+                return self.localAIClient(endpoint: endpoint).suggestEditorEditStream(
                     instruction: instruction,
-                    buffer: scratchText,
-                    projectGuidance: aiGuidanceContext
+                    buffer: buffer,
+                    projectGuidance: guidance
                 )
-                switch EditorAIProposalResolver.resolvedProposal(from: proposal.text, original: scratchText) {
+            },
+            onFinish: { [weak self] fullText in
+                guard let self else { return }
+                let proposalText = fullText.trimmingCharacters(in: .whitespacesAndNewlines)
+                switch EditorAIProposalResolver.resolvedProposal(from: proposalText, original: self.scratchText) {
                 case .bufferReplacement(let resolvedProposal):
-                    editorAIProposal = resolvedProposal
-                    editorAIDiff = TextDiffPreview.makeDiff(original: scratchText, proposed: resolvedProposal)
-                    editorAIMultiFilePatch = ""
-                    editorAIMultiFilePatchPaths = []
-                    statusMessage = "Local AI proposed an editor change."
+                    self.editorAIProposal = resolvedProposal
+                    self.editorAIDiff = TextDiffPreview.makeDiff(original: self.scratchText, proposed: resolvedProposal)
+                    self.editorAIMultiFilePatch = ""
+                    self.editorAIMultiFilePatchPaths = []
+                    self.statusMessage = "Local AI proposed an editor change."
                 case .multiFilePatch(let patch, let changedPaths):
-                    editorAIProposal = ""
-                    editorAIDiff = patch
-                    editorAIMultiFilePatch = patch
-                    editorAIMultiFilePatchPaths = changedPaths
-                    statusMessage = "Local AI proposed a multi-file patch for \(changedPaths.count) files."
+                    self.editorAIProposal = ""
+                    self.editorAIDiff = patch
+                    self.editorAIMultiFilePatch = patch
+                    self.editorAIMultiFilePatchPaths = changedPaths
+                    self.statusMessage = "Local AI proposed a multi-file patch for \(changedPaths.count) files."
                 }
-            } catch {
-                statusMessage = "Editor AI failed: \(error.localizedDescription)"
+            },
+            onError: { [weak self] error in
+                self?.statusMessage = "Editor AI failed: \(error.localizedDescription)"
             }
-        }
+        )
     }
 
     func explainEditorSelectionWithLocalAI() {
@@ -3419,20 +3471,24 @@ final class TermyStore: ObservableObject {
             return
         }
 
-        Task {
-            do {
-                let endpoint = try LocalAIEndpoint(urlString: aiEndpoint)
-                let explanation = try await localAIClient(endpoint: endpoint).explainEditorSelection(
-                    selection,
-                    projectGuidance: aiGuidanceContext
-                )
-                aiExplanation = explanation.text
-                appendAIConversationHistoryEntry("editor-selection: \(explanation.text)")
-                statusMessage = "Local AI explained the editor selection."
-            } catch {
-                statusMessage = "Editor selection AI failed: \(error.localizedDescription)"
+        let guidance = aiGuidanceContext
+        let endpointString = aiEndpoint
+        runStreamingAIRequest(
+            into: \.aiExplanation,
+            makeStream: { [weak self] in
+                guard let self else { throw LocalAIClientError.invalidResponse }
+                let endpoint = try LocalAIEndpoint(urlString: endpointString)
+                return self.localAIClient(endpoint: endpoint).explainEditorSelectionStream(selection, projectGuidance: guidance)
+            },
+            onFinish: { [weak self] explanation in
+                let text = explanation.trimmingCharacters(in: .whitespacesAndNewlines)
+                self?.appendAIConversationHistoryEntry("editor-selection: \(text)")
+                self?.statusMessage = "Local AI explained the editor selection."
+            },
+            onError: { [weak self] error in
+                self?.statusMessage = "Editor selection AI failed: \(error.localizedDescription)"
             }
-        }
+        )
     }
 
     func suggestEditorCompletionWithLocalAI() {
@@ -3540,44 +3596,51 @@ final class TermyStore: ObservableObject {
         let prompt = aiPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !prompt.isEmpty else { return }
 
-        Task {
-            do {
-                let endpoint = try LocalAIEndpoint(urlString: aiEndpoint)
-                let client = localAIClient(endpoint: endpoint)
-                let suggestion = try await client.suggestCommand(
-                    for: prompt,
-                    projectGuidance: aiGuidanceContext
-                )
-                aiSuggestedCommand = suggestion.command
-                appendAIConversationHistoryEntry("prompt: \(prompt)", scheduleSync: false)
-                appendAIConversationHistoryEntry("suggested-command: \(suggestion.command)")
-                statusMessage = "Local AI suggested a command."
-            } catch {
-                statusMessage = "Local AI request failed: \(error.localizedDescription)"
+        let guidance = aiGuidanceContext
+        let endpointString = aiEndpoint
+        runStreamingAIRequest(
+            into: \.aiSuggestedCommand,
+            makeStream: { [weak self] in
+                guard let self else { throw LocalAIClientError.invalidResponse }
+                let endpoint = try LocalAIEndpoint(urlString: endpointString)
+                return self.localAIClient(endpoint: endpoint).suggestCommandStream(for: prompt, projectGuidance: guidance)
+            },
+            onFinish: { [weak self] command in
+                let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
+                self?.aiSuggestedCommand = trimmed
+                self?.appendAIConversationHistoryEntry("prompt: \(prompt)", scheduleSync: false)
+                self?.appendAIConversationHistoryEntry("suggested-command: \(trimmed)")
+                self?.statusMessage = "Local AI suggested a command."
+            },
+            onError: { [weak self] error in
+                self?.statusMessage = "Local AI request failed: \(error.localizedDescription)"
             }
-        }
+        )
     }
 
     func askLocalAIQuestion() {
         let question = aiPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !question.isEmpty else { return }
 
-        Task {
-            do {
-                let endpoint = try LocalAIEndpoint(urlString: aiEndpoint)
-                let client = localAIClient(endpoint: endpoint)
-                let answer = try await client.answerQuestion(
-                    question,
-                    projectGuidance: aiGuidanceContext
-                )
-                aiExplanation = answer.text
-                appendAIConversationHistoryEntry("question: \(question)", scheduleSync: false)
-                appendAIConversationHistoryEntry("answer: \(answer.text)")
-                statusMessage = "Local AI answered the question."
-            } catch {
-                statusMessage = "Local AI question failed: \(error.localizedDescription)"
+        let guidance = aiGuidanceContext
+        let endpointString = aiEndpoint
+        runStreamingAIRequest(
+            into: \.aiExplanation,
+            makeStream: { [weak self] in
+                guard let self else { throw LocalAIClientError.invalidResponse }
+                let endpoint = try LocalAIEndpoint(urlString: endpointString)
+                return self.localAIClient(endpoint: endpoint).answerQuestionStream(question, projectGuidance: guidance)
+            },
+            onFinish: { [weak self] answer in
+                let text = answer.trimmingCharacters(in: .whitespacesAndNewlines)
+                self?.appendAIConversationHistoryEntry("question: \(question)", scheduleSync: false)
+                self?.appendAIConversationHistoryEntry("answer: \(text)")
+                self?.statusMessage = "Local AI answered the question."
+            },
+            onError: { [weak self] error in
+                self?.statusMessage = "Local AI question failed: \(error.localizedDescription)"
             }
-        }
+        )
     }
 
     func sendSuggestedCommandToTerminal() {
@@ -3593,28 +3656,38 @@ final class TermyStore: ObservableObject {
             return
         }
         let startLine = failedBlock.startLine
-        Task {
-            let start = Date()
-            do {
-                let endpoint = try LocalAIEndpoint(urlString: aiEndpoint)
-                let client = localAIClient(endpoint: endpoint)
-                let explanation = try await client.explainFailedCommand(
-                    command: failedBlock.command,
-                    output: cleanBlockOutput(forBlock: failedBlock),
-                    projectGuidance: aiGuidanceContext
+        let command = failedBlock.command
+        let output = cleanBlockOutput(forBlock: failedBlock)
+        let guidance = aiGuidanceContext
+        let endpointString = aiEndpoint
+        let start = Date()
+        runStreamingAIRequest(
+            into: \.aiExplanation,
+            makeStream: { [weak self] in
+                guard let self else { throw LocalAIClientError.invalidResponse }
+                let endpoint = try LocalAIEndpoint(urlString: endpointString)
+                return self.localAIClient(endpoint: endpoint).explainFailedCommandStream(
+                    command: command,
+                    output: output,
+                    projectGuidance: guidance
                 )
-                aiExplanation = explanation.text
-                appendAIConversationHistoryEntry("explanation: \(explanation.text)")
-                activePanel = .ai
-                recordTerminalExplain(failedBlockStartLine: startLine, in: blocks,
-                                      durationSeconds: Date().timeIntervalSince(start), succeeded: true)
-                statusMessage = "Local AI explained the failed command."
-            } catch {
-                recordTerminalExplain(failedBlockStartLine: startLine, in: blocks,
-                                      durationSeconds: Date().timeIntervalSince(start), succeeded: false)
-                statusMessage = "Error explanation failed: \(error.localizedDescription)"
+            },
+            onFinish: { [weak self] explanation in
+                guard let self else { return }
+                let text = explanation.trimmingCharacters(in: .whitespacesAndNewlines)
+                self.appendAIConversationHistoryEntry("explanation: \(text)")
+                self.activePanel = .ai
+                self.recordTerminalExplain(failedBlockStartLine: startLine, in: blocks,
+                                           durationSeconds: Date().timeIntervalSince(start), succeeded: true)
+                self.statusMessage = "Local AI explained the failed command."
+            },
+            onError: { [weak self] error in
+                guard let self else { return }
+                self.recordTerminalExplain(failedBlockStartLine: startLine, in: blocks,
+                                           durationSeconds: Date().timeIntervalSince(start), succeeded: false)
+                self.statusMessage = "Error explanation failed: \(error.localizedDescription)"
             }
-        }
+        )
     }
 
     nonisolated static func defaultAgentWorktreeParent() -> URL {
@@ -4826,6 +4899,117 @@ final class TermyStore: ObservableObject {
 
     private func localAIClient(endpoint: LocalAIEndpoint, role: LocalAIRole = .chat) -> LocalAIClient {
         LocalAIClient(endpoint: endpoint, model: appModel.ai.model(for: role), session: localAISession)
+    }
+
+    /// Cancel the in-flight streaming AI operation (AI-S5, mapped to Esc).
+    ///
+    /// Bumps the generation token so any tokens already in the parser pipeline
+    /// are discarded, cancels the underlying `Task` (which cancels the
+    /// URLSession transfer), and clears the streaming flag. A cancel is a clean
+    /// stop — it does NOT post a "failed" status message and leaves whatever
+    /// partial text already streamed into the target field in place.
+    func cancelAIRequest() {
+        guard aiStreaming || aiRequestTask != nil else { return }
+        aiRequestGeneration += 1
+        aiRequestTask?.cancel()
+        aiRequestTask = nil
+        aiStreaming = false
+        statusMessage = "Cancelled the local AI request."
+    }
+
+    /// Drive a single streaming AI operation into one observable target field.
+    ///
+    /// Cancels any prior in-flight request, bumps + captures a generation token,
+    /// clears `target`, and streams tokens from `makeStream()` into `target` as
+    /// they arrive — applying each append only while the captured generation is
+    /// still current (FB-3-6 stale-gen guard). On clean completion it runs
+    /// `onFinish(fullText)` (history/status) under the same guard. Cancellation
+    /// is treated as a silent stop; other errors route to `onError`.
+    ///
+    /// - Parameters:
+    ///   - target: A keypath into the streaming buffer to append into live.
+    ///   - makeStream: Builds the token stream (called after generation bump).
+    ///   - onFinish: Finalizer given the accumulated text (runs once, on success).
+    ///   - onError: Maps a transport/stream error to a status message.
+    private func runStreamingAIRequest(
+        into target: ReferenceWritableKeyPath<TermyStore, String>,
+        makeStream: @escaping () throws -> AsyncThrowingStream<LocalAIToken, Error>,
+        onFinish: @escaping (String) -> Void,
+        onError: @escaping (Error) -> Void
+    ) {
+        // Supersede any prior in-flight request (also bumps the generation).
+        aiRequestTask?.cancel()
+        aiRequestGeneration += 1
+        let generation = aiRequestGeneration
+
+        self[keyPath: target] = ""
+        aiStreaming = true
+
+        aiRequestTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let stream = try makeStream()
+                var accumulated = ""
+                for try await token in stream {
+                    try Task.checkCancellation()
+                    // Stale-gen guard: a newer request (or a cancel) superseded us.
+                    guard generation == self.aiRequestGeneration else { return }
+                    accumulated += token.response
+                    self[keyPath: target] = accumulated
+                }
+                guard generation == self.aiRequestGeneration else { return }
+                self.aiStreaming = false
+                self.aiRequestTask = nil
+                onFinish(accumulated)
+            } catch is CancellationError {
+                // Clean stop — cancelAIRequest already reset the flag/generation.
+            } catch {
+                guard generation == self.aiRequestGeneration else { return }
+                self.aiStreaming = false
+                self.aiRequestTask = nil
+                onError(error)
+            }
+        }
+    }
+
+    /// Like ``runStreamingAIRequest(into:makeStream:onFinish:onError:)`` but with
+    /// no live target field: tokens are accumulated internally and only the
+    /// FULL text is handed to `onFinish`. Used by the editor-edit path, whose
+    /// proposal resolver/diff need the whole response. Shares the same cancel +
+    /// stale-gen machinery (Esc-cancellable).
+    private func runAccumulatingAIRequest(
+        makeStream: @escaping () throws -> AsyncThrowingStream<LocalAIToken, Error>,
+        onFinish: @escaping (String) -> Void,
+        onError: @escaping (Error) -> Void
+    ) {
+        aiRequestTask?.cancel()
+        aiRequestGeneration += 1
+        let generation = aiRequestGeneration
+        aiStreaming = true
+
+        aiRequestTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let stream = try makeStream()
+                var accumulated = ""
+                for try await token in stream {
+                    try Task.checkCancellation()
+                    guard generation == self.aiRequestGeneration else { return }
+                    accumulated += token.response
+                }
+                guard generation == self.aiRequestGeneration else { return }
+                self.aiStreaming = false
+                self.aiRequestTask = nil
+                onFinish(accumulated)
+            } catch is CancellationError {
+                // Clean stop.
+            } catch {
+                guard generation == self.aiRequestGeneration else { return }
+                self.aiStreaming = false
+                self.aiRequestTask = nil
+                onError(error)
+            }
+        }
     }
 
     private func selectedEditorTextForAI() -> String? {

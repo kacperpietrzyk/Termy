@@ -28,12 +28,7 @@ public struct LocalAIClient {
     }
 
     public func suggestCommand(for description: String, projectGuidance: String? = nil) async throws -> LocalAICommandSuggestion {
-        let guidance = projectGuidance?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let context = guidance?.isEmpty == false ? "\nProject guidance:\n\(guidance!)\n" : ""
-        let prompt = """
-        Convert this request into one safe shell command. Return only the command, no markdown.\(context)
-        Request: \(description)
-        """
+        let prompt = Self.suggestCommandPrompt(for: description, projectGuidance: projectGuidance)
         let response = try await generate(prompt: prompt)
         let command = response.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !command.isEmpty else {
@@ -43,12 +38,7 @@ public struct LocalAIClient {
     }
 
     public func suggestCommitMessage(forDiff diff: String) async throws -> LocalAITextSuggestion {
-        let prompt = """
-        Write one concise git commit message for this diff. Use imperative mood. Return only the commit message, no markdown.
-        Diff:
-        \(diff)
-        """
-        let response = try await generate(prompt: prompt)
+        let response = try await generate(prompt: Self.commitMessagePrompt(forDiff: diff))
         let text = response.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else {
             throw LocalAIClientError.emptySuggestion
@@ -60,14 +50,7 @@ public struct LocalAIClient {
         _ question: String,
         projectGuidance: String? = nil
     ) async throws -> LocalAITextSuggestion {
-        let guidance = projectGuidance?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let context = guidance?.isEmpty == false ? "\nProject guidance:\n\(guidance!)\n" : ""
-        let prompt = """
-        Answer this developer question concisely. Return plain text, no markdown.\(context)
-        Question:
-        \(question)
-        """
-        let response = try await generate(prompt: prompt)
+        let response = try await generate(prompt: Self.answerQuestionPrompt(question, projectGuidance: projectGuidance))
         let text = response.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else {
             throw LocalAIClientError.emptySuggestion
@@ -80,16 +63,7 @@ public struct LocalAIClient {
         output: String,
         projectGuidance: String? = nil
     ) async throws -> LocalAITextSuggestion {
-        let guidance = projectGuidance?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let context = guidance?.isEmpty == false ? "\nProject guidance:\n\(guidance!)\n" : ""
-        let prompt = """
-        Briefly explain why this command failed and suggest the safest next fix. Return plain text, no markdown.\(context)
-        Command:
-        \(command)
-
-        Output:
-        \(output)
-        """
+        let prompt = Self.explainFailedCommandPrompt(command: command, output: output, projectGuidance: projectGuidance)
         let response = try await generate(prompt: prompt)
         let text = response.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else {
@@ -102,23 +76,7 @@ public struct LocalAIClient {
         hunks: [GitConflictHunk],
         projectGuidance: String? = nil
     ) async throws -> LocalAITextSuggestion {
-        let guidance = projectGuidance?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let context = guidance?.isEmpty == false ? "\nProject guidance:\n\(guidance!)\n" : ""
-        let conflictText = hunks.map { hunk in
-            """
-            File: \(hunk.path)
-            Ours (\(hunk.oursLabel)):
-            \(hunk.ours)
-
-            Theirs (\(hunk.theirsLabel)):
-            \(hunk.theirs)
-            """
-        }.joined(separator: "\n\n")
-        let prompt = """
-        Explain this git merge conflict and suggest the safest manual resolution. Return plain text, no markdown.\(context)
-        \(conflictText)
-        """
-        let response = try await generate(prompt: prompt)
+        let response = try await generate(prompt: Self.explainGitConflictPrompt(hunks: hunks, projectGuidance: projectGuidance))
         let text = response.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else {
             throw LocalAIClientError.emptySuggestion
@@ -131,16 +89,7 @@ public struct LocalAIClient {
         buffer: String,
         projectGuidance: String? = nil
     ) async throws -> LocalAITextSuggestion {
-        let guidance = projectGuidance?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let context = guidance?.isEmpty == false ? "\nProject guidance:\n\(guidance!)\n" : ""
-        let prompt = """
-        Rewrite this editor buffer according to the instruction. Return only the full replacement text or a unified diff patch, no markdown.\(context)
-        Instruction:
-        \(instruction)
-
-        Buffer:
-        \(buffer)
-        """
+        let prompt = Self.editorEditPrompt(instruction: instruction, buffer: buffer, projectGuidance: projectGuidance)
         let response = try await generate(prompt: prompt)
         let text = response.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else {
@@ -153,19 +102,160 @@ public struct LocalAIClient {
         _ selection: String,
         projectGuidance: String? = nil
     ) async throws -> LocalAITextSuggestion {
-        let guidance = projectGuidance?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let context = guidance?.isEmpty == false ? "\nProject guidance:\n\(guidance!)\n" : ""
-        let prompt = """
-        Explain this selected editor text concisely. Return plain text, no markdown.\(context)
-        Selection:
-        \(selection)
-        """
-        let response = try await generate(prompt: prompt)
+        let response = try await generate(prompt: Self.explainEditorSelectionPrompt(selection, projectGuidance: projectGuidance))
         let text = response.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else {
             throw LocalAIClientError.emptySuggestion
         }
         return LocalAITextSuggestion(text: text)
+    }
+
+    // MARK: - Prompt builders (single source for both the blocking and streaming paths)
+
+    private static func guidanceContext(_ projectGuidance: String?) -> String {
+        let guidance = projectGuidance?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return guidance?.isEmpty == false ? "\nProject guidance:\n\(guidance!)\n" : ""
+    }
+
+    static func suggestCommandPrompt(for description: String, projectGuidance: String?) -> String {
+        """
+        Convert this request into one safe shell command. Return only the command, no markdown.\(guidanceContext(projectGuidance))
+        Request: \(description)
+        """
+    }
+
+    static func commitMessagePrompt(forDiff diff: String) -> String {
+        """
+        Write one concise git commit message for this diff. Use imperative mood. Return only the commit message, no markdown.
+        Diff:
+        \(diff)
+        """
+    }
+
+    static func answerQuestionPrompt(_ question: String, projectGuidance: String?) -> String {
+        """
+        Answer this developer question concisely. Return plain text, no markdown.\(guidanceContext(projectGuidance))
+        Question:
+        \(question)
+        """
+    }
+
+    static func explainFailedCommandPrompt(command: String, output: String, projectGuidance: String?) -> String {
+        """
+        Briefly explain why this command failed and suggest the safest next fix. Return plain text, no markdown.\(guidanceContext(projectGuidance))
+        Command:
+        \(command)
+
+        Output:
+        \(output)
+        """
+    }
+
+    static func explainGitConflictPrompt(hunks: [GitConflictHunk], projectGuidance: String?) -> String {
+        let conflictText = hunks.map { hunk in
+            """
+            File: \(hunk.path)
+            Ours (\(hunk.oursLabel)):
+            \(hunk.ours)
+
+            Theirs (\(hunk.theirsLabel)):
+            \(hunk.theirs)
+            """
+        }.joined(separator: "\n\n")
+        return """
+        Explain this git merge conflict and suggest the safest manual resolution. Return plain text, no markdown.\(guidanceContext(projectGuidance))
+        \(conflictText)
+        """
+    }
+
+    static func editorEditPrompt(instruction: String, buffer: String, projectGuidance: String?) -> String {
+        """
+        Rewrite this editor buffer according to the instruction. Return only the full replacement text or a unified diff patch, no markdown.\(guidanceContext(projectGuidance))
+        Instruction:
+        \(instruction)
+
+        Buffer:
+        \(buffer)
+        """
+    }
+
+    static func explainEditorSelectionPrompt(_ selection: String, projectGuidance: String?) -> String {
+        """
+        Explain this selected editor text concisely. Return plain text, no markdown.\(guidanceContext(projectGuidance))
+        Selection:
+        \(selection)
+        """
+    }
+
+    // MARK: - Streaming siblings (S5)
+    //
+    // Each returns the S1 token stream built from the SAME prompt as its
+    // blocking counterpart above. The store accumulates tokens into its target
+    // observable field as they arrive (live streaming + Esc-cancel), while the
+    // blocking variants stay on the `stream:false` path that existing callers
+    // and unit tests depend on.
+
+    public func suggestCommandStream(
+        for description: String,
+        projectGuidance: String? = nil,
+        role: LocalAIRole = .chat
+    ) -> AsyncThrowingStream<LocalAIToken, Error> {
+        generateStream(prompt: Self.suggestCommandPrompt(for: description, projectGuidance: projectGuidance), role: role)
+    }
+
+    public func suggestCommitMessageStream(
+        forDiff diff: String,
+        role: LocalAIRole = .chat
+    ) -> AsyncThrowingStream<LocalAIToken, Error> {
+        generateStream(prompt: Self.commitMessagePrompt(forDiff: diff), role: role)
+    }
+
+    public func answerQuestionStream(
+        _ question: String,
+        projectGuidance: String? = nil,
+        role: LocalAIRole = .chat
+    ) -> AsyncThrowingStream<LocalAIToken, Error> {
+        generateStream(prompt: Self.answerQuestionPrompt(question, projectGuidance: projectGuidance), role: role)
+    }
+
+    public func explainFailedCommandStream(
+        command: String,
+        output: String,
+        projectGuidance: String? = nil,
+        role: LocalAIRole = .chat
+    ) -> AsyncThrowingStream<LocalAIToken, Error> {
+        generateStream(
+            prompt: Self.explainFailedCommandPrompt(command: command, output: output, projectGuidance: projectGuidance),
+            role: role
+        )
+    }
+
+    public func explainGitConflictStream(
+        hunks: [GitConflictHunk],
+        projectGuidance: String? = nil,
+        role: LocalAIRole = .chat
+    ) -> AsyncThrowingStream<LocalAIToken, Error> {
+        generateStream(prompt: Self.explainGitConflictPrompt(hunks: hunks, projectGuidance: projectGuidance), role: role)
+    }
+
+    public func suggestEditorEditStream(
+        instruction: String,
+        buffer: String,
+        projectGuidance: String? = nil,
+        role: LocalAIRole = .chat
+    ) -> AsyncThrowingStream<LocalAIToken, Error> {
+        generateStream(
+            prompt: Self.editorEditPrompt(instruction: instruction, buffer: buffer, projectGuidance: projectGuidance),
+            role: role
+        )
+    }
+
+    public func explainEditorSelectionStream(
+        _ selection: String,
+        projectGuidance: String? = nil,
+        role: LocalAIRole = .chat
+    ) -> AsyncThrowingStream<LocalAIToken, Error> {
+        generateStream(prompt: Self.explainEditorSelectionPrompt(selection, projectGuidance: projectGuidance), role: role)
     }
 
     /// The set of local-model name fragments known to support native

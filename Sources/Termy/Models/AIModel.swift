@@ -59,6 +59,12 @@ final class AIModel {
         chatModel = selection.chatModel
     }
 
+    /// True while a streaming AI operation is in flight (AI-S5). Drives the
+    /// future S9 Cancel/Esc affordance and a streaming indicator. Set when a
+    /// streaming request starts, cleared when it finishes, errors, or is
+    /// cancelled via `cancelAIRequest()`.
+    var aiStreaming = false
+
     var aiPrompt = ""
     var aiSuggestedCommand = ""
     var aiExplanation = ""
