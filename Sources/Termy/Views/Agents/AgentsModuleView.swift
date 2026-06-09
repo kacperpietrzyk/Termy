@@ -64,10 +64,14 @@ struct AgentsModuleView: View {
             .buttonStyle(TermyCommandButtonStyle())
         }
         Menu {
-            Button("Run Claude Code here") { store.perform("run-claude-code-here") }
-            Button("Run Claude Code in worktree") { store.perform("run-claude-code-worktree") }
-            Button("Run Codex here") { store.perform("run-codex-here") }
-            Button("Run Codex in worktree") { store.perform("run-codex-worktree") }
+            let here = AgentsModuleModel.resolvedLaunchTarget(
+                selectedCwd: store.agentLaunchHereCwd, projectRoot: store.agentLaunchProjectRoot, isolation: .here)
+            let wt = AgentsModuleModel.resolvedLaunchTarget(
+                selectedCwd: nil, projectRoot: store.agentLaunchProjectRoot, isolation: .worktree(path: ""))
+            Button("Run Claude Code here — \(here)") { store.perform("run-claude-code-here") }
+            Button("Run Claude Code — \(wt)") { store.perform("run-claude-code-worktree") }
+            Button("Run Codex here — \(here)") { store.perform("run-codex-here") }
+            Button("Run Codex — \(wt)") { store.perform("run-codex-worktree") }
         } label: {
             Label("Spawn agent", systemImage: "plus")
         }

@@ -71,6 +71,23 @@ enum AgentsModuleModel {
         }
     }
 
+    // MARK: M7 — pre-launch "where the agent launches" hint.
+    /// Names the concrete directory a spawn will run in, BEFORE launch. For `.here`
+    /// this is the selected session's cwd (else projectRoot); for `.worktree` the
+    /// exact path uses a random shortID generated at launch, so we name only the
+    /// source repo ("new worktree from …") rather than fabricate a leaf. Paths under
+    /// $HOME render with `~` so the label never leaks a raw /Users/<name>.
+    static func resolvedLaunchTarget(selectedCwd: String?, projectRoot: String, isolation: AgentIsolationKind) -> String {
+        func abbrev(_ p: String) -> String { (p as NSString).abbreviatingWithTildeInPath }
+        switch isolation {
+        case .here:
+            let cwd = (selectedCwd?.isEmpty == false) ? selectedCwd! : projectRoot
+            return abbrev(cwd)
+        case .worktree:
+            return "new worktree from \(abbrev(projectRoot))"
+        }
+    }
+
     static func vitalsChips(_ v: AgentSessionVitals, now: Date = Date()) -> [VitalsChip] {
         var chips: [VitalsChip] = []
         if let branch = v.branch, !branch.isEmpty {

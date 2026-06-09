@@ -3611,6 +3611,13 @@ final class TermyStore: ObservableObject {
         return sessions.first(where: { $0.id == id })?.currentWorkingDirectory
     }
 
+    /// M7: read-only resolved cwd the next ".here" agent launch will use (selected
+    /// session cwd, else projectRoot). Exposes a single value for the spawn-menu hint
+    /// without widening access to `selectedSessionWorkingDirectory`/`projectRoot`.
+    var agentLaunchHereCwd: String { selectedSessionWorkingDirectory ?? projectRoot.path }
+    /// M7: read-only projectRoot path, the source for a ".worktree" launch hint.
+    var agentLaunchProjectRoot: String { projectRoot.path }
+
     func launchCLIAgent(_ agent: CLIAgent) {
         launchCLIAgent(agent, isolation: .here, baseCwd: nil)
     }

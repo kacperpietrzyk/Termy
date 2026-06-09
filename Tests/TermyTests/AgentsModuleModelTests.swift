@@ -94,4 +94,39 @@ final class AgentsModuleModelTests: XCTestCase {
         XCTAssertEqual(AgentsModuleModel.chipKind(.exited), .ended)
         XCTAssertEqual(AgentsModuleModel.stateLabel(.idle), "idle")
     }
+
+    // MARK: M7 — resolvedLaunchTarget pre-launch visibility.
+
+    func testResolvedLaunchTargetHereUsesSelectedCwd() {
+        let r = AgentsModuleModel.resolvedLaunchTarget(
+            selectedCwd: "/tmp/proj/sub", projectRoot: "/tmp/proj", isolation: .here)
+        XCTAssertTrue(r.contains("sub"))
+        XCTAssertEqual(r, "/tmp/proj/sub")
+    }
+
+    func testResolvedLaunchTargetHereFallsBackToProjectRoot() {
+        let nilCwd = AgentsModuleModel.resolvedLaunchTarget(
+            selectedCwd: nil, projectRoot: "/tmp/proj", isolation: .here)
+        XCTAssertEqual(nilCwd, "/tmp/proj")
+        let emptyCwd = AgentsModuleModel.resolvedLaunchTarget(
+            selectedCwd: "", projectRoot: "/tmp/proj", isolation: .here)
+        XCTAssertEqual(emptyCwd, "/tmp/proj")
+    }
+
+    func testResolvedLaunchTargetWorktreeNamesSourceNotFabricatedPath() {
+        let r = AgentsModuleModel.resolvedLaunchTarget(
+            selectedCwd: nil, projectRoot: "/tmp/proj", isolation: .worktree(path: "/whatever/agent-claudeCode-abc123"))
+        XCTAssertTrue(r.contains("new worktree"))
+        XCTAssertTrue(r.contains("/tmp/proj"))
+        XCTAssertFalse(r.contains("agent-claudeCode-"))
+        XCTAssertFalse(r.contains("abc123"))
+    }
+
+    func testResolvedLaunchTargetAbbreviatesHome() {
+        let home = NSHomeDirectory()
+        let r = AgentsModuleModel.resolvedLaunchTarget(
+            selectedCwd: home + "/proj", projectRoot: home, isolation: .here)
+        XCTAssertTrue(r.hasPrefix("~"))
+        XCTAssertFalse(r.contains(home))
+    }
 }
