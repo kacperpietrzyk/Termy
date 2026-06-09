@@ -13,6 +13,41 @@ final class AgentVitalsTests: XCTestCase {
             isolation: .here, ports: [], startedAt: changed, stateChangedAt: changed)
     }
 
+    private func vitals(
+        _ state: AgentActivityState, id: UUID, name: String = "a",
+        changed: Date = Date(timeIntervalSince1970: 1000)
+    ) -> AgentSessionVitals {
+        AgentSessionVitals(
+            id: id, name: name, agentType: .claudeCode, state: state,
+            cwd: "/tmp", branch: nil, dirtyCount: 0, ahead: 0, behind: 0,
+            isolation: .here, ports: [], startedAt: changed, stateChangedAt: changed)
+    }
+
+    // MARK: - AD-2 attention list
+
+    func testAttentionItemsAreWaitingFirstAndTaggedByKind() {
+        let waiting = UUID(), cleanExit = UUID(), failed = UUID()
+        let items = agentAttentionItems([
+            vitals(.exited, id: cleanExit, name: "clean",
+                   changed: Date(timeIntervalSince1970: 200)),
+            vitals(.working, id: UUID(), name: "busy"),    // not an attention kind
+            vitals(.exited, id: failed, name: "failed",
+                   changed: Date(timeIntervalSince1970: 100)),
+            vitals(.waitingForInput, id: waiting, name: "waiting")
+        ]) { id in id == failed ? 1 : (id == cleanExit ? 0 : nil) }
+
+        // working is dropped; waiting is first; within exited, newest first.
+        XCTAssertEqual(items.map { $0.vitals.name }, ["waiting", "clean", "failed"])
+        XCTAssertEqual(items.map(\.kind), [.waitingForInput, .exited, .error])
+    }
+
+    func testAttentionItemsEmptyWhenNoneNeedAttention() {
+        let items = agentAttentionItems([
+            vitals(.working, id: UUID()), vitals(.idle, id: UUID())
+        ]) { _ in nil }
+        XCTAssertTrue(items.isEmpty)
+    }
+
     func testGroupingPartitionsByState() {
         let grouped = groupAgentVitals([
             vitals(.working), vitals(.waitingForInput), vitals(.idle),
