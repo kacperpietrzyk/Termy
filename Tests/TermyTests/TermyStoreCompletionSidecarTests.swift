@@ -519,4 +519,32 @@ final class TermyStoreCompletionSidecarTests: XCTestCase {
         XCTAssertTrue(store.testHasPendingInlineOptimistic(sid),
             "Source-agnostic accept arms the optimistic insert.")
     }
+
+    // MARK: - T6 / B4: Tab + Enter runs the TYPED text verbatim
+
+    /// T6 belt-and-braces regression: the exact `git sta` + Tab + Enter
+    /// reproduction at the store level. Tab marks the debounce elapsed and the
+    /// sidecar delivers the single zsh candidate `status`, auto-opening the menu.
+    /// The menu MUST open with NOTHING selected (sentinel -1), so the subsequent
+    /// Enter submits the typed line (`git sta`) verbatim — `terminalMenuAcceptedSuffix`
+    /// returns nil, never injecting `tus` to turn it into `git status`.
+    func test_tabOpen_thenReturn_runsTypedTextVerbatim() async {
+        let store = makeStore()
+        let sid = store.testAddRawPtySession(cwd: "/tmp")
+        store.testSetInputBuffer(sid, text: "git sta", cursor: 7)
+        store.testMarkDebounceElapsed(sid)            // simulate Tab's debounce mark + 80 ms
+        // Deliver the single zsh candidate as the sidecar would (token-shaped "status").
+        store.applySidecarEventForTesting(.result(id: 1, items: [
+            CompletionCandidate(title: "status", replacement: "status", kind: .command)
+        ]), sessionID: sid)
+
+        // B4: the Tab-opened menu must have no default selection.
+        XCTAssertTrue(store.testMenuIsOpen(for: sid),
+            "Precondition: the single candidate auto-opens the menu after Tab.")
+        XCTAssertEqual(store.terminalMenuSnapshot(for: sid)?.selection, -1,
+            "Tab-opened menu must have no default selection (sentinel -1).")
+        // With nothing selected, accept yields nil → Return submits the typed line verbatim.
+        XCTAssertNil(store.terminalMenuAcceptedSuffix(for: sid),
+            "Enter after a single Tab must run 'git sta' verbatim, never inject 'tus'.")
+    }
 }
