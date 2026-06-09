@@ -174,6 +174,22 @@ public struct FeatureCatalog: Equatable, Sendable {
                 shortcut: nil
             ),
             CommandAction(
+                id: "agent-next-waiting",
+                title: "Next Waiting Agent",
+                subtitle: "Focus the next agent waiting for your input",
+                area: .ai,
+                keywords: ["agent", "waiting", "next", "fleet", "review", "attention"],
+                shortcut: .controlCommand("j")
+            ),
+            CommandAction(
+                id: "agent-next-running",
+                title: "Next Running Agent",
+                subtitle: "Focus the next agent that is still working",
+                area: .ai,
+                keywords: ["agent", "running", "working", "next", "fleet"],
+                shortcut: .controlCommand("k")
+            ),
+            CommandAction(
                 id: "close-session",
                 title: "Close Session",
                 subtitle: "Close the active session and free its resources",
@@ -421,6 +437,20 @@ public struct FeatureCatalog: Equatable, Sendable {
                 keywords: ["workspace", "layout", "cloudkit"],
                 shortcut: .command("s")
             )
-        ]
+        ] + agentFleetSelectActions
     )
+
+    /// AD-5: `agent-select-1`…`agent-select-9` — jump straight to the agent in a
+    /// given fleet slot (waiting-first flat order). `⌃⌘<digit>` avoids the
+    /// hardcoded `⌘<digit>` module-tab navigation.
+    public static let agentFleetSelectActions: [CommandAction] = (1...9).map { slot in
+        CommandAction(
+            id: "agent-select-\(slot)",
+            title: "Focus Agent \(slot)",
+            subtitle: "Focus the agent in fleet slot \(slot)",
+            area: .ai,
+            keywords: ["agent", "fleet", "select", "focus", "\(slot)"],
+            shortcut: .controlCommand("\(slot)")
+        )
+    }
 }

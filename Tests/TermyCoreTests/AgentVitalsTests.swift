@@ -103,6 +103,64 @@ final class AgentVitalsTests: XCTestCase {
         XCTAssertEqual(uncached.agentType, .codex)
     }
 
+    // MARK: - AD-5 fleet navigation
+
+    func testFleetTargetResolves1BasedIndexAgainstFlatOrder() {
+        let waiting = UUID(), working = UUID(), idle = UUID()
+        let fleet = [
+            vitals(.working, id: working, name: "working"),
+            vitals(.idle, id: idle, name: "idle"),
+            vitals(.waitingForInput, id: waiting, name: "waiting")
+        ]
+        // flat order is waiting, working, idle → slots 1,2,3
+        XCTAssertEqual(agentFleetTarget(index: 1, in: fleet), waiting)
+        XCTAssertEqual(agentFleetTarget(index: 2, in: fleet), working)
+        XCTAssertEqual(agentFleetTarget(index: 3, in: fleet), idle)
+    }
+
+    func testFleetTargetOutOfRangeOrNonPositiveIsNil() {
+        let fleet = [vitals(.working, id: UUID())]
+        XCTAssertNil(agentFleetTarget(index: 0, in: fleet))
+        XCTAssertNil(agentFleetTarget(index: -1, in: fleet))
+        XCTAssertNil(agentFleetTarget(index: 2, in: fleet))
+        XCTAssertNil(agentFleetTarget(index: 1, in: []))
+    }
+
+    func testNextInGroupJumpsToFirstWhenSelectionOutsideGroup() {
+        let w1 = UUID(), w2 = UUID(), running = UUID()
+        let fleet = [
+            vitals(.waitingForInput, id: w1, name: "w1", changed: Date(timeIntervalSince1970: 200)),
+            vitals(.waitingForInput, id: w2, name: "w2", changed: Date(timeIntervalSince1970: 100)),
+            vitals(.working, id: running, name: "running")
+        ]
+        // no selection → first waiting (newest within group, w1)
+        XCTAssertEqual(nextAgentInGroup(state: .waitingForInput, after: nil, in: fleet), w1)
+        // selection is a running agent (different group) → first waiting
+        XCTAssertEqual(nextAgentInGroup(state: .waitingForInput, after: running, in: fleet), w1)
+    }
+
+    func testNextInGroupAdvancesWithWraparound() {
+        let w1 = UUID(), w2 = UUID()
+        let fleet = [
+            vitals(.waitingForInput, id: w1, name: "w1", changed: Date(timeIntervalSince1970: 200)),
+            vitals(.waitingForInput, id: w2, name: "w2", changed: Date(timeIntervalSince1970: 100))
+        ]
+        // group flat order is [w1, w2]; from w1 → w2; from w2 wraps → w1
+        XCTAssertEqual(nextAgentInGroup(state: .waitingForInput, after: w1, in: fleet), w2)
+        XCTAssertEqual(nextAgentInGroup(state: .waitingForInput, after: w2, in: fleet), w1)
+    }
+
+    func testNextInGroupNilWhenGroupEmpty() {
+        let fleet = [vitals(.working, id: UUID())]
+        XCTAssertNil(nextAgentInGroup(state: .waitingForInput, after: nil, in: fleet))
+    }
+
+    func testNextRunningSingleMemberSelectsItselfOnWrap() {
+        let r1 = UUID()
+        let fleet = [vitals(.working, id: r1)]
+        XCTAssertEqual(nextAgentInGroup(state: .working, after: r1, in: fleet), r1)
+    }
+
     func testMergePassesPlanAndTouchedThrough() {
         let id = UUID()
         let step = AgentPlanStep(id: "t1", text: "A", state: .active, sub: nil)

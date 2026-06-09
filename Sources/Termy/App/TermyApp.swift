@@ -111,6 +111,30 @@ struct TermyApp: App {
                 }
             }
 
+            // AD-5: global keyboard-first fleet navigation. `⌃⌘J/⌃⌘K` cycle the
+            // waiting / running agents; `⌃⌘1`…`⌃⌘9` jump to a fleet slot. `⌘<digit>`
+            // is already the module-tab navigation, so the agent fleet rides `⌃⌘`.
+            CommandMenu("Agents") {
+                Button("Next Waiting Agent") {
+                    store.perform("agent-next-waiting")
+                }
+                .termyKeyboardShortcut(store.shortcut(for: "agent-next-waiting") ?? .controlCommand("j"))
+
+                Button("Next Running Agent") {
+                    store.perform("agent-next-running")
+                }
+                .termyKeyboardShortcut(store.shortcut(for: "agent-next-running") ?? .controlCommand("k"))
+
+                Divider()
+
+                ForEach(1...9, id: \.self) { slot in
+                    Button("Focus Agent \(slot)") {
+                        store.perform("agent-select-\(slot)")
+                    }
+                    .termyKeyboardShortcut(store.shortcut(for: "agent-select-\(slot)") ?? .controlCommand("\(slot)"))
+                }
+            }
+
             CommandMenu("Panels") {
                 Button("Command Center") {
                     store.perform("open-command-center")

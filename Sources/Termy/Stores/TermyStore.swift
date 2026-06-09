@@ -1599,6 +1599,14 @@ final class TermyStore: ObservableObject {
             if let id = selectedSessionID { interruptAgent(sessionID: id) }
         case "restart-agent":
             if let id = selectedSessionID { restartAgent(sessionID: id) }
+        case "agent-next-waiting":
+            focusNextWaitingAgent()
+        case "agent-next-running":
+            focusNextRunningAgent()
+        case let id where id.hasPrefix("agent-select-"):
+            if let slot = Int(id.dropFirst("agent-select-".count)) {
+                focusAgentInFleetSlot(slot)
+            }
         case "toggle-file-explorer":
             openModuleTab(.files)
         case "file-next-item":
@@ -1738,12 +1746,22 @@ final class TermyStore: ObservableObject {
     }
 
     private func availableCommandActions(_ actions: [CommandAction]) -> [CommandAction] {
-        actions.filter { action in
+        // Cheap once-per-filter snapshots so the per-action closure stays O(1).
+        let grouped = groupAgentVitals(agentVitals)
+        let fleetCount = agentVitals.count
+        return actions.filter { action in
             switch action.id {
             case "restore-last-session":
                 return hasRestorableSession
             case "interrupt-agent", "restart-agent":
                 return selectedSessionIsLiveAgent
+            case "agent-next-waiting":
+                return !grouped.waiting.isEmpty
+            case "agent-next-running":
+                return !grouped.running.isEmpty
+            case let id where id.hasPrefix("agent-select-"):
+                guard let slot = Int(id.dropFirst("agent-select-".count)) else { return false }
+                return slot <= fleetCount
             default:
                 return true
             }
@@ -6695,6 +6713,37 @@ final class TermyStore: ObservableObject {
             for: newState, sessionID: sessionID, context: context) {
             remoteNotificationSink(notification)
         }
+    }
+
+    /// AD-5: keyboard-first fleet navigation. `focusNextWaitingAgent` /
+    /// `focusNextRunningAgent` cycle (with wraparound) through the waiting /
+    /// running subgroup relative to the current selection; `focusAgentInFleetSlot`
+    /// jumps to the 1-based slot in the waiting-first flat order. All resolve via
+    /// the pure helpers and reuse `focusAgentSession` to switch tab + activate.
+    func focusNextWaitingAgent() {
+        guard let id = nextAgentInGroup(
+            state: .waitingForInput, after: selectedSessionID, in: agentVitals) else {
+            statusMessage = "No agent is waiting for input."
+            return
+        }
+        focusAgentSession(id)
+    }
+
+    func focusNextRunningAgent() {
+        guard let id = nextAgentInGroup(
+            state: .working, after: selectedSessionID, in: agentVitals) else {
+            statusMessage = "No agent is currently running."
+            return
+        }
+        focusAgentSession(id)
+    }
+
+    func focusAgentInFleetSlot(_ oneBased: Int) {
+        guard let id = agentFleetTarget(index: oneBased, in: agentVitals) else {
+            statusMessage = "No agent in fleet slot \(oneBased)."
+            return
+        }
+        focusAgentSession(id)
     }
 
     /// FB-3-3: bring Termy forward with the agent's tab focused (notification
