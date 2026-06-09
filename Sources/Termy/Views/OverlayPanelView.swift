@@ -58,6 +58,16 @@ struct OverlayPanelView: View {
 
 private struct LocalAIPanel: View {
     @ObservedObject var store: TermyStore
+    /// Set when "Send to Terminal" is pressed on a destructive AI suggestion;
+    /// drives the B4 confirmation dialog (offer, never take over).
+    @State private var pendingDestructive: DestructiveCommandHeuristic.Verdict?
+
+    /// Offline NL-vs-command read of the prompt field (AI-S6). Surfaced as a
+    /// gentle inline offer — never auto-acts (B4). Empty/short prompts read as
+    /// unknown and show nothing.
+    private var promptClassification: NLCommandClassifier.NLClassification {
+        NLCommandClassifier.classify(store.aiPrompt)
+    }
 
     var body: some View {
         Form {
@@ -74,8 +84,9 @@ private struct LocalAIPanel: View {
 
             Section("Local Model") {
                 TextField("Local model endpoint", text: $store.aiEndpoint)
-                TextField("Model", text: $store.aiModel)
+                modelPickers
                 TextField("Describe command", text: $store.aiPrompt)
+                nlOffer
                 HStack {
                     Button("Validate Local Endpoint") {
                         store.validateLocalAIEndpoint()
@@ -83,21 +94,25 @@ private struct LocalAIPanel: View {
                     Button("Suggest Command") {
                         store.suggestCommandWithLocalAI()
                     }
-                    .disabled(store.aiPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .disabled(promptIsEmpty || store.aiStreaming)
                     Button("Ask") {
                         store.askLocalAIQuestion()
                     }
-                    .disabled(store.aiPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .disabled(promptIsEmpty || store.aiStreaming)
                     Button("Explain Last Error") {
                         store.explainLastErrorWithLocalAI()
                     }
+                    .disabled(store.aiStreaming)
+                }
+                if store.aiStreaming {
+                    streamingBar
                 }
                 if !store.aiSuggestedCommand.isEmpty {
                     Text(store.aiSuggestedCommand)
                         .font(.system(.body, design: .monospaced))
                         .textSelection(.enabled)
                     Button("Send to Terminal") {
-                        store.sendSuggestedCommandToTerminal()
+                        sendSuggestedCommand()
                     }
                 }
                 if !store.aiExplanation.isEmpty {
@@ -146,6 +161,93 @@ private struct LocalAIPanel: View {
         }
         .formStyle(.grouped)
         .padding()
+        // B4 destructive gate: an AI-suggested command that destroys data/state
+        // requires a second, conscious confirmation before it reaches the shell.
+        .confirmationDialog(
+            "Run a destructive command?",
+            isPresented: Binding(get: { pendingDestructive != nil }, set: { if !$0 { pendingDestructive = nil } }),
+            presenting: pendingDestructive
+        ) { _ in
+            Button("Run command", role: .destructive) {
+                pendingDestructive = nil
+                store.sendSuggestedCommandToTerminal()
+            }
+            Button("Cancel", role: .cancel) { pendingDestructive = nil }
+        } message: { verdict in
+            Text(verdict.primaryReason ?? "This command may destroy data or state.")
+        }
+    }
+
+    private var promptIsEmpty: Bool {
+        store.aiPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    /// Live streaming indicator + Cancel (Esc). Shown ONLY while a request is in
+    /// flight so the Esc binding (`.cancelAction`) does not shadow other Esc
+    /// semantics (panel close) when nothing is streaming.
+    private var streamingBar: some View {
+        HStack(spacing: 8) {
+            ProgressView().controlSize(.small)
+            Text("Streaming from the local model…")
+                .font(Typography.ui(12)).foregroundStyle(.secondary)
+            Spacer()
+            Button("Cancel") { store.cancelAIRequest() }
+                .keyboardShortcut(.cancelAction)
+                .help("Stop the local AI request (Esc)")
+        }
+    }
+
+    /// Model role pickers. When the server has been queried (`discoveredModels`
+    /// non-empty) the chat/completion roles become pickers over the installed
+    /// models; otherwise the manual model TextField remains the only path so an
+    /// offline-configured endpoint still works. A "Discover models" button
+    /// issues the loopback `GET /api/tags` (never auto-fired on appear).
+    @ViewBuilder private var modelPickers: some View {
+        if store.discoveredModels.isEmpty {
+            HStack {
+                TextField("Model", text: $store.aiModel)
+                Button("Discover models") { store.discoverLocalAIModels() }
+            }
+        } else {
+            Picker("Chat model", selection: $store.chatModel) {
+                ForEach(store.discoveredModels) { Text(modelLabel($0)).tag($0.name) }
+            }
+            Picker("Completion model", selection: $store.completionModel) {
+                ForEach(store.discoveredModels) { Text(modelLabel($0)).tag($0.name) }
+            }
+            Button("Rediscover models") { store.discoverLocalAIModels() }
+        }
+    }
+
+    private func modelLabel(_ model: DiscoveredModel) -> String {
+        if let size = model.parameterSize { return "\(model.name) · \(size)" }
+        return model.name
+    }
+
+    /// Offline NL-vs-command offer (AI-S6). When the typed prompt reads as a
+    /// natural-language request, gently offer to translate it — a conscious tap
+    /// (B4), never an auto-run. Hidden for command-shaped or empty input.
+    @ViewBuilder private var nlOffer: some View {
+        if promptClassification.suggestedAction == .offerNLToCommand, !store.aiStreaming {
+            HStack(spacing: 6) {
+                Image(systemName: "sparkles").font(.system(size: 11)).foregroundStyle(Color(DesignTokens.ai.base))
+                Text("Looks like a request — turn it into a command?")
+                    .font(Typography.ui(12)).foregroundStyle(.secondary)
+                Spacer()
+                Button("Suggest command") { store.suggestCommandWithLocalAI() }
+            }
+        }
+    }
+
+    /// Route an AI-suggested command through the destructive gate before it runs.
+    private func sendSuggestedCommand() {
+        let command = store.aiSuggestedCommand.trimmingCharacters(in: .whitespacesAndNewlines)
+        let verdict = DestructiveCommandHeuristic.evaluate(command)
+        if verdict.requiresConfirmation {
+            pendingDestructive = verdict
+        } else {
+            store.sendSuggestedCommandToTerminal()
+        }
     }
 
     private var guidanceSummary: String {

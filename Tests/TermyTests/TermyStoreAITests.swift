@@ -218,6 +218,66 @@ final class TermyStoreAITests: XCTestCase {
         XCTAssertFalse(store.aiConversationHistory.contains { $0 == "answer: STALE" })
     }
 
+    /// AI-S9 wiring: `discoverLocalAIModels()` issues a loopback `GET /api/tags`,
+    /// populates `discoveredModels`, and auto-assigns the completion/chat roles
+    /// from the discovered set — the data the S9 model picker reads.
+    @MainActor
+    func testDiscoverLocalAIModelsPopulatesPickerAndAssignsRoles() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [TermyStoreLocalAIURLProtocol.self]
+        TermyStoreLocalAIURLProtocol.handler = { request in
+            // A discover call is a GET against /api/tags — never the generate POST.
+            XCTAssertEqual(request.httpMethod, "GET")
+            XCTAssertEqual(request.url?.path, "/api/tags")
+            let body = """
+            {"models":[
+              {"name":"qwen2.5-coder:1.5b","size":1000000000,"details":{"parameter_size":"1.5B"}},
+              {"name":"llama3.1:8b","size":8000000000,"details":{"parameter_size":"8.0B"}}
+            ]}
+            """
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: ["Content-Type": "application/json"]
+            )!
+            return .complete(response, Data(body.utf8))
+        }
+        defer { TermyStoreLocalAIURLProtocol.handler = nil }
+
+        let store = TermyStore(
+            startInitialPTY: false,
+            localAISession: URLSession(configuration: configuration)
+        )
+
+        store.discoverLocalAIModels()
+
+        try await waitUntil { store.discoveredModels.count == 2 }
+
+        XCTAssertEqual(store.discoveredModels.map(\.name),
+                       ["qwen2.5-coder:1.5b", "llama3.1:8b"])
+        // The small FIM-capable coder takes the completion lane; the 8B chats.
+        XCTAssertEqual(store.completionModel, "qwen2.5-coder:1.5b")
+        XCTAssertEqual(store.chatModel, "llama3.1:8b")
+        // `aiModel` (StatusBar facade) tracks the chat model.
+        XCTAssertEqual(store.aiModel, "llama3.1:8b")
+    }
+
+    /// A discover failure (non-loopback / server down) leaves the prior role
+    /// assignments untouched and surfaces a status message — no crash, no fabricated models.
+    @MainActor
+    func testDiscoverLocalAIModelsFailureLeavesRolesUntouched() async throws {
+        let store = TermyStore(startInitialPTY: false)
+        store.aiEndpoint = "http://example.com"  // rejected by LocalAIEndpoint (non-loopback)
+
+        store.discoverLocalAIModels()
+
+        try await waitUntil { !store.statusMessage.isEmpty }
+        XCTAssertTrue(store.discoveredModels.isEmpty)
+        XCTAssertEqual(store.completionModel, "qwen2.5-coder")
+        XCTAssertEqual(store.chatModel, "qwen2.5-coder")
+    }
+
     private func waitUntil(
         timeoutNanoseconds: UInt64 = 2_000_000_000,
         condition: @MainActor @escaping () -> Bool

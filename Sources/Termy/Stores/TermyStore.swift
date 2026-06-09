@@ -244,6 +244,23 @@ final class TermyStore: ObservableObject {
         set { objectWillChange.send(); appModel.ai.lastTerminalExplain = newValue }
     }
 
+    // AI-S9 model-picker facade → `appModel.ai`. Auto-discovered list + the two
+    // role models. The S9 panel reads `discoveredModels` to populate a picker
+    // and binds `completionModel`/`chatModel` to assign roles; an empty
+    // `discoveredModels` keeps the manual `aiModel` TextField as the only path.
+    var discoveredModels: [DiscoveredModel] {
+        get { appModel.ai.discoveredModels }
+        set { objectWillChange.send(); appModel.ai.discoveredModels = newValue }
+    }
+    var completionModel: String {
+        get { appModel.ai.completionModel }
+        set { objectWillChange.send(); appModel.ai.completionModel = newValue }
+    }
+    var chatModel: String {
+        get { appModel.ai.chatModel }
+        set { objectWillChange.send(); appModel.ai.chatModel = newValue }
+    }
+
     /// Builds + stores the explain record for the failed block at `failedBlockStartLine`,
     /// resolving the 1-based ordinal against the SNAPSHOT `blocks` captured when the
     /// explain was launched (NOT a fresh post-await query) — so a mid-explain session
@@ -3589,6 +3606,32 @@ final class TermyStore: ObservableObject {
             statusMessage = "Local AI endpoint accepted."
         } catch {
             statusMessage = "Built-in AI accepts localhost endpoints only."
+        }
+    }
+
+    /// AI-S9: auto-discover the models installed on the local server (Ollama
+    /// `GET /api/tags`) and assign default completion/chat roles. A one-shot
+    /// GET — not a streaming op — so it does not go through
+    /// `runStreamingAIRequest`/`cancelAIRequest`. The endpoint is localhost-
+    /// validated by `LocalAIEndpoint`, so the "0 net" invariant holds (zero
+    /// bytes leave the host). An unreachable/non-loopback server leaves the
+    /// existing role assignments untouched.
+    func discoverLocalAIModels() {
+        let endpointString = aiEndpoint
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let endpoint = try LocalAIEndpoint(urlString: endpointString)
+                let client = self.localAIClient(endpoint: endpoint)
+                let models = try await client.discoverModels()
+                self.appModel.ai.applyDiscoveredModels(models)
+                self.objectWillChange.send()
+                self.statusMessage = models.isEmpty
+                    ? "No local models found on the server."
+                    : "Discovered \(models.count) local model(s)."
+            } catch {
+                self.statusMessage = "Model discovery failed: \(error.localizedDescription)"
+            }
         }
     }
 
