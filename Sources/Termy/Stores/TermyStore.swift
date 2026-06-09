@@ -3438,7 +3438,7 @@ final class TermyStore: ObservableObject {
         Task {
             do {
                 let endpoint = try LocalAIEndpoint(urlString: aiEndpoint)
-                let completion = try await localAIClient(endpoint: endpoint).suggestEditorCompletion(
+                let completion = try await localAIClient(endpoint: endpoint, role: .completion).suggestEditorCompletion(
                     prefix: context.prefix,
                     suffix: context.suffix,
                     projectGuidance: aiGuidanceContext
@@ -4792,8 +4792,8 @@ final class TermyStore: ObservableObject {
     /// re-refreshes when the selected session's cwd crosses a repo boundary.
     var gitTrackedRootPath: String? { Self.enclosingGitRoot(of: gitWorkingRoot)?.path }
 
-    private func localAIClient(endpoint: LocalAIEndpoint) -> LocalAIClient {
-        LocalAIClient(endpoint: endpoint, model: aiModel, session: localAISession)
+    private func localAIClient(endpoint: LocalAIEndpoint, role: LocalAIRole = .chat) -> LocalAIClient {
+        LocalAIClient(endpoint: endpoint, model: appModel.ai.model(for: role), session: localAISession)
     }
 
     private func selectedEditorTextForAI() -> String? {
