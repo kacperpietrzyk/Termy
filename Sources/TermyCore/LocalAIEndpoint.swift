@@ -13,8 +13,10 @@ public struct LocalAIEndpoint: Equatable, Sendable {
             throw ValidationError.invalidURL
         }
 
-        let normalizedHost = host.lowercased()
-        guard ["localhost", "127.0.0.1", "::1"].contains(normalizedHost) else {
+        // Shared loopback allowlist (AI-S8): the same source of truth the
+        // transport redirect guard uses, so the two zero-remote layers can
+        // never drift apart.
+        guard LocalAILoopbackHost.isLoopback(host) else {
             throw ValidationError.remoteHostsAreOutOfScope
         }
 

@@ -780,7 +780,7 @@ final class TermyStore: ObservableObject {
         agentWorktreeRoot: URL = TermyStore.defaultAgentWorktreeParent(),
         agentStateRoot: URL = TermyStore.defaultAgentStateRoot(),
         agentHookHelperPath: String? = TermyStore.defaultAgentHookHelperPath(),
-        localAISession: URLSession = .shared,
+        localAISession: URLSession = LocalAITransport.makeLoopbackPinnedSession(),
         sshPrivateKeyVault: SSHPrivateKeyVault = SSHPrivateKeyVault(),
         remoteNotificationSink: @escaping (RemoteSessionNotification) -> Void = { _ in },
         appIsActive: @escaping () -> Bool = { true },
