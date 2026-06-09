@@ -129,14 +129,17 @@ final class GhPullRequestTests: XCTestCase {
     // MARK: - run via stubbed runner (NEVER a real gh)
 
     func testCreateRunsConstructedArgsAndParses() {
-        var captured: [String] = []
+        // Capture through a Sendable reference box: the runner closure is
+        // @Sendable, so mutating a captured `var` is a Swift 6 error.
+        final class ArgBox: @unchecked Sendable { var args: [String] = [] }
+        let captured = ArgBox()
         let gh = GhPullRequest { args in
-            captured = args
+            captured.args = args
             return self.ok("https://github.com/o/r/pull/5")
         }
         let outcome = gh.create(req(head: "agent/bar"))
-        XCTAssertEqual(captured.first, "gh")
-        XCTAssertTrue(captured.contains("agent/bar"))
+        XCTAssertEqual(captured.args.first, "gh")
+        XCTAssertTrue(captured.args.contains("agent/bar"))
         XCTAssertEqual(outcome, .created(url: "https://github.com/o/r/pull/5", number: 5))
     }
 
