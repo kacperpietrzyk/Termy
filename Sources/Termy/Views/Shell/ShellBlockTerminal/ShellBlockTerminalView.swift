@@ -86,6 +86,25 @@ struct ShellBlockTranscript: View {
         // SwiftTerm host), so the covered host remains first responder and keys
         // still reach the shell — the live bar only mirrors OSC 133 T.
         VStack(spacing: 0) {
+            if blocks.isEmpty {
+                // T7: a fresh session (no OSC-133 command yet) has nothing to
+                // scroll, so the bottom-anchored transcript would leave the whole
+                // flexible top slot as bare bg1 (the "void"). Fill that slot with
+                // a real-data empty-state panel instead — live cwd/git context +
+                // recent commands for this folder, each a one-click prefill
+                // affordance. This slot is height-bounded, so .infinity
+                // fill works (the panel covers the void rather than relocating it).
+                ShellEmptyStatePanel(
+                    state: ShellEmptyStateModel.make(
+                        cwd: session.currentWorkingDirectory ?? "",
+                        node: store.livePromptContext(for: session.id)?.node,
+                        branch: store.livePromptContext(for: session.id)?.branch,
+                        gitStatus: store.livePromptContext(for: session.id)?.gitStatus,
+                        recentCommands: store.frequentCommands()),
+                    monoFont: monoFont,
+                    onPrefill: { store.insertTerminalInput($0, for: session.id) })
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 12) {
@@ -123,6 +142,7 @@ struct ShellBlockTranscript: View {
                 .onChange(of: menuOpen) { proxy.scrollTo(Self.bottomID, anchor: .bottom) }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
             PinnedInputBar(
                 contextPills: liveContextPills,
                 executing: executing,
@@ -237,6 +257,72 @@ struct ContextPillRow: View {
         return pill.label == "±0"
             ? Color(DesignTokens.fg3)
             : DesignTokens.Glass.warningGold.opacity(0.85)
+    }
+}
+
+/// T7 fresh-session empty-state panel: replaces the bare-bg1 void above the
+/// pinned input before any command has run. A quiet bg1 card surfacing the live
+/// cwd/git context (the SAME `ContextPillRow` the pinned bar shows) and a
+/// "Recent in this folder" list of frecency-ranked commands. Each recent row is
+/// a button that PREFILLS the live buffer (no execute) — P2 keyboard-first
+/// preserved: typing stays the primary path; these are optional affordances
+/// (the SwiftTerm host underneath keeps first responder, so these rows are a
+/// pointer shortcut layered over the always-available keyboard input).
+/// Honest by construction (P1): git pills vanish outside a repo; the recents
+/// section is hidden when there is no history.
+struct ShellEmptyStatePanel: View {
+    let state: ShellModuleModel.ShellEmptyState
+    let monoFont: Font
+    let onPrefill: (String) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("New session")
+                    .font(Typography.ui(13, weight: .semibold))
+                    .foregroundStyle(Color(DesignTokens.fg1))
+                if !state.pills.isEmpty {
+                    ContextPillRow(pills: state.pills)
+                }
+            }
+            if state.showsRecents {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("RECENT IN THIS FOLDER")
+                        .font(Typography.ui(10, weight: .semibold))
+                        .tracking(0.6)
+                        .foregroundStyle(Color(DesignTokens.fg4))
+                    ForEach(Array(state.recents.enumerated()), id: \.offset) { _, cmd in
+                        Button { onPrefill(cmd) } label: {
+                            HStack(spacing: 8) {
+                                Image(systemName: "arrow.uturn.backward")
+                                    .font(.system(size: 9, weight: .medium))
+                                    .foregroundStyle(Color(DesignTokens.fg4))
+                                Text(cmd)
+                                    .font(monoFont)
+                                    .foregroundStyle(Color(DesignTokens.fg1))
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                                Spacer(minLength: 0)
+                            }
+                            .padding(.horizontal, 10).padding(.vertical, 6)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .background(Color(DesignTokens.bg2), in: RoundedRectangle(cornerRadius: 6))
+                        .overlay(RoundedRectangle(cornerRadius: 6)
+                            .stroke(Color(DesignTokens.hair2), lineWidth: 1))
+                    }
+                }
+            } else {
+                Text("Type a command below to begin.")
+                    .font(Typography.ui(12))
+                    .foregroundStyle(Color(DesignTokens.fg4))
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 18).padding(.top, 18)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 }
 
