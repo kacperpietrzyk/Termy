@@ -3258,6 +3258,21 @@ final class TermyStore: ObservableObject {
         openFileInEditorBuffer(selectedFilePath)
     }
 
+    /// M6: absolute URL of the currently-selected file under `projectRoot`, or
+    /// `nil` when nothing is selected. This is the single seam Quick Look and
+    /// Reveal-in-Finder resolve through (and the URL any future terminal/editor
+    /// Quick Look delegate would key on).
+    var selectedFileURL: URL? {
+        guard let selectedFilePath else { return nil }
+        return projectRoot.appendingPathComponent(selectedFilePath)
+    }
+
+    /// M6: reveal the selected file in Finder. No-op when nothing is selected.
+    func revealSelectedFileInFinder() {
+        guard let url = selectedFileURL else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([url])
+    }
+
     /// Open `path` in its own editor buffer (M3 multi-file). If the path is
     /// already open it is reused (no duplicate tab); otherwise a fresh buffer is
     /// appended and made active. Routes through the editor module tab.

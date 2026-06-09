@@ -18,12 +18,43 @@ public struct LocalFileItem: Equatable, Identifiable, Sendable {
     public let relativePath: String
     public let isDirectory: Bool
     public let byteCount: Int?
+    public let modificationDate: Date?
 
-    public init(name: String, relativePath: String, isDirectory: Bool, byteCount: Int? = nil) {
+    public init(name: String, relativePath: String, isDirectory: Bool, byteCount: Int? = nil, modificationDate: Date? = nil) {
         self.name = name
         self.relativePath = relativePath
         self.isDirectory = isDirectory
         self.byteCount = byteCount
+        self.modificationDate = modificationDate
+    }
+}
+
+/// Pure, view-free formatting for the Files metadata columns. Lives in TermyCore
+/// so the labels are unit-testable without AppKit/SwiftUI. Files get a byte-count
+/// size string; directories have no size. `typeLabel` is the uppercased extension
+/// (or "Folder"); `dateLabel` is a short relative/absolute string.
+public enum LocalFileMetadata: Sendable {
+    /// Human size for a file (e.g. "12 KB"); `nil` for directories (byteCount nil).
+    public static func sizeLabel(_ byteCount: Int?) -> String? {
+        guard let byteCount else { return nil }
+        return ByteCountFormatter.string(fromByteCount: Int64(byteCount), countStyle: .file)
+    }
+
+    /// Short, human modification date relative to `reference` (defaults to now);
+    /// `nil` when no date is known.
+    public static func dateLabel(_ date: Date?, relativeTo reference: Date = Date()) -> String? {
+        guard let date else { return nil }
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .abbreviated
+        return formatter.localizedString(for: date, relativeTo: reference)
+    }
+
+    /// "Folder" for directories, otherwise the uppercased file extension
+    /// (e.g. "SWIFT"); falls back to "File" for extension-less files.
+    public static func typeLabel(for item: LocalFileItem) -> String {
+        if item.isDirectory { return "Folder" }
+        let ext = URL(fileURLWithPath: item.name).pathExtension
+        return ext.isEmpty ? "File" : ext.uppercased()
     }
 }
 
@@ -122,18 +153,19 @@ public struct LocalFileService {
         let directory = try resolvedURL(for: relativePath)
         let urls = try fileManager.contentsOfDirectory(
             at: directory,
-            includingPropertiesForKeys: [.isDirectoryKey, .fileSizeKey],
+            includingPropertiesForKeys: [.isDirectoryKey, .fileSizeKey, .contentModificationDateKey],
             options: [.skipsHiddenFiles]
         )
         return try urls
             .sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
             .map { url in
-                let values = try url.resourceValues(forKeys: [.isDirectoryKey, .fileSizeKey])
+                let values = try url.resourceValues(forKeys: [.isDirectoryKey, .fileSizeKey, .contentModificationDateKey])
                 return LocalFileItem(
                     name: url.lastPathComponent,
                     relativePath: relativePath.isEmpty ? url.lastPathComponent : "\(relativePath)/\(url.lastPathComponent)",
                     isDirectory: values.isDirectory == true,
-                    byteCount: values.isDirectory == true ? nil : values.fileSize
+                    byteCount: values.isDirectory == true ? nil : values.fileSize,
+                    modificationDate: values.contentModificationDate
                 )
             }
     }

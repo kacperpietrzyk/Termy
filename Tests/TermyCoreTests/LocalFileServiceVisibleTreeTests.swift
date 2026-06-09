@@ -107,4 +107,50 @@ final class LocalFileServiceVisibleTreeTests: XCTestCase {
         let visible = try LocalFileService(root: root).visibleTree(expanded: [], maxNodes: 10)
         XCTAssertLessThanOrEqual(visible.count, 10)
     }
+
+    // MARK: - M6: metadata (modification date, size/date/type labels)
+
+    func test_list_populatesModificationDate_forFile_andSizeForFilesOnly() throws {
+        let (service, root) = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let items = try service.list()
+        let topFile = try XCTUnwrap(items.first { $0.relativePath == "top.txt" })
+        let srcDir = try XCTUnwrap(items.first { $0.relativePath == "src" })
+
+        XCTAssertNotNil(topFile.modificationDate, "files carry a modification date")
+        XCTAssertNotNil(topFile.byteCount, "files carry a byte count")
+        // Per the existing contract, directories have no byte count.
+        XCTAssertNil(srcDir.byteCount, "directories have no size")
+    }
+
+    func test_sizeLabel_isFormattedForFiles_andNilForDirectories() {
+        XCTAssertNotNil(LocalFileMetadata.sizeLabel(2048), "a file byte count yields a size string")
+        XCTAssertFalse(LocalFileMetadata.sizeLabel(2048)!.isEmpty)
+        XCTAssertNil(LocalFileMetadata.sizeLabel(nil), "no byte count (directory) yields nil")
+    }
+
+    func test_typeLabel_folderAndUppercasedExtension() {
+        let dir = LocalFileItem(name: "src", relativePath: "src", isDirectory: true)
+        let swift = LocalFileItem(name: "App.swift", relativePath: "App.swift", isDirectory: false)
+        let noExt = LocalFileItem(name: "Makefile", relativePath: "Makefile", isDirectory: false)
+        XCTAssertEqual(LocalFileMetadata.typeLabel(for: dir), "Folder")
+        XCTAssertEqual(LocalFileMetadata.typeLabel(for: swift), "SWIFT")
+        XCTAssertEqual(LocalFileMetadata.typeLabel(for: noExt), "File")
+    }
+
+    func test_dateLabel_nilInput_andNonEmptyForRecentDate() {
+        XCTAssertNil(LocalFileMetadata.dateLabel(nil))
+        let now = Date()
+        let recent = now.addingTimeInterval(-3600)
+        let label = LocalFileMetadata.dateLabel(recent, relativeTo: now)
+        XCTAssertNotNil(label)
+        XCTAssertFalse(label!.isEmpty)
+    }
+
+    func test_localFileItem_trailingModificationDateDefault_keepsEquatable() {
+        let withoutDate = LocalFileItem(name: "a.txt", relativePath: "a.txt", isDirectory: false, byteCount: 1)
+        let explicitNilDate = LocalFileItem(name: "a.txt", relativePath: "a.txt", isDirectory: false, byteCount: 1, modificationDate: nil)
+        XCTAssertEqual(withoutDate, explicitNilDate, "trailing modificationDate default preserves Equatable compatibility")
+    }
 }

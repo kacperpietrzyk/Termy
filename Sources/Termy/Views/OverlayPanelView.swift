@@ -160,6 +160,9 @@ private struct FileExplorerPanel: View {
     @State private var showNewItem = false
     @State private var renaming = false
     @State private var moving = false
+    /// Bumped to ask the Quick Look host to toggle the preview panel (context-menu
+    /// "Quick Look" path; the Space key is handled inside the host's responder).
+    @State private var quickLookTrigger = 0
 
     private var sshProfile: ConnectionProfile? { store.profiles.first { $0.kind == .ssh } }
 
@@ -236,18 +239,60 @@ private struct FileExplorerPanel: View {
                 ContentUnavailableView(store.fileSearchQuery.isEmpty ? "No files" : "No matches", systemImage: "folder")
             }
         }
+        .background(
+            QuickLookHost(url: store.selectedFileURL, trigger: quickLookTrigger)
+                .frame(width: 0, height: 0)
+                .accessibilityHidden(true)
+        )
     }
 
     private func fileRow(_ treeItem: LocalFileTreeItem) -> some View {
         let showDisclosure = treeItem.item.isDirectory && !isSearching
+        let item = treeItem.item
         return FileTreeRowView(
             treeItem: treeItem,
-            selected: store.selectedFilePath == treeItem.item.relativePath,
-            expanded: store.isFileDirectoryExpanded(treeItem.item.relativePath),
+            selected: store.selectedFilePath == item.relativePath,
+            expanded: store.isFileDirectoryExpanded(item.relativePath),
             showDisclosure: showDisclosure
         ) {
-            store.selectedFilePath = treeItem.item.relativePath
-            if showDisclosure { store.toggleFileDirectory(treeItem.item.relativePath) }
+            store.selectedFilePath = item.relativePath
+            if showDisclosure { store.toggleFileDirectory(item.relativePath) }
+        }
+        .contextMenu { rowContextMenu(for: item) }
+    }
+
+    /// Right-click actions mirroring the selection bar plus M6 additions
+    /// (Quick Look, Reveal in Finder). Selecting the row first keeps the
+    /// store-backed actions targeting the clicked item.
+    @ViewBuilder
+    private func rowContextMenu(for item: LocalFileItem) -> some View {
+        Button("Quick Look") {
+            store.selectedFilePath = item.relativePath
+            quickLookTrigger += 1
+        }
+        Button("Reveal in Finder") {
+            store.selectedFilePath = item.relativePath
+            store.revealSelectedFileInFinder()
+        }
+        Divider()
+        if !item.isDirectory {
+            Button("Open") {
+                store.selectedFilePath = item.relativePath
+                store.openSelectedFileInEditor()
+            }
+        }
+        Button("Rename") {
+            store.selectedFilePath = item.relativePath
+            renaming = true
+        }
+        Button("Move") {
+            store.selectedFilePath = item.relativePath
+            moving = true
+        }
+        Divider()
+        Button("Delete", role: .destructive) {
+            store.selectedFilePath = item.relativePath
+            store.deleteSelectedFile()
         }
     }
 
@@ -259,6 +304,8 @@ private struct FileExplorerPanel: View {
                 .lineLimit(1).truncationMode(.middle)
             Spacer()
             Button { store.openSelectedFileInEditor() } label: { Label("Open", systemImage: "square.and.pencil") }
+            Button { quickLookTrigger += 1 } label: { Label("Quick Look", systemImage: "eye") }.help("Quick Look (Space)")
+            Button { store.revealSelectedFileInFinder() } label: { Label("Reveal", systemImage: "folder") }.help("Reveal in Finder")
             Button { renaming = true } label: { Label("Rename", systemImage: "pencil") }
                 .popover(isPresented: $renaming, arrowEdge: .top) {
                     fieldPopover("Rename to", text: $store.fileRenameName) { store.renameSelectedFile(); renaming = false }
@@ -295,6 +342,16 @@ struct FileTreeRowView: View {
     let showDisclosure: Bool
     let onTap: () -> Void
 
+    /// Compact trailing metadata: "size · date" for files, just the date for
+    /// directories (type is conveyed by the icon). Nil when nothing is known.
+    private var metadataLabel: String? {
+        let item = treeItem.item
+        let size = LocalFileMetadata.sizeLabel(item.byteCount)
+        let date = LocalFileMetadata.dateLabel(item.modificationDate)
+        let joined = [size, date].compactMap { $0 }.joined(separator: " · ")
+        return joined.isEmpty ? nil : joined
+    }
+
     var body: some View {
         let isDir = treeItem.item.isDirectory
         let icon = isDir ? (expanded ? "folder.fill" : "folder") : treeItem.iconName
@@ -315,7 +372,14 @@ struct FileTreeRowView: View {
                     .foregroundStyle(isDir ? Color(DesignTokens.primary2) : Color(DesignTokens.fg3))
                     .frame(width: 16, alignment: .center)
                 Text(treeItem.item.name).foregroundStyle(Color(DesignTokens.fg1))
-                Spacer(minLength: 0)
+                Spacer(minLength: 8)
+                if let meta = metadataLabel {
+                    Text(meta)
+                        .font(Typography.mono(11))
+                        .foregroundStyle(Color(DesignTokens.fg4))
+                        .lineLimit(1)
+                        .layoutPriority(-1)
+                }
             }
             .font(Typography.ui(13))
             .padding(.horizontal, 8).padding(.vertical, 4)
