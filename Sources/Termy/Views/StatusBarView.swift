@@ -24,9 +24,12 @@ struct StatusBarView: View {
             }
 
             divider
-            // AI — the §1.4 "0 net" invariant
+            // AI — the §1.4 "0 net" invariant. Glyph reflects S9 streaming
+            // state so the global bar shows when a local request is in flight;
+            // the model name tracks the chat role (picker-assigned in S9).
             HStack(spacing: 6) {
-                Image(systemName: "sparkles").font(.system(size: 10))
+                Image(systemName: store.aiStreaming ? "sparkles.rectangle.stack" : "sparkles")
+                    .font(.system(size: 10)).symbolEffect(.pulse, isActive: store.aiStreaming)
                 Text("\(store.aiModel) · local · 0 net").foregroundStyle(Color(DesignTokens.fg3))
             }
             .foregroundStyle(Color(DesignTokens.ai.base))
