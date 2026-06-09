@@ -633,11 +633,11 @@ final class TermyCoreTests: XCTestCase {
     func testPrivateSyncBackgroundTaskConfigurationDefinesPermittedIdentifiers() {
         let configuration = PrivateSyncBackgroundTaskConfiguration.termDefault
 
-        XCTAssertEqual(configuration.appRefreshIdentifier, "pl.kacper.Termy.private-sync.refresh")
-        XCTAssertEqual(configuration.processingIdentifier, "pl.kacper.Termy.private-sync.processing")
+        XCTAssertEqual(configuration.appRefreshIdentifier, "com.kacperpietrzyk.Termy.private-sync.refresh")
+        XCTAssertEqual(configuration.processingIdentifier, "com.kacperpietrzyk.Termy.private-sync.processing")
         XCTAssertEqual(configuration.permittedIdentifiers, [
-            "pl.kacper.Termy.private-sync.refresh",
-            "pl.kacper.Termy.private-sync.processing"
+            "com.kacperpietrzyk.Termy.private-sync.refresh",
+            "com.kacperpietrzyk.Termy.private-sync.processing"
         ])
     }
 
@@ -1400,7 +1400,7 @@ final class TermyCoreTests: XCTestCase {
     func testDistributionPlanMatchesDirectDeveloperIDPRD() {
         let plan = DistributionPlan.termDefault
 
-        XCTAssertEqual(plan.bundleIdentifier, "pl.kacper.Termy")
+        XCTAssertEqual(plan.bundleIdentifier, "com.kacperpietrzyk.Termy")
         XCTAssertEqual(plan.channel, .directDMG)
         XCTAssertTrue(plan.requiresDeveloperIDApplicationCertificate)
         XCTAssertTrue(plan.requiresNotarization)
@@ -3273,7 +3273,7 @@ final class TermyCoreTests: XCTestCase {
 
     func testKeychainSecretStoreRoundTripsAndDeletesSecret() throws {
         let store = KeychainSecretStore(
-            service: "pl.kacper.Termy.tests.\(UUID().uuidString)",
+            service: "com.kacperpietrzyk.Termy.tests.\(UUID().uuidString)",
             synchronizesWithICloudKeychain: false
         )
         let reference = SecretReference.keychain("secret-\(UUID().uuidString)")
@@ -3287,7 +3287,7 @@ final class TermyCoreTests: XCTestCase {
     }
 
     func testKeychainSecretStoreDefaultsToICloudSynchronizableSecrets() {
-        let store = KeychainSecretStore(service: "pl.kacper.Termy.tests.\(UUID().uuidString)")
+        let store = KeychainSecretStore(service: "com.kacperpietrzyk.Termy.tests.\(UUID().uuidString)")
         let reference = SecretReference.keychain("secret-\(UUID().uuidString)")
 
         let addQuery = store.makeAddQueryForTesting(secret: Data("sync-value".utf8), reference: reference)
@@ -3297,7 +3297,7 @@ final class TermyCoreTests: XCTestCase {
 
     func testSSHPrivateKeyVaultStoresPrivateKeysInKeychainAndRestoresStrictFilePermissions() throws {
         let store = KeychainSecretStore(
-            service: "pl.kacper.Termy.tests.\(UUID().uuidString)",
+            service: "com.kacperpietrzyk.Termy.tests.\(UUID().uuidString)",
             synchronizesWithICloudKeychain: false
         )
         let vault = SSHPrivateKeyVault(secretStore: store)
@@ -3330,7 +3330,7 @@ final class TermyCoreTests: XCTestCase {
 
     func testSSHPrivateKeyVaultRejectsNonPrivateKeyMaterial() throws {
         let store = KeychainSecretStore(
-            service: "pl.kacper.Termy.tests.\(UUID().uuidString)",
+            service: "com.kacperpietrzyk.Termy.tests.\(UUID().uuidString)",
             synchronizesWithICloudKeychain: false
         )
         let vault = SSHPrivateKeyVault(secretStore: store)

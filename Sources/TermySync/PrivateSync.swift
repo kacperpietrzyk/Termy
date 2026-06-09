@@ -611,8 +611,8 @@ public struct PrivateSyncBackgroundTaskConfiguration: Equatable, Sendable {
     }
 
     public static let termDefault = PrivateSyncBackgroundTaskConfiguration(
-        appRefreshIdentifier: "pl.kacper.Termy.private-sync.refresh",
-        processingIdentifier: "pl.kacper.Termy.private-sync.processing"
+        appRefreshIdentifier: "com.kacperpietrzyk.Termy.private-sync.refresh",
+        processingIdentifier: "com.kacperpietrzyk.Termy.private-sync.processing"
     )
 
     public var permittedIdentifiers: [String] {

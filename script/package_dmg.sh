@@ -2,7 +2,7 @@
 set -euo pipefail
 
 APP_NAME="Termy"
-BUNDLE_ID="pl.kacper.Termy"
+BUNDLE_ID="com.kacperpietrzyk.Termy"
 MIN_SYSTEM_VERSION="14.0"
 VERSION="${VERSION:-0.1.0}"
 IDENTITY="${DEVELOPER_ID_APPLICATION:-}"
@@ -29,6 +29,7 @@ DMG_NOTARIZED_AND_STAPLED=false
 APP_SANDBOX_ENABLED=false
 SPARKLE_NESTED_HELPERS_SIGNED=false
 APPCAST_EMITTED=false
+LAUNCH_SMOKE_TEST_PASSED=false
 
 swift build -c release
 BUILD_BINARY="$(swift build -c release --show-bin-path)/$APP_NAME"
@@ -122,6 +123,20 @@ if [[ -n "$IDENTITY" ]]; then
   codesign -f -s "$IDENTITY" -o runtime "$FW_VER_DIR/Updater.app"
   codesign -f -s "$IDENTITY" -o runtime "$APP_CONTENTS/Frameworks/Sparkle.framework"
   SPARKLE_NESTED_HELPERS_SIGNED=true
+  # v0.1.1 (B): restricted iCloud/CloudKit entitlements (Termy.entitlements) are
+  # only honored at launch if an embedded provisioning profile authorizes them.
+  # Without it, AMFI refuses the launchd spawn → "Termy can't be opened"
+  # (RBS Launch failed / NSPOSIXErrorDomain 163). codesign embeds the entitlements
+  # without validating them, so this MUST be caught here or the build ships dead.
+  # Embed the Developer ID (MAC_APP_DIRECT) profile BEFORE signing the bundle.
+  if grep -q "com.apple.developer" "$ENTITLEMENTS"; then
+    PROVISION_PROFILE="${PROVISION_PROFILE:-$ROOT_DIR/Termy.provisionprofile}"
+    if [[ ! -f "$PROVISION_PROFILE" ]]; then
+      echo "error: $ENTITLEMENTS declares restricted com.apple.developer.* entitlements but no provisioning profile at $PROVISION_PROFILE. The app would fail to launch (AMFI errno 163). Provide PROVISION_PROFILE=<path>, or remove the restricted entitlements." >&2
+      exit 1
+    fi
+    cp "$PROVISION_PROFILE" "$APP_CONTENTS/embedded.provisionprofile"
+  fi
   codesign --force --options runtime --timestamp --entitlements "$ENTITLEMENTS" --sign "$IDENTITY" "$APP_BUNDLE"
   SIGNING_DETAILS="$(codesign -dv --verbose=4 "$APP_BUNDLE" 2>&1 || true)"
   if [[ "$SIGNING_DETAILS" == *"Authority=Developer ID Application"* ]]; then
@@ -138,12 +153,49 @@ else
   echo "warning: DEVELOPER_ID_APPLICATION is not set; creating unsigned DMG" >&2
 fi
 
+# CRITICAL GATE (v0.1.1): actually spawn the signed app via launchd. spctl,
+# codesign --verify --deep --strict and stapler ALL pass on an app that AMFI then
+# refuses to launch (restricted entitlements w/o profile → errno 163) — v0.1.0
+# shipped 100% unlaunchable past every static check. Only a real `open` catches it.
+# Copy off to a writable dir (mirrors the user's drag to /Applications) and poll
+# for a live PID; SIGTERM it once proven. Fail the build if it never spawns.
+if [[ "$APP_SIGNED_WITH_DEVELOPER_ID" == true ]]; then
+  SMOKE_DIR="$(mktemp -d)"
+  ditto "$APP_BUNDLE" "$SMOKE_DIR/$APP_NAME.app"
+  xattr -dr com.apple.quarantine "$SMOKE_DIR/$APP_NAME.app" 2>/dev/null || true
+  SMOKE_BIN="$SMOKE_DIR/$APP_NAME.app/Contents/MacOS/$APP_NAME"
+  open -g "$SMOKE_DIR/$APP_NAME.app" 2>/dev/null || true
+  for _ in $(seq 1 16); do
+    if pgrep -f "$SMOKE_BIN" >/dev/null 2>&1; then
+      LAUNCH_SMOKE_TEST_PASSED=true
+      break
+    fi
+    sleep 0.5
+  done
+  pkill -f "$SMOKE_BIN" 2>/dev/null || true
+  rm -rf "$SMOKE_DIR"
+  if [[ "$LAUNCH_SMOKE_TEST_PASSED" != true ]]; then
+    echo "error: launch smoke-test FAILED — the signed app does not spawn via launchd (likely AMFI errno 163: restricted entitlements without an embedded provisioning profile). Refusing to package an unlaunchable build." >&2
+    exit 1
+  fi
+  echo "launch smoke-test: PASSED"
+fi
+
+# Drag-install DMG: stage the app alongside an /Applications symlink so users can
+# drag onto Applications. The bare `-srcfolder "$APP_BUNDLE"` form shipped a DMG
+# with nothing to drop onto (v0.1.0 "I only get this").
+DMG_STAGE="$DIST_DIR/.dmg-stage"
+rm -rf "$DMG_STAGE"
+mkdir -p "$DMG_STAGE"
+cp -R "$APP_BUNDLE" "$DMG_STAGE/$APP_NAME.app"
+ln -s /Applications "$DMG_STAGE/Applications"
 hdiutil create \
   -volname "$APP_NAME" \
-  -srcfolder "$APP_BUNDLE" \
+  -srcfolder "$DMG_STAGE" \
   -ov \
   -format UDZO \
   "$DMG_PATH"
+rm -rf "$DMG_STAGE"
 
 if [[ -n "$NOTARY_PROFILE" ]]; then
   xcrun notarytool submit "$DMG_PATH" --keychain-profile "$NOTARY_PROFILE" --wait
@@ -210,6 +262,9 @@ fi
 if [[ "$APP_SANDBOX_ENABLED" == true ]]; then
   MISSING_REQUIREMENTS+=("\"appSandboxDisabled\"")
 fi
+if [[ "$LAUNCH_SMOKE_TEST_PASSED" != true ]]; then
+  MISSING_REQUIREMENTS+=("\"launchSmokeTest\"")
+fi
 # M5 distribution-audit fields:
 # • freerdpStaticLinked is constitutional: FreeRDP is always statically linked
 #   in this milestone's build (no dynamic-framework path exists).
@@ -252,6 +307,7 @@ cat > "$DISTRIBUTION_AUDIT_PATH" <<EOF
   "hardenedRuntimeEnabled": $HARDENED_RUNTIME_ENABLED,
   "dmgNotarizedAndStapled": $DMG_NOTARIZED_AND_STAPLED,
   "appSandboxEnabled": $APP_SANDBOX_ENABLED,
+  "launchSmokeTestPassed": $LAUNCH_SMOKE_TEST_PASSED,
   "satisfiesDirectDistributionPRD": $([[ ${#MISSING_REQUIREMENTS[@]} -eq 0 ]] && echo true || echo false),
   "sparkleNestedHelpersSigned": $SPARKLE_NESTED_HELPERS_SIGNED,
   "appcastEmitted": $APPCAST_EMITTED,

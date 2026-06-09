@@ -10,7 +10,7 @@ public final class KeychainSecretStore: @unchecked Sendable {
     private let service: String
     public let synchronizesWithICloudKeychain: Bool
 
-    public init(service: String = "pl.kacper.Termy", synchronizesWithICloudKeychain: Bool = true) {
+    public init(service: String = "com.kacperpietrzyk.Termy", synchronizesWithICloudKeychain: Bool = true) {
         self.service = service
         self.synchronizesWithICloudKeychain = synchronizesWithICloudKeychain
     }
