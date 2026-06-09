@@ -149,4 +149,42 @@ enum AgentsModuleModel {
     static func planProgress(_ plan: [AgentPlanStep]) -> (done: Int, total: Int) {
         (plan.filter { $0.state == .done }.count, plan.count)
     }
+
+    // MARK: AD-1 — dense dashboard row.
+    /// The honest "last action" line for a dashboard row. Prefers the live plan
+    /// signal (the active step's secondary `activeForm`, else its subject), then
+    /// the most recently touched file, and finally falls back to the state label.
+    /// NEVER fabricates an action: Codex sessions (no PostToolUse hooks → empty
+    /// plan/touched) correctly degrade to the bare state label.
+    static func lastAction(_ v: AgentSessionVitals) -> String {
+        if let active = v.plan.first(where: { $0.state == .active }) {
+            if let sub = active.sub, !sub.isEmpty { return sub }
+            if !active.text.isEmpty { return active.text }
+        }
+        if let file = v.touched.last, !file.isEmpty {
+            return "edited \((file as NSString).lastPathComponent)"
+        }
+        return stateLabel(v.state)
+    }
+
+    /// Compact "±files" signal for a dashboard row: working-tree dirty count if
+    /// any, else the count of files the agent has touched this session, else nil
+    /// (render nothing rather than a fabricated zero).
+    static func dirtySummary(_ v: AgentSessionVitals) -> String? {
+        if v.dirtyCount > 0 { return "±\(v.dirtyCount)" }
+        if !v.touched.isEmpty { return "±\(v.touched.count)" }
+        return nil
+    }
+
+    /// Waiting-first dashboard ordering (reuses the shared flat order).
+    static func dashboardOrder(_ vitals: [AgentSessionVitals]) -> [AgentSessionVitals] {
+        agentVitalsFlatOrder(vitals)
+    }
+
+    /// Clamp a keyboard-driven selection index into the current row range.
+    /// Returns nil when there are no rows.
+    static func clampedSelection(_ index: Int, count: Int) -> Int? {
+        guard count > 0 else { return nil }
+        return max(0, min(index, count - 1))
+    }
 }

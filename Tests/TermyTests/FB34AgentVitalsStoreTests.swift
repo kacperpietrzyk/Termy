@@ -117,6 +117,65 @@ final class FB34AgentVitalsStoreTests: XCTestCase {
         XCTAssertEqual(store.selectedSessionID, id)
     }
 
+    // MARK: AD-1 — dense dashboard row derivation.
+
+    private func vitals(
+        state: AgentActivityState = .working, agentType: CLIAgent = .claudeCode,
+        dirtyCount: Int = 0, plan: [AgentPlanStep] = [], touched: [String] = []
+    ) -> AgentSessionVitals {
+        AgentSessionVitals(
+            id: UUID(), name: "a", agentType: agentType, state: state,
+            cwd: "/repo", branch: "main", dirtyCount: dirtyCount, ahead: 0, behind: 0,
+            isolation: .here, ports: [], startedAt: Date(), stateChangedAt: Date(),
+            plan: plan, touched: touched)
+    }
+
+    func testLastActionPrefersActiveStepActiveForm() {
+        let v = vitals(plan: [
+            AgentPlanStep(id: "1", text: "Refactor auth", state: .active, sub: "rewiring tokens"),
+        ])
+        XCTAssertEqual(AgentsModuleModel.lastAction(v), "rewiring tokens")
+    }
+
+    func testLastActionFallsBackToActiveStepSubject() {
+        let v = vitals(plan: [
+            AgentPlanStep(id: "1", text: "Refactor auth", state: .active, sub: nil),
+        ])
+        XCTAssertEqual(AgentsModuleModel.lastAction(v), "Refactor auth")
+    }
+
+    func testLastActionUsesMostRecentTouchedFileWhenNoActiveStep() {
+        let v = vitals(plan: [], touched: ["a/b/First.swift", "x/y/Second.swift"])
+        XCTAssertEqual(AgentsModuleModel.lastAction(v), "edited Second.swift")
+    }
+
+    func testLastActionDegradesToStateLabelForCodex() {
+        // Codex has no PostToolUse hooks → empty plan/touched. Must NOT fabricate.
+        let v = vitals(state: .waitingForInput, agentType: .codex, plan: [], touched: [])
+        XCTAssertEqual(AgentsModuleModel.lastAction(v), "waiting for input")
+    }
+
+    func testDirtySummaryPrefersWorkingTreeThenTouchedThenNil() {
+        XCTAssertEqual(AgentsModuleModel.dirtySummary(vitals(dirtyCount: 5, touched: ["a"])), "±5")
+        XCTAssertEqual(AgentsModuleModel.dirtySummary(vitals(dirtyCount: 0, touched: ["a", "b"])), "±2")
+        XCTAssertNil(AgentsModuleModel.dirtySummary(vitals(dirtyCount: 0, touched: [])))
+    }
+
+    func testDashboardOrderIsWaitingFirst() {
+        let working = vitals(state: .working)
+        let waiting = vitals(state: .waitingForInput)
+        let idle = vitals(state: .idle)
+        let ordered = AgentsModuleModel.dashboardOrder([working, idle, waiting])
+        XCTAssertEqual(ordered.map(\.state), [.waitingForInput, .working, .idle])
+    }
+
+    func testClampedSelection() {
+        XCTAssertNil(AgentsModuleModel.clampedSelection(0, count: 0))
+        XCTAssertEqual(AgentsModuleModel.clampedSelection(-3, count: 4), 0)
+        XCTAssertEqual(AgentsModuleModel.clampedSelection(9, count: 4), 3)
+        XCTAssertEqual(AgentsModuleModel.clampedSelection(2, count: 4), 2)
+    }
+
     @discardableResult
     private func runGit(_ args: [String], in dir: URL) -> Int32 {
         let process = Process()

@@ -8,49 +8,48 @@ import TermyCore
 /// shipped FB-3-4/5/6 data layer; real-state-or-honest-empty.
 struct AgentsModuleView: View {
     @ObservedObject var store: TermyStore
+    /// AD-1: nil = the dense dashboard home; non-nil = drilled into that agent's
+    /// detail body. The dashboard is the module's landing view; drilling in is an
+    /// explicit row activation (↩ / double-click), never an auto-select.
+    @State private var drilledIn: UUID?
 
-    private var activeVitals: AgentSessionVitals? {
-        let vitals = store.agentVitals
-        guard let id = AgentsModuleModel.activeAgentID(vitals: vitals, selected: store.selectedSessionID)
-        else { return nil }
-        return vitals.first { $0.id == id }
+    /// The agent currently drilled into, if it still exists.
+    private var drilledVitals: AgentSessionVitals? {
+        guard let id = drilledIn else { return nil }
+        return store.agentVitals.first { $0.id == id }
     }
 
     var body: some View {
-        let active = activeVitals
+        let active = drilledVitals
         ModulePageView(
             store: store,
             module: .agents,
             alert: active?.state == .waitingForInput,
+            trailingCrumb: active?.name,
             actions: { actions(for: active) }
         ) {
-            HStack(spacing: 0) {
-                AgentSubRailView(store: store, activeID: active?.id) { id in
-                    store.selectedSessionID = id
+            Group {
+                if let active {
+                    AgentBodyView(store: store, vitals: active)
+                } else {
+                    AgentDashboardView(store: store) { id in drilledIn = id }
                 }
-                Group {
-                    if let active {
-                        AgentBodyView(store: store, vitals: active)
-                    } else {
-                        emptyBody
-                    }
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .onAppear(perform: syncSelection)
-    }
-
-    /// §4.4: focus the resolved active agent app-wide so the embed + lifecycle
-    /// actions + ⌘K all target one session. Idempotent.
-    private func syncSelection() {
-        if let id = AgentsModuleModel.activeAgentID(vitals: store.agentVitals, selected: store.selectedSessionID),
-           store.selectedSessionID != id {
-            store.selectedSessionID = id
+        // A drilled-into agent that vanishes (exited+pruned) returns to the home.
+        .onChange(of: store.agentVitals.map(\.id)) { _, ids in
+            if let id = drilledIn, !ids.contains(id) { drilledIn = nil }
         }
     }
 
     @ViewBuilder private func actions(for active: AgentSessionVitals?) -> some View {
+        if active != nil {
+            Button { drilledIn = nil } label: {
+                Label("All agents", systemImage: "chevron.left")
+            }
+            .buttonStyle(TermyCommandButtonStyle())
+        }
         if let active, let cwd = active.cwd {
             Button { NSWorkspace.shared.open(URL(fileURLWithPath: (cwd as NSString).expandingTildeInPath)) } label: {
                 Label("Open cwd", systemImage: "folder")
@@ -77,18 +76,6 @@ struct AgentsModuleView: View {
         }
         .menuStyle(.borderlessButton)
         .fixedSize()
-    }
-
-    private var emptyBody: some View {
-        VStack(spacing: 10) {
-            Image(systemName: "cpu").font(.system(size: 30)).foregroundStyle(Color(DesignTokens.ai.base))
-            Text("No agents running").font(Typography.display(22)).foregroundStyle(Color(DesignTokens.fg1))
-            Text("Spawn a Claude Code or Codex agent with the action above, or press ⌘K.")
-                .font(Typography.ui(13)).foregroundStyle(Color(DesignTokens.fg3))
-                .multilineTextAlignment(.center)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .padding(40)
     }
 }
 
