@@ -6117,6 +6117,14 @@ final class TermyStore: ObservableObject {
         terminalInputSinks[id] = sink
     }
 
+    /// T7: prefill the live input buffer with `text` WITHOUT executing it — a thin
+    /// wrapper over the F-3 accept sink so views never touch the private sink
+    /// dictionary. Sends the raw string (no trailing `\r`), mirroring
+    /// `acceptInlineSuffix`; a missing sink is a safe no-op.
+    func insertTerminalInput(_ text: String, for id: UUID) {
+        terminalInputSinks[id]?(text)
+    }
+
     private var terminalCaretOriginProviders: [UUID: () -> (x: CGFloat, y: CGFloat)?] = [:]
     func registerTerminalCaretOriginProvider(
         _ provider: @escaping () -> (x: CGFloat, y: CGFloat)?, for id: UUID) {

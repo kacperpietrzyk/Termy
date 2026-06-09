@@ -217,6 +217,19 @@ enum ShellModuleModel {
         return pills
     }
 
+    // MARK: T7 — fresh-session empty-state panel.
+
+    /// The pure data behind the fresh-session empty-state panel: the same context
+    /// pills the live pinned-input header shows (so they read identically) plus a
+    /// deduped/capped recents list. Honest by construction — git pills are absent
+    /// outside a repo and `recents` is empty (with `showsRecents == false`) when
+    /// there is no history, so the panel never fabricates a folder/branch/command.
+    struct ShellEmptyState: Equatable {
+        let pills: [ContextPill]
+        let recents: [String]
+        var showsRecents: Bool { !recents.isEmpty }
+    }
+
     // MARK: §6.1 block footer — duration display.
     /// Block footer duration: sub-second → "Nms"; under a minute → "N.Ns";
     /// else "Xm Ys". Matches the handoff's "8ms" / "4.2s".
@@ -226,5 +239,37 @@ enum ShellModuleModel {
         if s < 60 { return String(format: "%.1fs", s) }
         let whole = Int(s)
         return "\(whole / 60)m \(whole % 60)s"
+    }
+}
+
+/// T7 — pure builder for the fresh-session empty-state panel. Kept beside
+/// `ShellModuleModel` and unit-tested directly so the SwiftUI panel stays thin.
+enum ShellEmptyStateModel {
+    /// Build the fresh-session empty-state from live sources. `pills` reuses
+    /// `ShellModuleModel.blockContextPills(node:cwd:branch:gitStatus:duration:nil)`
+    /// so the empty-state header is byte-identical to the live pinned-input header.
+    /// `recents` is trimmed, has empties dropped, is deduped (first occurrence wins,
+    /// preserving the incoming frecency order), and capped to `limit`. Never
+    /// fabricates: absent git context yields no branch/diff pill, empty history
+    /// yields empty `recents` (`showsRecents == false`).
+    static func make(
+        cwd: String,
+        node: String? = nil,
+        branch: String? = nil,
+        gitStatus: String? = nil,
+        recentCommands: [String],
+        limit: Int = 6
+    ) -> ShellModuleModel.ShellEmptyState {
+        let pills = ShellModuleModel.blockContextPills(
+            node: node, cwd: cwd, branch: branch, gitStatus: gitStatus, duration: nil)
+        var seen = Set<String>()
+        var recents: [String] = []
+        for raw in recentCommands {
+            let cmd = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !cmd.isEmpty, seen.insert(cmd).inserted else { continue }
+            recents.append(cmd)
+            if recents.count == limit { break }
+        }
+        return ShellModuleModel.ShellEmptyState(pills: pills, recents: recents)
     }
 }
