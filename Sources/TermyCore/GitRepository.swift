@@ -165,6 +165,25 @@ public struct GitRepository: Sendable {
         try runGit(["show", "--no-color", commit]).stdout
     }
 
+    /// AD-8: the full delta of this branch against `base` (e.g. `main`) — the
+    /// change a PR would introduce. Uses two-dot `git diff <base>` so it stays
+    /// stable across the finalizer flow: it includes BOTH committed work and any
+    /// still-uncommitted working-tree changes, so drafting a PR description before
+    /// OR after the commit step yields the same non-empty delta. `--no-color`
+    /// keeps the patch plain for the local model.
+    public func diff(againstBase base: String) throws -> String {
+        try runGit(["diff", "--no-color", base]).stdout
+    }
+
+    /// AD-8: the files changed by this branch against `base` (committed +
+    /// uncommitted), one relative path per line. Empty list when nothing differs.
+    public func changedFiles(againstBase base: String) throws -> [String] {
+        try runGit(["diff", "--name-only", base]).stdout
+            .split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+    }
+
     /// AD-3: per-file working-tree diff scoped to this (worktree) root, for the
     /// agent diff-review surface. Combines:
     ///   1. `git diff HEAD --no-color` — staged **and** unstaged changes to

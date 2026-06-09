@@ -42,6 +42,36 @@ final class GitRepositoryDiffArgsTests: XCTestCase {
                       "working-tree diff() should reflect the uncommitted change")
     }
 
+    func testDiffAgainstBaseIncludesCommittedDeltaAfterCommit() throws {
+        let repoURL = try makeTempGitRepo()
+        runGit(["checkout", "-q", "-b", "agent/foo"], in: repoURL)
+        try "branch-only line\n".write(to: repoURL.appendingPathComponent("feature.txt"),
+                                       atomically: true, encoding: .utf8)
+        runGit(["add", "."], in: repoURL)
+        runGit(["commit", "-q", "-m", "agent change"], in: repoURL)
+
+        let repo = GitRepository(root: repoURL)
+        // After committing, the working tree is clean — bare diff() would be empty,
+        // but the branch-vs-base delta must still carry the committed change.
+        XCTAssertTrue(try repo.diff().isEmpty)
+        let delta = try repo.diff(againstBase: "main")
+        XCTAssertTrue(delta.contains("branch-only line"))
+        XCTAssertEqual(try repo.changedFiles(againstBase: "main"), ["feature.txt"])
+    }
+
+    func testDiffAgainstBaseIncludesUncommittedDeltaBeforeCommit() throws {
+        let repoURL = try makeTempGitRepo()
+        runGit(["checkout", "-q", "-b", "agent/bar"], in: repoURL)
+        try "uncommitted line\n".write(to: repoURL.appendingPathComponent("wip.txt"),
+                                       atomically: true, encoding: .utf8)
+        runGit(["add", "."], in: repoURL)   // staged but NOT committed
+
+        let repo = GitRepository(root: repoURL)
+        let delta = try repo.diff(againstBase: "main")
+        XCTAssertTrue(delta.contains("uncommitted line"))
+        XCTAssertEqual(try repo.changedFiles(againstBase: "main"), ["wip.txt"])
+    }
+
     // MARK: - Helpers
 
     private func makeTempDir() -> URL {

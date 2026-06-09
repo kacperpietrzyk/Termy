@@ -92,6 +92,8 @@ private struct AgentBodyView: View {
                     AgentVitalsStripView(vitals: vitals)
                     grid
                     AgentDiffReviewView(store: store, vitals: vitals)
+                    AgentPRFinalizerView(store: store, vitals: vitals)
+                        .id(vitals.id)   // reset draft/step state when switching agents
                 }
                 .padding(.horizontal, 28).padding(.top, 24).padding(.bottom, 18)
             }

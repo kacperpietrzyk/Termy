@@ -72,6 +72,20 @@ public struct LocalAIClient {
         return LocalAITextSuggestion(text: text)
     }
 
+    /// AD-8: draft a PR title + body from an agent's branch context, using the
+    /// LOCAL model only (offline). Consumes the unit-tested ``PRDescriptionPrompt``
+    /// builder so the prompt shape stays in one tested place; this method is just
+    /// the one-shot model call. Returns the raw model text (the caller parses it
+    /// with ``PRDescriptionPrompt/parseResponse(_:)`` into editable title/body).
+    public func draftPRDescription(_ context: PRDescriptionPrompt.Context) async throws -> LocalAITextSuggestion {
+        let response = try await generate(prompt: PRDescriptionPrompt.build(context))
+        let text = response.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else {
+            throw LocalAIClientError.emptySuggestion
+        }
+        return LocalAITextSuggestion(text: text)
+    }
+
     public func explainGitConflict(
         hunks: [GitConflictHunk],
         projectGuidance: String? = nil
