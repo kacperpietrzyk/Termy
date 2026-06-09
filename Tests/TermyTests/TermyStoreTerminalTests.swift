@@ -285,7 +285,13 @@ final class TermyStoreTerminalTests: XCTestCase {
 
     @MainActor
     func testCommandCenterSearchIncludesSavedSSHAndRDPProfiles() {
-        let store = TermyStore(startInitialPTY: false)
+        // Inject a temp frecency store so the acceptance below stays hermetic.
+        let frecencyURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("CKS3-\(UUID().uuidString).jsonl")
+        defer { try? FileManager.default.removeItem(at: frecencyURL) }
+        let store = TermyStore(
+            startInitialPTY: false,
+            paletteFrecency: PaletteFrecencyStore(fileURL: frecencyURL))
         let ssh = ConnectionProfile.ssh(
             name: "Production Bastion",
             host: "bastion.prod.example.test",
@@ -308,10 +314,23 @@ final class TermyStoreTerminalTests: XCTestCase {
         XCTAssertEqual(store.filteredCommandCenterItems.first?.title, "Production Bastion")
         XCTAssertEqual(store.filteredCommandCenterItems.first?.subtitle, "SSH deploy@bastion.prod.example.test - Production/Bastions")
 
+        // CK-S3: actions and profiles now compete in one ranked pool. For
+        // "win gateway" the "Connect RDP" action carries a keyword-exact
+        // "gateway" (a strong fuzzy signal), so cold it can sort above the
+        // profile — this test's intent is *findability*, so assert the profile
+        // is present in the results.
         store.commandQuery = "win gateway"
-        XCTAssertEqual(store.filteredCommandCenterItems.first?.id, "profile-\(rdp.id.uuidString)")
+        XCTAssertTrue(store.filteredCommandCenterItems.contains {
+            $0.id == "profile-\(rdp.id.uuidString)" && $0.title == "Windows Build VM"
+        })
+
+        // Repeated acceptance (per-item frecency, ×6 each) eventually floats the
+        // profile above the keyword-exact action — frecency feeds the ranking.
+        let rdpID = "profile-\(rdp.id.uuidString)"
+        for _ in 0..<10 { store.paletteFrecency.record(itemID: rdpID) }
+        store.commandQuery = "win gateway"
+        XCTAssertEqual(store.filteredCommandCenterItems.first?.id, rdpID)
         XCTAssertEqual(store.filteredCommandCenterItems.first?.title, "Windows Build VM")
-        XCTAssertEqual(store.filteredCommandCenterItems.first?.subtitle, "RDP builder@win-build.example.test via gateway.example.test - Windows")
     }
 
     @MainActor

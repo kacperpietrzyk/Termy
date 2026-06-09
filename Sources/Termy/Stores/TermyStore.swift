@@ -732,6 +732,9 @@ final class TermyStore: ObservableObject {
     let privacyPolicy = PrivacyPolicy.termDefault
     let historyStore: HistoryStore
     let commandActivityLog: CommandActivityLog
+    /// CK-S2/S3: per-item exp-decay frecency for the ⌘K palette (local-only;
+    /// blended with the fuzzy + context signals by `PaletteRanker`).
+    let paletteFrecency: PaletteFrecencyStore
     let sessionRestoreStore: SessionRestoreStore
     /// AD-7: local JSONL archive of finished agent sessions (plan/touched/diff/
     /// metadata), restored read-only by the History view and synced (metadata
@@ -824,6 +827,7 @@ final class TermyStore: ObservableObject {
         },
         historyStore: HistoryStore? = nil,
         commandActivityLog: CommandActivityLog? = nil,
+        paletteFrecency: PaletteFrecencyStore? = nil,
         sessionRestoreStore: SessionRestoreStore = SessionRestoreStore(),
         agentArchiveStore: AgentArchiveStore? = nil
     ) {
@@ -841,6 +845,13 @@ final class TermyStore: ObservableObject {
         } else {
             self.commandActivityLog = CommandActivityLog(
                 fileURL: Self.defaultHistoryDirectory().appendingPathComponent("command-activity.json")
+            )
+        }
+        if let paletteFrecency {
+            self.paletteFrecency = paletteFrecency
+        } else {
+            self.paletteFrecency = PaletteFrecencyStore(
+                fileURL: Self.defaultHistoryDirectory().appendingPathComponent("palette-frecency.jsonl")
             )
         }
         self.sessionRestoreStore = sessionRestoreStore
@@ -922,6 +933,7 @@ final class TermyStore: ObservableObject {
                 self.terminalSurfacePool.drain()
                 self.historyStore.flushPendingWrites()
                 self.commandActivityLog.flushPendingWrites()
+                self.paletteFrecency.flushPendingWrites()
                 self.agentArchiveStore.flushPendingWrites()
                 do {
                     try self.captureSessionRestoreSnapshotNow()
@@ -1464,24 +1476,104 @@ final class TermyStore: ObservableObject {
         appModel.agents.refresh(snapshots: agentVitalsSnapshots())
     }
 
-    var filteredCommandCenterItems: [CommandCenterItem] {
-        let query = commandQuery.trimmingCharacters(in: .whitespacesAndNewlines)
-        let matchingAgents = agentVitals.filter { vitals in
-            guard !query.isEmpty else { return true }
-            // Shared subsequence ranker for match determination; feed ordering
-            // (waiting-first via agentVitalsFlatOrder) is unchanged here.
-            return FuzzyMatcher.score(
-                query: query,
-                againstAnyOf: [vitals.name, vitals.branch ?? "", vitals.cwd ?? ""]
-            ) != nil
+    /// CK-S3: the ⌘K feed, ranking-driven (not a fixed agents/profiles/actions
+    /// concat). `PaletteRanker` blends the shared fuzzy score, per-item
+    /// exp-decay frecency, and live-context boosts into one order; the matched
+    /// title ranges ride along for the row's highlighted glyph runs. Computing
+    /// the ranking once here keeps the snapshot self-consistent across the
+    /// per-render reads of `filteredCommandCenterItems` / `commandCenterTitleRanges`.
+    private var rankedCommandCenterFeed: (items: [CommandCenterItem], ranges: [String: [Range<Int>]]) {
+        let query = commandQuery
+
+        // Candidate pool: actions (availability-gated, keymap-applied), remote
+        // connection profiles, and every agent session. The ranker filters by
+        // query match and orders; no kind is pre-sliced.
+        let actions = keymapProfile.apply(to: availableCommandActions(registry.actions))
+        let profiles = self.profiles.filter { $0.kind == .ssh || $0.kind == .rdp }
+        // Waiting-first agent order (the pre-CK top-resume-target intent) is fed
+        // as supplied order; the ranker preserves it as the within-kind tie-break.
+        let agents = agentVitalsFlatOrder(agentVitals)
+
+        var byID: [String: CommandCenterItem] = [:]
+        var candidates: [PaletteRanker.Candidate] = []
+        candidates.reserveCapacity(actions.count + profiles.count + agents.count)
+
+        for vitals in agents {
+            let item = CommandCenterItem.agentSession(vitals)
+            byID[item.id] = item
+            candidates.append(PaletteRanker.Candidate(
+                id: item.id,
+                title: vitals.name,
+                fields: [vitals.name, vitals.branch ?? "", vitals.cwd ?? ""],
+                preferredFieldIndex: 0,
+                kind: .agentSession))
         }
-        let agentItems = agentVitalsFlatOrder(matchingAgents).map(CommandCenterItem.agentSession)
-        let profileItems = filteredConnectionProfiles().map(CommandCenterItem.profile)
-        let actionItems = filteredActions.map(CommandCenterItem.action)
-        // Agents are the top resume targets; keep the prior action/profile order otherwise.
-        return query.isEmpty
-            ? agentItems + actionItems + profileItems
-            : agentItems + profileItems + actionItems
+        for action in actions {
+            let item = CommandCenterItem.action(action)
+            byID[item.id] = item
+            candidates.append(PaletteRanker.Candidate(
+                id: item.id,
+                title: action.title,
+                fields: [action.id, action.title, action.subtitle] + action.keywords,
+                preferredFieldIndex: 1,
+                kind: .action,
+                area: action.area.rawValue,
+                isBlockAction: Self.isBlockAction(action)))
+        }
+        for profile in profiles {
+            let item = CommandCenterItem.profile(profile)
+            byID[item.id] = item
+            candidates.append(PaletteRanker.Candidate(
+                id: item.id,
+                title: profile.name,
+                fields: [profile.kind.rawValue, profile.name, profile.host,
+                         profile.user ?? "", profile.gateway ?? "", profile.groupPath ?? ""],
+                preferredFieldIndex: 1,
+                kind: .profile))
+        }
+
+        let ranked = PaletteRanker.rank(
+            candidates: candidates,
+            query: query,
+            frecency: paletteFrecency.scores(),
+            context: paletteContext())
+
+        var items: [CommandCenterItem] = []
+        var ranges: [String: [Range<Int>]] = [:]
+        items.reserveCapacity(ranked.count)
+        for entry in ranked {
+            guard let item = byID[entry.id] else { continue }
+            items.append(item)
+            if !entry.titleRanges.isEmpty { ranges[entry.id] = entry.titleRanges }
+        }
+        return (items, ranges)
+    }
+
+    var filteredCommandCenterItems: [CommandCenterItem] {
+        rankedCommandCenterFeed.items
+    }
+
+    /// CK-S3: matched title Character-offset ranges per item id, for the row's
+    /// highlighted glyph runs. Empty for items whose match was keyword-only.
+    var commandCenterTitleRanges: [String: [Range<Int>]] {
+        rankedCommandCenterFeed.ranges
+    }
+
+    /// CK-S3: live context for `PaletteRanker` — all real signals already
+    /// resolved elsewhere in the store (no fabrication).
+    private func paletteContext() -> PaletteRanker.PaletteContext {
+        PaletteRanker.PaletteContext(
+            gitRootPresent: gitTrackedRootPath != nil,
+            blockSelected: selectedTerminalBlockStartLine != nil,
+            hasLiveAgents: !agentVitals.isEmpty)
+    }
+
+    /// The only honest "block action" selector: a `.terminal` action whose id
+    /// or keywords name a command *block* (there is no block action group).
+    private static func isBlockAction(_ action: CommandAction) -> Bool {
+        guard action.area == .terminal else { return false }
+        if action.id.contains("block") { return true }
+        return action.keywords.contains("block")
     }
 
     var keymapActions: [CommandAction] {
@@ -1707,6 +1799,10 @@ final class TermyStore: ObservableObject {
     }
 
     func performCommandCenterItem(_ item: CommandCenterItem) {
+        // CK-S3: learn from every acceptance before performing/dismissing.
+        // `item.id` already follows the `action-/profile-/agent-` scheme the
+        // frecency store treats as opaque. Local-only (P1).
+        paletteFrecency.record(itemID: item.id)
         switch item {
         case .action(let action):
             perform(action.id)
@@ -1792,39 +1888,6 @@ final class TermyStore: ObservableObject {
         guard let id = selectedSessionID,
               let session = sessions.first(where: { $0.id == id }) else { return false }
         return session.agentType != nil && session.agentActivity != .exited
-    }
-
-    private func filteredConnectionProfiles() -> [ConnectionProfile] {
-        let remoteProfiles = profiles.filter { $0.kind == .ssh || $0.kind == .rdp }
-        let normalizedQuery = commandQuery.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !normalizedQuery.isEmpty else { return remoteProfiles }
-
-        // Shared subsequence ranker (same as command actions / agents). `name`
-        // is the display field, so its hits outrank host/group-only matches.
-        return remoteProfiles
-            .compactMap { profile -> (ConnectionProfile, Double)? in
-                let fields = [
-                    profile.kind.rawValue,
-                    profile.name,
-                    profile.host,
-                    profile.user ?? "",
-                    profile.gateway ?? "",
-                    profile.groupPath ?? ""
-                ]
-                guard let score = FuzzyMatcher.score(query: normalizedQuery,
-                                                     againstAnyOf: fields,
-                                                     preferredFieldIndex: 1) else {
-                    return nil
-                }
-                return (profile, score)
-            }
-            .sorted { lhs, rhs in
-                if lhs.1 == rhs.1 {
-                    return lhs.0.name.localizedCaseInsensitiveCompare(rhs.0.name) == .orderedAscending
-                }
-                return lhs.1 > rhs.1
-            }
-            .map(\.0)
     }
 
     func setSelectedTerminalOutputMode(_ mode: TerminalOutputMode) {
