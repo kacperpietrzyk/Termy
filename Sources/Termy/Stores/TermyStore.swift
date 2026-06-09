@@ -1468,8 +1468,12 @@ final class TermyStore: ObservableObject {
         let query = commandQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         let matchingAgents = agentVitals.filter { vitals in
             guard !query.isEmpty else { return true }
-            return [vitals.name, vitals.branch ?? "", vitals.cwd ?? ""]
-                .contains { $0.localizedCaseInsensitiveContains(query) }
+            // Shared subsequence ranker for match determination; feed ordering
+            // (waiting-first via agentVitalsFlatOrder) is unchanged here.
+            return FuzzyMatcher.score(
+                query: query,
+                againstAnyOf: [vitals.name, vitals.branch ?? "", vitals.cwd ?? ""]
+            ) != nil
         }
         let agentItems = agentVitalsFlatOrder(matchingAgents).map(CommandCenterItem.agentSession)
         let profileItems = filteredConnectionProfiles().map(CommandCenterItem.profile)
@@ -1792,12 +1796,13 @@ final class TermyStore: ObservableObject {
 
     private func filteredConnectionProfiles() -> [ConnectionProfile] {
         let remoteProfiles = profiles.filter { $0.kind == .ssh || $0.kind == .rdp }
-        let normalizedQuery = commandQuery.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let normalizedQuery = commandQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !normalizedQuery.isEmpty else { return remoteProfiles }
 
-        let tokens = normalizedQuery.split(separator: " ").map(String.init)
+        // Shared subsequence ranker (same as command actions / agents). `name`
+        // is the display field, so its hits outrank host/group-only matches.
         return remoteProfiles
-            .compactMap { profile -> (ConnectionProfile, Int)? in
+            .compactMap { profile -> (ConnectionProfile, Double)? in
                 let fields = [
                     profile.kind.rawValue,
                     profile.name,
@@ -1806,23 +1811,10 @@ final class TermyStore: ObservableObject {
                     profile.gateway ?? "",
                     profile.groupPath ?? ""
                 ]
-                let haystack = fields.joined(separator: " ").lowercased()
-                guard tokens.allSatisfy({ haystack.contains($0) }) else {
+                guard let score = FuzzyMatcher.score(query: normalizedQuery,
+                                                     againstAnyOf: fields,
+                                                     preferredFieldIndex: 1) else {
                     return nil
-                }
-
-                var score = 0
-                if profile.name.lowercased() == normalizedQuery || profile.host.lowercased() == normalizedQuery {
-                    score += 100
-                }
-                if profile.name.lowercased().contains(normalizedQuery) {
-                    score += 50
-                }
-                if profile.host.lowercased().contains(normalizedQuery) {
-                    score += 40
-                }
-                if profile.groupPath?.lowercased().contains(normalizedQuery) == true {
-                    score += 20
                 }
                 return (profile, score)
             }
