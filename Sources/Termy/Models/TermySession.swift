@@ -113,6 +113,11 @@ enum CommandCenterItem: Identifiable, Equatable {
     case action(CommandAction)
     case profile(ConnectionProfile)
     case agentSession(AgentSessionVitals)
+    /// CK-S6: actionable empty-state fallback (Run in session / Ask local AI /
+    /// SSH to <input> / Search scrollback). Surfaced only when the scoped feed
+    /// is empty so the palette is never a dead end — and reachable by keyboard
+    /// because it rides the same item/selection model as every other row.
+    case fallback(PaletteFallback)
 
     var id: String {
         switch self {
@@ -122,6 +127,8 @@ enum CommandCenterItem: Identifiable, Equatable {
             return "profile-\(profile.id.uuidString)"
         case .agentSession(let vitals):
             return "agent-\(vitals.id.uuidString)"
+        case .fallback(let fallback):
+            return "fallback-\(fallback.id)"
         }
     }
 
@@ -133,6 +140,8 @@ enum CommandCenterItem: Identifiable, Equatable {
             return profile.name
         case .agentSession(let vitals):
             return vitals.name
+        case .fallback(let fallback):
+            return fallback.title
         }
     }
 
@@ -147,6 +156,8 @@ enum CommandCenterItem: Identifiable, Equatable {
             if let branch = vitals.branch { parts.append(branch) }
             if vitals.dirtyCount > 0 { parts.append("●\(vitals.dirtyCount) dirty") }
             return parts.joined(separator: " · ")
+        case .fallback(let fallback):
+            return fallback.subtitle
         }
     }
 
@@ -157,6 +168,8 @@ enum CommandCenterItem: Identifiable, Equatable {
         case .profile:
             return nil
         case .agentSession:
+            return nil
+        case .fallback:
             return nil
         }
     }
@@ -183,6 +196,8 @@ enum CommandCenterItem: Identifiable, Equatable {
             }
         case .agentSession:
             return "cpu"
+        case .fallback(let fallback):
+            return fallback.systemImage
         }
     }
 }
