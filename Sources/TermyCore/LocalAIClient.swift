@@ -264,6 +264,27 @@ public struct LocalAIClient {
         try await completeFIM(prefix: prefix, suffix: suffix, projectGuidance: projectGuidance)
     }
 
+    /// Auto-discover the models installed on the local Ollama server.
+    ///
+    /// Issues `GET /api/tags` against the (already localhost-validated)
+    /// endpoint and parses the payload via ``LocalAIModelDiscovery``. The
+    /// zero-remote invariant holds by construction: `endpoint` only ever
+    /// resolves to loopback. Parsing is lenient — a partial payload yields a
+    /// best-effort list rather than throwing; only transport failures throw.
+    public func discoverModels() async throws -> [DiscoveredModel] {
+        var request = URLRequest(url: endpoint.url.appending(path: "api/tags"))
+        request.httpMethod = "GET"
+
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            throw LocalAIClientError.invalidResponse
+        }
+        guard (200..<300).contains(http.statusCode) else {
+            throw LocalAIClientError.requestFailed(http.statusCode)
+        }
+        return LocalAIModelDiscovery.parseTagsResponse(data)
+    }
+
     private func generate(prompt: String) async throws -> String {
         var request = URLRequest(url: endpoint.url.appending(path: "api/generate"))
         request.httpMethod = "POST"
