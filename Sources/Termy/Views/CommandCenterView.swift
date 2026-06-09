@@ -14,6 +14,12 @@ struct CommandCenterView: View {
     @State private var actionPanelItem: CommandCenterItem?
     @State private var panelStack: [[SecondaryAction]] = []
     @State private var panelIndex = 0
+
+    // CK-S7 inline-argument state. `argCompletions` are the path/branch
+    // suggestions for the active argument; `argCompletionIndex` is the keyboard
+    // highlight. Recomputed whenever the query changes while in arg mode.
+    @State private var argCompletions: [String] = []
+    @State private var argCompletionIndex = 0
     /// CK-S5: local keyDown monitor that owns palette + panel navigation (a
     /// focused TextField eats ←/→/Return before SwiftUI `.onKeyPress`).
     @State private var keyMonitor: Any?
@@ -33,7 +39,7 @@ struct CommandCenterView: View {
                     HStack(spacing: 10) {
                         Image(systemName: "magnifyingglass")
                             .foregroundStyle(.secondary)
-                        TextField("Search commands, sessions, and settings", text: $store.commandQuery)
+                        TextField("Search, or type ssh / grep / cd / branch / agent-prompt …", text: $store.commandQuery)
                             .textFieldStyle(.plain)
                             .font(Typography.ui(16, weight: .semibold))
                             .focused($focused)
@@ -46,10 +52,24 @@ struct CommandCenterView: View {
                     .padding(.vertical, 11)
                     .background(DesignTokens.Glass.fillControl, in: Capsule())
                     .overlay(Capsule().stroke(DesignTokens.Glass.hairline, lineWidth: 1))
+
+                    // CK-S7: inline-argument affordance — shows the active verb,
+                    // its argument, the running/disabled state, and (for path/
+                    // branch args) keyboard-navigable completions.
+                    if let parsed = store.inlineArgCommand {
+                        InlineArgEntryView(
+                            parsed: parsed,
+                            completions: argCompletions,
+                            completionIndex: argCompletionIndex)
+                    }
                 }
                 .padding(16)
 
-                if feed.items.isEmpty {
+                if store.inlineArgCommand != nil {
+                    // In arg mode the result list collapses; the affordance above
+                    // is the surface, and Enter runs the parsed command.
+                    EmptyView()
+                } else if feed.items.isEmpty {
                     ContentUnavailableView(
                         "No Results",
                         systemImage: "command",
@@ -100,6 +120,7 @@ struct CommandCenterView: View {
             .onChange(of: store.commandQuery) { _, _ in
                 selectedIndex = 0
                 closeActionPanel()
+                refreshArgCompletions()
             }
             .overlay(alignment: .topTrailing) {
                 if let item = actionPanelItem {
@@ -121,8 +142,45 @@ struct CommandCenterView: View {
         .onAppear {
             focused = true
             installKeyMonitor()
+            refreshArgCompletions()
         }
         .onDisappear { removeKeyMonitor() }
+    }
+
+    // MARK: - CK-S7 inline-argument helpers
+
+    /// Recompute the active argument's path/branch completions (free-text args
+    /// yield none). Clamps the highlight so a shrinking list never strands it.
+    private func refreshArgCompletions() {
+        guard let parsed = store.inlineArgCommand, parsed.completion != .none else {
+            argCompletions = []
+            argCompletionIndex = 0
+            return
+        }
+        argCompletions = store.inlineArgCompletions(for: parsed)
+        argCompletionIndex = min(argCompletionIndex, max(0, argCompletions.count - 1))
+    }
+
+    /// ↑/↓ over the completion list while in arg mode.
+    private func moveArgCompletion(_ delta: Int) {
+        guard !argCompletions.isEmpty else { return }
+        argCompletionIndex = max(0, min(argCompletionIndex + delta, argCompletions.count - 1))
+    }
+
+    /// → / Tab accepts the highlighted completion: rewrite the query to
+    /// `<verb> <completion>` so the user can keep editing or press Enter to run.
+    private func acceptArgCompletion() {
+        guard let parsed = store.inlineArgCommand,
+              let verb = parsed.action.verb,
+              argCompletions.indices.contains(argCompletionIndex) else { return }
+        store.commandQuery = "\(verb) \(argCompletions[argCompletionIndex])"
+    }
+
+    /// Run the inline-arg command (Enter) when complete; a missing required arg
+    /// is a no-op so Enter never fires an empty grep/cd/branch.
+    private func runInlineArgCommand() {
+        guard let parsed = store.inlineArgCommand, parsed.isComplete else { return }
+        store.performInlineArgCommand(parsed)
     }
 
     // MARK: - CK-S5 key monitor
@@ -158,6 +216,30 @@ struct CommandCenterView: View {
         if mods.contains(.command), key == "k" {
             if actionPanelPresented { closeActionPanel() } else { openActionPanel() }
             return true
+        }
+
+        // CK-S7: while an inline-argument command is recognized, the palette is in
+        // arg-entry mode — ↑/↓ navigate completions, →/Tab accept one, Return runs
+        // the parsed command. (The Action Panel is closed in this mode because any
+        // query edit closes it.) Plain typing still falls through to the field.
+        let argMode = store.inlineArgCommand != nil
+        if argMode {
+            switch Int(event.keyCode) {
+            case 53: // Esc
+                store.isCommandCenterPresented = false
+                return true
+            case 125: // ↓
+                moveArgCompletion(1); return true
+            case 126: // ↑
+                moveArgCompletion(-1); return true
+            case 124, 48: // → / Tab
+                if !argCompletions.isEmpty { acceptArgCompletion(); return true }
+                return false // no completions: let → move the caret
+            case 36, 76: // Return
+                runInlineArgCommand(); return true
+            default:
+                return false
+            }
         }
 
         switch Int(event.keyCode) {
@@ -371,6 +453,83 @@ private struct CommandCenterItemRow: View {
         .background(isSelected ? DesignTokens.Glass.fillSelection : Color.clear,
                     in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md))
         .contentShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.md))
+    }
+}
+
+/// CK-S7: the inline-argument entry affordance shown under the search field when
+/// the query recognizes an arg-bearing verb. Renders the verb pill, the argument
+/// name + current value, a run/needs-input hint, and (for path/branch args) a
+/// keyboard-navigable completion list. All chrome — keystrokes are owned by the
+/// CommandCenterView key monitor.
+private struct InlineArgEntryView: View {
+    let parsed: ParsedInlineCommand
+    let completions: [String]
+    let completionIndex: Int
+
+    private var argName: String { parsed.primaryArgument?.name ?? "argument" }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                if let verb = parsed.action.verb {
+                    Text(verb)
+                        .font(Typography.mono(12, weight: .semibold))
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 3)
+                        .background(DesignTokens.Glass.fillChip,
+                                    in: RoundedRectangle(cornerRadius: DesignTokens.Radius.sm))
+                }
+                if parsed.rest.isEmpty {
+                    Text(parsed.isComplete ? parsed.effectiveValue : "<\(argName)>")
+                        .font(Typography.ui(13))
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text(parsed.rest)
+                        .font(Typography.ui(13, weight: .medium))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                }
+                Spacer()
+                Text(parsed.isComplete ? "↵ run" : "needs \(argName)")
+                    .font(Typography.ui(11))
+                    .foregroundStyle(parsed.isComplete ? Color(DesignTokens.primary) : .secondary)
+            }
+
+            if !completions.isEmpty {
+                VStack(spacing: 1) {
+                    ForEach(Array(completions.enumerated()), id: \.offset) { index, candidate in
+                        HStack(spacing: 8) {
+                            Image(systemName: parsed.completion == .branch
+                                  ? "arrow.triangle.branch" : "folder")
+                                .foregroundStyle(.secondary)
+                                .frame(width: 14)
+                            Text(candidate)
+                                .font(Typography.mono(12))
+                                .foregroundStyle(.primary)
+                                .lineLimit(1)
+                            Spacer()
+                            if index == completionIndex {
+                                Text("→")
+                                    .font(Typography.ui(11))
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        .padding(.vertical, 5)
+                        .padding(.horizontal, 8)
+                        .background(index == completionIndex
+                                    ? DesignTokens.Glass.fillSelection : Color.clear,
+                                    in: RoundedRectangle(cornerRadius: DesignTokens.Radius.sm))
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(DesignTokens.Glass.fillControl,
+                    in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md))
+        .overlay(RoundedRectangle(cornerRadius: DesignTokens.Radius.md)
+            .stroke(DesignTokens.Glass.hairline, lineWidth: 1))
     }
 }
 

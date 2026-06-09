@@ -66,7 +66,9 @@ public struct KeymapProfile: Equatable, Sendable {
                 subtitle: action.subtitle,
                 area: action.area,
                 keywords: action.keywords,
-                shortcut: shortcut(for: action)
+                shortcut: shortcut(for: action),
+                verb: action.verb,
+                arguments: action.arguments
             )
         }
     }
