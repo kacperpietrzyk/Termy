@@ -3,7 +3,7 @@ set -euo pipefail
 
 MODE="${1:-run}"
 APP_NAME="Termy"
-BUNDLE_ID="pl.kacper.Termy"
+BUNDLE_ID="com.kacperpietrzyk.Termy"
 MIN_SYSTEM_VERSION="14.0"
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

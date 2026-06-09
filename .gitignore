@@ -1,5 +1,8 @@
 .build/
 dist/
+# Developer ID provisioning profile (B): tied to the maintainer's Apple account +
+# cert, embedded at package time by script/package_dmg.sh. Not committed.
+Termy.provisionprofile
 .DS_Store
 *.xcuserstate
 DerivedData/

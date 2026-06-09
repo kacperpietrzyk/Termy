@@ -37,7 +37,7 @@ public struct DistributionPlan: Equatable, Sendable {
 
     public static let termDefault = DistributionPlan(
         appName: "Termy",
-        bundleIdentifier: "pl.kacper.Termy",
+        bundleIdentifier: "com.kacperpietrzyk.Termy",
         channel: .directDMG,
         requiresDeveloperIDApplicationCertificate: true,
         requiresNotarization: true,

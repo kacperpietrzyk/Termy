@@ -128,7 +128,7 @@ public final class FreeRDPSession: @unchecked Sendable {
         self.descriptor = descriptor
         self.secretLoader = { try secretStore.load($0) }
         self.frameScale = max(1, descriptor.scale)
-        self.pumpQueue = DispatchQueue(label: "pl.kacper.Termy.freerdp.pump", qos: .userInitiated)
+        self.pumpQueue = DispatchQueue(label: "com.kacperpietrzyk.Termy.freerdp.pump", qos: .userInitiated)
     }
 
     /// Injection initializer (testing / non-Keychain loaders).
@@ -139,7 +139,7 @@ public final class FreeRDPSession: @unchecked Sendable {
         self.descriptor = descriptor
         self.secretLoader = secretLoader
         self.frameScale = max(1, descriptor.scale)
-        self.pumpQueue = DispatchQueue(label: "pl.kacper.Termy.freerdp.pump", qos: .userInitiated)
+        self.pumpQueue = DispatchQueue(label: "com.kacperpietrzyk.Termy.freerdp.pump", qos: .userInitiated)
     }
 
     // MARK: Lifecycle

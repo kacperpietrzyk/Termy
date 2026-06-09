@@ -7,7 +7,7 @@ final class TermyStorePrivateSyncTests: XCTestCase {
     @MainActor
     func testStoreImportsAndRestoresSSHPrivateKeyThroughKeychainVault() throws {
         let secretStore = KeychainSecretStore(
-            service: "pl.kacper.Termy.tests.\(UUID().uuidString)",
+            service: "com.kacperpietrzyk.Termy.tests.\(UUID().uuidString)",
             synchronizesWithICloudKeychain: false
         )
         let store = TermyStore(

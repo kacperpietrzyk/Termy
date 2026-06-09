@@ -2409,7 +2409,7 @@ final class TermyStore: ObservableObject {
                 statusMessage = "Private iCloud sync requires a signed build with the iCloud container entitlement."
                 return
             }
-            let status = await CloudKitPrivateSyncClient(containerIdentifier: "iCloud.pl.kacper.Termy").accountStatus()
+            let status = await CloudKitPrivateSyncClient(containerIdentifier: "iCloud.com.kacperpietrzyk.Termy").accountStatus()
             privateSyncStatus = formatCloudAccountStatus(status)
             statusMessage = "iCloud account status: \(privateSyncStatus)."
             #else
@@ -2478,7 +2478,7 @@ final class TermyStore: ObservableObject {
             applyPrivateSyncEventStep(step)
             return step
         }
-        let client = CloudKitPrivateSyncClient(containerIdentifier: "iCloud.pl.kacper.Termy")
+        let client = CloudKitPrivateSyncClient(containerIdentifier: "iCloud.com.kacperpietrzyk.Termy")
         let step = await coordinator.handle(
             event: event,
             at: now,
@@ -2526,7 +2526,7 @@ final class TermyStore: ObservableObject {
         #if canImport(CloudKit)
         let step: PrivateSyncEngineRuntimeStep
         if hasCloudKitPrivateSyncEntitlement {
-            let client = CloudKitPrivateSyncClient(containerIdentifier: "iCloud.pl.kacper.Termy")
+            let client = CloudKitPrivateSyncClient(containerIdentifier: "iCloud.com.kacperpietrzyk.Termy")
             step = await runtime.handle(
                 event: event,
                 at: now,
@@ -4674,7 +4674,7 @@ final class TermyStore: ObservableObject {
               ) else {
             return false
         }
-        return (value as? [String])?.contains("iCloud.pl.kacper.Termy") == true
+        return (value as? [String])?.contains("iCloud.com.kacperpietrzyk.Termy") == true
         #else
         return false
         #endif
@@ -4779,7 +4779,7 @@ final class TermyStore: ObservableObject {
                 await self?.handlePrivateSyncEngineEvent(event)
             }
         )
-        let database = CKContainer(identifier: "iCloud.pl.kacper.Termy").privateCloudDatabase
+        let database = CKContainer(identifier: "iCloud.com.kacperpietrzyk.Termy").privateCloudDatabase
         privateSyncEngineSession = CloudKitPrivateSyncEngineSession(
             database: database,
             stateSerialization: nil,

@@ -26,7 +26,7 @@ following are **maintainer-only** and not required to contribute:
 - Signed + notarized DMG releases (Apple Developer account, Developer ID certificate,
   notary profile).
 - Sparkle auto-update signing (the EdDSA key; lives in the maintainer's Keychain).
-- iCloud sync (bound to the maintainer's iCloud container `iCloud.pl.kacper.Termy`).
+- iCloud sync (bound to the maintainer's iCloud container `iCloud.com.kacperpietrzyk.Termy`).
 
 ## Trying a build (testers)
 
