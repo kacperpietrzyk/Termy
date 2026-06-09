@@ -165,6 +165,46 @@ public struct GitRepository: Sendable {
         try runGit(["show", "--no-color", commit]).stdout
     }
 
+    /// AD-3: per-file working-tree diff scoped to this (worktree) root, for the
+    /// agent diff-review surface. Combines:
+    ///   1. `git diff HEAD --no-color` — staged **and** unstaged changes to
+    ///      tracked files (the bare `diff()` shows unstaged only — wrong here).
+    ///   2. untracked files (`??` in porcelain), synthesized READ-ONLY via
+    ///      `git diff --no-index /dev/null <file>` so a live agent's fresh
+    ///      `Write`s are visible **without** mutating its index (no `add -N`).
+    /// Committed agent work (HEAD already advanced) is intentionally NOT shown —
+    /// base-SHA recovery is a follow-up; this surface is working-tree only.
+    /// Binary/oversized untracked files degrade to a single meta line rather than
+    /// dumping bytes. Never throws for a per-file failure — that file is skipped.
+    public func fileDiffs() throws -> [GitFileDiff] {
+        var result = UnifiedDiffParser.parse(try runGit(["diff", "HEAD", "--no-color"]).stdout)
+        for path in try untrackedPaths() {
+            if let synthesized = untrackedFileDiff(path: path) {
+                result.append(synthesized)
+            }
+        }
+        return result
+    }
+
+    /// Porcelain `??` entries — files git is not yet tracking.
+    private func untrackedPaths() throws -> [String] {
+        try changes().filter(\.isUntracked).map(\.path)
+    }
+
+    /// Read-only synthesized diff for one untracked file: `git diff --no-index`
+    /// against `/dev/null` emits a full add-diff and never touches the index.
+    /// Exit code 1 (differences found) is expected here, so we read stdout
+    /// directly rather than via `runGit` (which treats non-zero as failure).
+    private func untrackedFileDiff(path: String) -> GitFileDiff? {
+        let command = shellCommand(for: ["diff", "--no-color", "--no-index", "/dev/null", path])
+        guard let out = try? ShellCommandRunner(workingDirectory: root).run(command).stdout,
+              !out.isEmpty else { return nil }
+        // The parser sees "+++ b/<path>"; force the untracked flag + .untracked status.
+        guard let parsed = UnifiedDiffParser.parse(out).first else { return nil }
+        return GitFileDiff(path: path, oldPath: nil, status: .untracked,
+                           untracked: true, lines: parsed.lines)
+    }
+
     /// Walk up from `url` looking for a `.git` entry; returns the repo root or
     /// nil. Pure, filesystem-only — used by the app to resolve the git working
     /// root from the active session's cwd (track-active-session-cwd).
