@@ -919,6 +919,15 @@ final class TermyStore: ObservableObject {
         }
     }
 
+    /// T1: interpret the live shell-integration git status. It now carries a
+    /// decimal change-count ("3" dirty, "0" clean in-repo); the legacy `*` flag is
+    /// still treated as dirty for back-compat. Empty → not dirty.
+    func liveContextIsDirty(_ status: String) -> Bool {
+        if status.isEmpty { return false }
+        if let n = Int(status) { return n > 0 }
+        return true   // legacy "*" or any non-numeric marker = dirty
+    }
+
     var gitStatusBarSummary: String {
         // X1: source-of-truth = the same live precmd context the pinned-input
         // header trusts (livePromptContext), so footer and header can't
@@ -942,7 +951,10 @@ final class TermyStore: ObservableObject {
         let dirtyCount = gitChanges.count
         if dirtyCount > 0 {
             parts.append("\(dirtyCount) \(dirtyCount == 1 ? "change" : "changes")")
-        } else if let liveStatus = live?.gitStatus, !liveStatus.isEmpty {
+        } else if let liveStatus = live?.gitStatus, liveContextIsDirty(liveStatus) {
+            // T1: the live status now carries a COUNT ("3"/"0"), not a bare flag.
+            // "0" = clean in-repo (must NOT read as dirty); a positive count or the
+            // legacy "*" marker = dirty.
             parts.append("dirty")
         } else {
             parts.append("clean")

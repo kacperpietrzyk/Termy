@@ -40,9 +40,9 @@ struct ShellBlockTranscript: View {
     // §12.1 live pinned-input context header: real live cwd + the precmd-fed
     // live branch/node for the CURRENT prompt (Bug 1: refreshes on `cd`, clears
     // in a non-repo; nil before the first precmd → cwd-only, never stale).
-    private var liveContextHeader: String {
+    private var liveContextPills: [ShellModuleModel.ContextPill] {
         let ctx = store.livePromptContext(for: session.id)
-        return ShellModuleModel.blockContextHeader(
+        return ShellModuleModel.blockContextPills(
             node: ctx?.node,
             cwd: session.currentWorkingDirectory,
             branch: ctx?.branch,
@@ -103,7 +103,7 @@ struct ShellBlockTranscript: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             PinnedInputBar(
-                contextHeader: liveContextHeader,
+                contextPills: liveContextPills,
                 executing: executing,
                 text: liveInput.text,
                 cursor: liveInput.cursor,
@@ -142,7 +142,7 @@ struct ShellBlockTranscript: View {
 /// the layout never jumps. The bar lives INSIDE the transcript overlay so the
 /// covered SwiftTerm host keeps first-responder focus.
 struct PinnedInputBar: View {
-    let contextHeader: String
+    let contextPills: [ShellModuleModel.ContextPill]
     let executing: Bool
     let text: String
     let cursor: Int
@@ -152,10 +152,8 @@ struct PinnedInputBar: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            if !contextHeader.isEmpty {
-                Text(contextHeader)
-                    .font(Typography.mono(10.5))
-                    .foregroundStyle(Color(DesignTokens.fg4))
+            if !contextPills.isEmpty {
+                ContextPillRow(pills: contextPills)
             }
             if executing {
                 // Stable-height placeholder; a command owns the line, no live input.
@@ -173,6 +171,51 @@ struct PinnedInputBar: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color(DesignTokens.bg1))
         .overlay(alignment: .top) { Rectangle().fill(Color(DesignTokens.hair)).frame(height: 1) }
+    }
+}
+
+/// §12.2 T1 — the input-block context as capsule CHIPS (folder / branch / ±N diff
+/// / node / duration) instead of a flat `·`-joined String. Reuses the actionsRow
+/// capsule style (bg2 fill + hair2 stroke, mono 10.5, fg3 text). The diff pill
+/// tints by dirtiness: fg3 at `±0` (clean, in-repo), warningGold when changes are
+/// pending (or the legacy bare `±` unknown-dirty marker). Pure render over the
+/// `ShellModuleModel.blockContextPills` model — no data fabrication here.
+struct ContextPillRow: View {
+    let pills: [ShellModuleModel.ContextPill]
+
+    var body: some View {
+        HStack(spacing: 6) {
+            ForEach(Array(pills.enumerated()), id: \.offset) { _, pill in
+                chip(pill)
+            }
+        }
+    }
+
+    @ViewBuilder private func chip(_ pill: ShellModuleModel.ContextPill) -> some View {
+        let tint = tintColor(pill)
+        HStack(spacing: 3) {
+            if let icon = pill.icon {
+                Image(systemName: icon)
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundStyle(tint)
+            }
+            Text(pill.label)
+                .font(Typography.mono(10.5))
+                .foregroundStyle(tint)
+        }
+        .padding(.horizontal, 7).padding(.vertical, 2)
+        .background(Color(DesignTokens.bg2), in: Capsule())
+        .overlay(Capsule().stroke(Color(DesignTokens.hair2), lineWidth: 1))
+    }
+
+    /// Diff chip tints by dirtiness; everything else is the muted secondary text.
+    private func tintColor(_ pill: ShellModuleModel.ContextPill) -> Color {
+        guard pill.kind == .diff else { return Color(DesignTokens.fg3) }
+        // "±0" = clean in-repo → muted; anything else (±N>0 or bare legacy "±") =
+        // pending changes → warning gold.
+        return pill.label == "±0"
+            ? Color(DesignTokens.fg3)
+            : DesignTokens.Glass.warningGold.opacity(0.85)
     }
 }
 
@@ -204,8 +247,11 @@ struct ShellLiveBlock: View {
                 .anchorPreference(key: LiveCaretBoundsKey.self, value: .bounds) { $0 }
             // Text after the cursor, then the dimmed F-1 ghost (ghost is non-nil
             // only when the cursor is at the end, so `afterAttr` is empty then).
+            // T1: when a ghost is offered, trail a dim `→` accept-affordance so the
+            // user can see the suggestion is acceptable (matches Warp's tab/→ hint).
             (Text(afterAttr)
-             + Text(ghost ?? "").foregroundStyle(Color(DesignTokens.fg1).opacity(0.35)))
+             + Text(ghost ?? "").foregroundStyle(Color(DesignTokens.fg1).opacity(0.35))
+             + Text(ghost != nil ? "  →" : "").foregroundStyle(Color(DesignTokens.fg4)))
                 .font(monoFont)
             Spacer(minLength: 0)
         }

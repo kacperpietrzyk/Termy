@@ -21,7 +21,12 @@ public enum ShellIntegrationScript {
           termy_branch="$(git --no-optional-locks symbolic-ref --short -q HEAD 2>/dev/null)"
           termy_gitstatus=''
           if [[ -n $termy_branch ]]; then
-            git --no-optional-locks diff --quiet --ignore-submodules HEAD 2>/dev/null || termy_gitstatus='*'
+            # T1 / Warp ±N parity: emit a COUNT of working-tree changes instead of a
+            # bare dirty flag. `grep -c .` yields '0' on a clean tree (Warp shows ± 0
+            # in-repo) and the integer otherwise. Stays cheap (`--no-optional-locks`),
+            # fail-open: a git error leaves the count empty/zero and the field is
+            # only emitted when in a repo (guarded by $termy_branch above).
+            termy_gitstatus="$(git --no-optional-locks status --porcelain --untracked-files=all 2>/dev/null | grep -c .)"
           fi
           # node version is session-constant; probe once, then reuse the cached value.
           if [[ -z $TERMY_NODE_PROBED ]]; then

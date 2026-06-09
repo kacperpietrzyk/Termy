@@ -38,8 +38,8 @@ struct ShellCommandBlockCard: View {
         ANSITextParser().parse(block.outputLines.map(\.text).joined())
     }
 
-    private var contextHeader: String {
-        ShellModuleModel.blockContextHeader(
+    private var contextPills: [ShellModuleModel.ContextPill] {
+        ShellModuleModel.blockContextPills(
             node: block.node,
             cwd: block.contextCwd,
             branch: block.branch,
@@ -60,11 +60,8 @@ struct ShellCommandBlockCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            if !contextHeader.isEmpty {
-                Text(contextHeader)
-                    .font(Typography.mono(10.5))
-                    .foregroundStyle(Color(DesignTokens.fg4))
-                    .textSelection(.enabled)
+            if !contextPills.isEmpty {
+                ContextPillRow(pills: contextPills)
             }
             commandLine
             bodyContent
