@@ -64,5 +64,13 @@ final class FileTreeRenderGateTests: XCTestCase {
         let tree = try service.visibleTree(expanded: expanded)
         XCTAssertTrue(tree.map(\.item.relativePath).contains("src/views/Home.swift"))
         renderRows(tree, expanded: expanded, selected: "src/views/Home.swift", name: "02-expanded")
+
+        // M6: a real file item now carries the metadata the row renders
+        // (size + modification date); the type is conveyed by the icon.
+        let fileItem = try XCTUnwrap(tree.first { $0.item.relativePath == "src/views/Home.swift" }).item
+        XCTAssertNotNil(fileItem.byteCount, "rendered file rows have a size")
+        XCTAssertNotNil(fileItem.modificationDate, "rendered file rows have a modification date")
+        XCTAssertNotNil(LocalFileMetadata.sizeLabel(fileItem.byteCount))
+        XCTAssertNotNil(LocalFileMetadata.dateLabel(fileItem.modificationDate))
     }
 }

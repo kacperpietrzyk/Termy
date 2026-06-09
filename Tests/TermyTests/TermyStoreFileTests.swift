@@ -152,4 +152,29 @@ final class TermyStoreFileTests: XCTestCase {
         XCTAssertEqual(try String(contentsOf: root.appendingPathComponent("archive/today.md"), encoding: .utf8), "# Today\n")
         XCTAssertTrue(store.fileItems.contains { $0.relativePath == "archive" && $0.isDirectory })
     }
+
+    /// M6: Reveal-in-Finder / Quick Look resolve through `selectedFileURL`. Assert
+    /// the seam (a no-op nil when nothing is selected; the correct absolute URL
+    /// under projectRoot when set) without a live Finder/Quick Look call.
+    @MainActor
+    func testSelectedFileURLResolvesUnderProjectRootAndIsNilWhenUnselected() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("termy-store-files-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try "# Termy\n".write(to: root.appendingPathComponent("README.md"), atomically: true, encoding: .utf8)
+
+        let store = TermyStore(startInitialPTY: false, projectRoot: root)
+
+        // No selection → no URL (reveal/Quick Look are no-ops).
+        XCTAssertNil(store.selectedFileURL)
+        store.revealSelectedFileInFinder() // must not crash
+
+        store.selectedFilePath = "README.md"
+        let url = try XCTUnwrap(store.selectedFileURL)
+        XCTAssertEqual(url.lastPathComponent, "README.md")
+        // The selected file sits directly under the sanitized project root.
+        let expectedRoot = TermyStore.sanitizedProjectRoot(root)
+        XCTAssertEqual(url.deletingLastPathComponent().standardizedFileURL, expectedRoot)
+    }
 }
