@@ -86,12 +86,12 @@ struct AgentDashboardView: View {
     }
 
     @ViewBuilder private func content(_ items: [AgentSessionVitals]) -> some View {
-        if items.isEmpty {
-            empty
-        } else {
-            ScrollViewReader { proxy in
-                ScrollView {
-                    VStack(spacing: 3) {
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(spacing: 3) {
+                    if items.isEmpty {
+                        empty
+                    } else {
                         ForEach(Array(items.enumerated()), id: \.element.id) { idx, v in
                             AgentRowView(
                                 vitals: v,
@@ -101,12 +101,17 @@ struct AgentDashboardView: View {
                                 .id(v.id)
                         }
                     }
-                    .padding(.horizontal, 12).padding(.vertical, 10)
-                }
-                .onChange(of: selectedIndex) { _, _ in
-                    if let i = AgentsModuleModel.clampedSelection(selectedIndex, count: items.count) {
-                        proxy.scrollTo(items[i].id)
+                    // AD-7: finished/archived sessions live below the live list.
+                    if !store.archivedAgentSessions.isEmpty {
+                        AgentHistoryView(store: store)
+                            .padding(.top, items.isEmpty ? 0 : 12)
                     }
+                }
+                .padding(.horizontal, 12).padding(.vertical, 10)
+            }
+            .onChange(of: selectedIndex) { _, _ in
+                if let i = AgentsModuleModel.clampedSelection(selectedIndex, count: items.count) {
+                    proxy.scrollTo(items[i].id)
                 }
             }
         }

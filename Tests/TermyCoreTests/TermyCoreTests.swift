@@ -153,6 +153,7 @@ final class TermyCoreTests: XCTestCase {
                 .appearanceAndKeymap: .cloudKitPrivateDatabase,
                 .snippetsAndPrompts: .cloudKitPrivateDatabase,
                 .workspaces: .cloudKitPrivateDatabase,
+                .agentArchives: .cloudKitPrivateDatabase,
                 .secrets: .iCloudKeychain,
                 .terminalScrollback: .localOnly,
                 .projectFiles: .localOnly,

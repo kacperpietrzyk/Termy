@@ -733,6 +733,10 @@ final class TermyStore: ObservableObject {
     let historyStore: HistoryStore
     let commandActivityLog: CommandActivityLog
     let sessionRestoreStore: SessionRestoreStore
+    /// AD-7: local JSONL archive of finished agent sessions (plan/touched/diff/
+    /// metadata), restored read-only by the History view and synced (metadata
+    /// only) via the private CloudKit DB.
+    let agentArchiveStore: AgentArchiveStore
 
     private static func defaultHistoryDirectory() -> URL {
         let support = FileManager.default
@@ -820,7 +824,8 @@ final class TermyStore: ObservableObject {
         },
         historyStore: HistoryStore? = nil,
         commandActivityLog: CommandActivityLog? = nil,
-        sessionRestoreStore: SessionRestoreStore = SessionRestoreStore()
+        sessionRestoreStore: SessionRestoreStore = SessionRestoreStore(),
+        agentArchiveStore: AgentArchiveStore? = nil
     ) {
         if let historyStore {
             self.historyStore = historyStore
@@ -839,6 +844,12 @@ final class TermyStore: ObservableObject {
             )
         }
         self.sessionRestoreStore = sessionRestoreStore
+        if let agentArchiveStore {
+            self.agentArchiveStore = agentArchiveStore
+        } else {
+            self.agentArchiveStore = AgentArchiveStore(
+                fileURL: Self.defaultHistoryDirectory().appendingPathComponent("agent-archive.jsonl"))
+        }
         CompletionSidecar.sweepStaleWorkDirs(in: Self.sidecarWorkDirParent())
         Task.detached { GitRepository.sweepCleanAgentWorktrees(in: agentWorktreeRoot) }
         // FB-3-2: at startup no agent sessions are live, so every state file is
@@ -911,6 +922,7 @@ final class TermyStore: ObservableObject {
                 self.terminalSurfacePool.drain()
                 self.historyStore.flushPendingWrites()
                 self.commandActivityLog.flushPendingWrites()
+                self.agentArchiveStore.flushPendingWrites()
                 do {
                     try self.captureSessionRestoreSnapshotNow()
                 } catch {
@@ -2460,6 +2472,7 @@ final class TermyStore: ObservableObject {
             workspaces: workspaceStore.layouts.map {
                 SyncWorkspace(id: $0.id, name: $0.name, panelIDs: $0.panelIDs, paneTree: $0.paneTree)
             },
+            agentArchives: agentArchiveStore.allRecords().map(AgentArchiveSyncRecord.init(archive:)),
             terminalScrollback: selectedSession?.lines.map(\.text) ?? [],
             aiConversationHistory: currentAIConversationHistory()
         )
@@ -2540,6 +2553,13 @@ final class TermyStore: ObservableObject {
         }
         if !restored.aiConversationHistory.isEmpty {
             aiConversationHistory = restored.aiConversationHistory
+        }
+        // AD-7: merge synced archives (metadata only — diff is local-only and
+        // absent from the synced payload) into the local store, preserving any
+        // fuller local copy's diff. Structural — the iCloud round-trip itself is
+        // gated on a signed build (same class as the P2 sync follow-up).
+        if !restored.agentArchives.isEmpty {
+            agentArchiveStore.merge(restored.agentArchives.map(\.archive))
         }
     }
 
@@ -2916,6 +2936,10 @@ final class TermyStore: ObservableObject {
     private var agentStateMachines: [UUID: AgentStateMachine] = [:]
     /// FB-3-5: per-agent plan + touched files, folded from PostToolUse hook files.
     private var agentProgress: [UUID: AgentProgress] = [:]
+    /// AD-7: session ids already archived this run, so a double exit-fire never
+    /// double-archives (the JSONL store also de-dupes by id, but skipping the diff
+    /// shell-out is cheaper).
+    private var archivedAgentSessionIDs: Set<UUID> = []
     /// v3 Shell §6.1: cached zsh version per shell path, populated off the main thread by warmShellVersionIfNeeded.
     private var shellVersionCache: [String: String] = [:]
     /// Per-session output-quiescence timers (cancel-and-restart, like the F-4 debounce).
@@ -4036,6 +4060,63 @@ final class TermyStore: ObservableObject {
                 text: "Worktree cleanup failed: \(error.localizedDescription)"),
                 to: sessionID)
         }
+    }
+
+    /// AD-7: capture a finished agent session into the local archive. Computes the
+    /// worktree diff via `GitRepository` synchronously here (must run before the
+    /// worktree is removed). Skips non-agent sessions and anything already archived
+    /// this run. After archiving, stamps + stages a sync snapshot so the bounded
+    /// metadata rides the private CloudKit DB (full diff stays local-only).
+    private func archiveAgentSessionOnExit(_ sessionID: UUID) {
+        guard let index = sessions.firstIndex(where: { $0.id == sessionID }),
+              let agentType = sessions[index].agentType,
+              !archivedAgentSessionIDs.contains(sessionID) else { return }
+        archivedAgentSessionIDs.insert(sessionID)
+
+        let session = sessions[index]
+        let handle = agentWorktrees[sessionID]
+        let worktreePath = handle?.path.path
+        let progress = agentProgress[sessionID] ?? .empty
+        // Diff + branch from the worktree (where the agent worked) when isolated,
+        // else from the enclosing git root of the session cwd (a `.here` agent may
+        // run in a subdirectory — mirror AD-3's `worktreeRoot` resolution so the
+        // archived diff matches the live diff-review view). Local shell-out only;
+        // failures degrade to "".
+        let diffRoot: URL? = {
+            if let path = handle?.path { return path }
+            guard let cwd = session.currentWorkingDirectory, !cwd.isEmpty else { return nil }
+            let url = URL(fileURLWithPath: (cwd as NSString).expandingTildeInPath)
+            return GitRepository.enclosingGitRoot(of: url) ?? url
+        }()
+        var diff = ""
+        var branch: String? = nil
+        if let diffRoot {
+            let repo = GitRepository(root: diffRoot)
+            if repo.isRepository() {
+                diff = (try? repo.diff()) ?? ""
+                branch = (try? repo.currentBranch()).flatMap { $0.isEmpty ? nil : $0 }
+            }
+        }
+
+        let record = AgentArchiveRecord(
+            id: sessionID, name: session.title, agentType: agentType,
+            finalState: session.agentActivity, cwd: session.currentWorkingDirectory,
+            branch: branch, worktreePath: worktreePath,
+            startedAt: session.startedAt, archivedAt: Date(),
+            exitCode: session.lastExitCode.map(Int.init),
+            plan: progress.plan, touched: progress.touched, diff: diff)
+        agentArchiveStore.archive(record)
+
+        // D1 single source of truth: stamp the mutation here (the only edit site),
+        // then stage — `overlaySyncModifiedAt` carries it into `modifiedAt`. Never
+        // stamped at stage/adoption time (that is the lost-update trap).
+        stampSyncEdit("agent-archive-\(sessionID.uuidString)")
+        stagePrivateSyncSnapshot()
+    }
+
+    /// AD-7: archived agent sessions, newest-first, for the History view.
+    var archivedAgentSessions: [AgentArchiveRecord] {
+        agentArchiveStore.allRecords()
     }
 
     func importSSHConfig() {
@@ -6661,6 +6742,11 @@ final class TermyStore: ObservableObject {
         agentQuiescenceTasks.removeValue(forKey: sessionID)
         try? FileManager.default.removeItem(
             at: agentStateRoot.appendingPathComponent("\(sessionID.uuidString).state"))
+        // AD-7: archive the finished agent (plan/touched/diff/metadata) BEFORE the
+        // worktree is cleaned up below — otherwise the diff source is gone. Reads
+        // `agentProgress` + `agentWorktrees`, both still populated here (they are
+        // only cleared in the close/restart paths). No-op for non-agent sessions.
+        archiveAgentSessionOnExit(sessionID)
         cleanupAgentWorktreeIfNeeded(for: sessionID)
         // v3 block terminal: the child is gone, so SwiftTerm will never switch
         // back from the alternate screen on its own. Clear the alt-screen flag
