@@ -36,7 +36,9 @@ final class NativeRemoteNotificationCenter: NSObject, UNUserNotificationCenterDe
         content.body = notification.body
         content.categoryIdentifier = notification.category.rawValue
         if let sessionID = notification.sessionID {
-            content.userInfo["sessionID"] = sessionID.uuidString
+            content.userInfo.merge(
+                AgentNotificationPolicy.encodeSessionUserInfo(sessionID)
+            ) { _, new in new }
         }
         let request = UNNotificationRequest(
             identifier: notification.identifier,
@@ -70,8 +72,9 @@ final class NativeRemoteNotificationCenter: NSObject, UNUserNotificationCenterDe
     ) {
         defer { completionHandler() }
         guard response.actionIdentifier == UNNotificationDefaultActionIdentifier,
-              let raw = response.notification.request.content.userInfo["sessionID"] as? String,
-              let id = UUID(uuidString: raw) else { return }
+              let id = AgentNotificationPolicy.decodeSession(
+                fromUserInfo: response.notification.request.content.userInfo)
+        else { return }
         Task { @MainActor in self.onAgentNotificationActivated?(id) }
     }
 }

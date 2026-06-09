@@ -1432,6 +1432,19 @@ final class TermyStore: ObservableObject {
         mergeAgentVitals(snapshots: agentVitalsSnapshots(), gitCache: appModel.agents.gitCache)
     }
 
+    /// AD-2: agents that need attention (waiting / finished / failed), waiting-first,
+    /// tagged by kind for the sidebar notifications popover. `.error` vs clean
+    /// `.exited` is resolved from each session's real `lastExitCode` — never faked.
+    var agentAttention: [AgentAttentionItem] {
+        let exitCodes = Dictionary(
+            sessions.compactMap { s -> (UUID, Int32)? in
+                guard let code = s.lastExitCode else { return nil }
+                return (s.id, Int32(code))
+            },
+            uniquingKeysWith: { _, new in new })
+        return agentAttentionItems(agentVitals) { exitCodes[$0] }
+    }
+
     /// FB-3-4: kick an off-main git refresh for all current agent sessions.
     func refreshAgentVitals() {
         appModel.agents.refresh(snapshots: agentVitalsSnapshots())

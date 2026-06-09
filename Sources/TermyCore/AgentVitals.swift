@@ -76,6 +76,35 @@ public func agentVitalsFlatOrder(_ vitals: [AgentSessionVitals]) -> [AgentSessio
     }
 }
 
+/// AD-2: one entry in the in-app notifications popover — an agent that needs
+/// attention (waiting for input, or finished/failed), tagged by `kind` so the
+/// view renders per-type icon/color. Pure value type; built from the vitals plus
+/// a per-session exit-code lookup so the *error* vs clean-*exit* split is honest.
+public struct AgentAttentionItem: Sendable, Equatable, Identifiable {
+    public let vitals: AgentSessionVitals
+    public let kind: AgentNotificationKind
+    public var id: UUID { vitals.id }
+
+    public init(vitals: AgentSessionVitals, kind: AgentNotificationKind) {
+        self.vitals = vitals
+        self.kind = kind
+    }
+}
+
+/// AD-2: attention list for the popover, in the same waiting-first priority as
+/// `agentVitalsFlatOrder`, restricted to agents with an actionable `kind`
+/// (waiting / exited / error). `exitCode` resolves a session's last status so an
+/// abnormal exit surfaces as `.error`; a missing entry degrades to clean exit.
+public func agentAttentionItems(
+    _ vitals: [AgentSessionVitals], exitCode: (UUID) -> Int32?
+) -> [AgentAttentionItem] {
+    agentVitalsFlatOrder(vitals).compactMap { v in
+        guard let kind = AgentNotificationPolicy.kind(
+            for: v.state, lastExitCode: exitCode(v.id)) else { return nil }
+        return AgentAttentionItem(vitals: v, kind: kind)
+    }
+}
+
 /// Git facts for an agent's cwd. Derived off-main and cached by `AgentsModel`.
 public struct GitVitals: Sendable, Equatable {
     public let branch: String?

@@ -106,6 +106,18 @@ final class FB33AgentNotificationTests: XCTestCase {
     }
 
     @MainActor
+    func testAgentAttentionReflectsRealExitCode() throws {
+        let store = makeStore(notifications: { _ in }, appActive: { false })
+        store.launchCLIAgent(.claudeCode, isolation: .here, baseCwd: "/tmp/cc")
+        let id = try XCTUnwrap(store.sessions.last?.id)
+
+        store.noteSessionProcessExited(exitCode: 2, for: id)
+
+        let item = try XCTUnwrap(store.agentAttention.first { $0.id == id })
+        XCTAssertEqual(item.kind, .error, "a non-zero exit is surfaced as error, not faked")
+    }
+
+    @MainActor
     func testWaitingBounceReusesStableIdentifier() throws {
         var posted: [RemoteSessionNotification] = []
         let store = makeStore(notifications: { posted.append($0) }, appActive: { false })
