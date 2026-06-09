@@ -34,6 +34,15 @@ public struct CommandAction: Identifiable, Equatable, Sendable {
     public let area: ProductArea
     public let keywords: [String]
     public let shortcut: ShortcutDescriptor?
+    /// CK-S7: the inline-argument trigger token. When the ⌘K query's first
+    /// whitespace-delimited token exactly equals this verb (case-insensitive) and
+    /// there is a rest or trailing space, the palette enters arg-entry mode for
+    /// this action. `nil` = parameterless action (never enters arg mode).
+    public let verb: String?
+    /// CK-S7: the argument spec captured inline before the action runs. Today a
+    /// single positional argument per arg-bearing verb (ssh/grep/cd/branch/
+    /// agent-prompt); the model allows more for future verbs.
+    public let arguments: [CommandArgument]
 
     public init(
         id: String,
@@ -41,7 +50,9 @@ public struct CommandAction: Identifiable, Equatable, Sendable {
         subtitle: String,
         area: ProductArea,
         keywords: [String],
-        shortcut: ShortcutDescriptor?
+        shortcut: ShortcutDescriptor?,
+        verb: String? = nil,
+        arguments: [CommandArgument] = []
     ) {
         self.id = id
         self.title = title
@@ -49,6 +60,8 @@ public struct CommandAction: Identifiable, Equatable, Sendable {
         self.area = area
         self.keywords = keywords
         self.shortcut = shortcut
+        self.verb = verb
+        self.arguments = arguments
     }
 }
 
@@ -72,10 +85,15 @@ public struct FeatureCatalog: Equatable, Sendable {
             CommandAction(
                 id: "connect-ssh",
                 title: "Connect SSH",
-                subtitle: "Open a saved SSH session",
+                subtitle: "Open a saved SSH session, or type `ssh user@host` to connect ad-hoc",
                 area: .ssh,
                 keywords: ["ssh", "remote", "host", "bastion"],
-                shortcut: .commandShift("s")
+                shortcut: .commandShift("s"),
+                // CK-S7: `ssh user@host` launches an ad-hoc session immediately;
+                // a bare `ssh ` (no destination) seeds the Connections draft (the
+                // pre-S7 behavior), so the destination is optional.
+                verb: "ssh",
+                arguments: [CommandArgument(name: "destination", isRequired: false)]
             ),
             CommandAction(
                 id: "create-ssh-profile",
@@ -436,6 +454,50 @@ public struct FeatureCatalog: Equatable, Sendable {
                 area: .sync,
                 keywords: ["workspace", "layout", "cloudkit"],
                 shortcut: .command("s")
+            ),
+            // CK-S7: inline-argument commands. Each declares a `verb` so the ⌘K
+            // parser can capture its argument in the search bar; the store routes
+            // the parsed value to a real side effect on Enter. (`ssh` rides the
+            // existing `connect-ssh` row above, which now carries the verb.)
+            CommandAction(
+                id: "grep-scrollback",
+                title: "Search Scrollback…",
+                subtitle: "Type `grep <pattern>` to search the terminal scrollback",
+                area: .terminal,
+                keywords: ["grep", "search", "find", "scrollback", "pattern"],
+                shortcut: nil,
+                verb: "grep",
+                arguments: [CommandArgument(name: "pattern", isRequired: true)]
+            ),
+            CommandAction(
+                id: "cd-directory",
+                title: "Change Directory…",
+                subtitle: "Type `cd <path>` to change the shell's working directory",
+                area: .terminal,
+                keywords: ["cd", "directory", "path", "chdir", "folder"],
+                shortcut: nil,
+                verb: "cd",
+                arguments: [CommandArgument(name: "path", isRequired: true, completion: .path)]
+            ),
+            CommandAction(
+                id: "git-create-branch",
+                title: "Create Git Branch…",
+                subtitle: "Type `branch <name>` to create and switch to a branch",
+                area: .git,
+                keywords: ["branch", "git", "checkout", "create", "switch"],
+                shortcut: nil,
+                verb: "branch",
+                arguments: [CommandArgument(name: "name", isRequired: true, completion: .branch)]
+            ),
+            CommandAction(
+                id: "agent-prompt-claude",
+                title: "Prompt Claude Code…",
+                subtitle: "Type `agent-prompt <text>` to launch Claude Code seeded with a prompt",
+                area: .ai,
+                keywords: ["agent", "prompt", "claude", "ai", "ask", "seed"],
+                shortcut: nil,
+                verb: "agent-prompt",
+                arguments: [CommandArgument(name: "text", isRequired: true)]
             )
         ] + agentFleetSelectActions
     )

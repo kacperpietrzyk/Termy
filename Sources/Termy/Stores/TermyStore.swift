@@ -1476,6 +1476,41 @@ final class TermyStore: ObservableObject {
         appModel.agents.refresh(snapshots: agentVitalsSnapshots())
     }
 
+    /// CK-S7: the arg-bearing actions whose `verb` the inline-argument parser can
+    /// match. Availability- and keymap-applied so a gated-out command (e.g. a git
+    /// verb with no repo) never captures a verb the user can't actually run.
+    private var inlineArgActions: [CommandAction] {
+        keymapProfile.apply(to: availableCommandActions(registry.actions))
+            .filter { $0.verb != nil && !$0.arguments.isEmpty }
+    }
+
+    /// CK-S7: the inline-argument command recognized at the head of the query, or
+    /// nil when the query is normal fuzzy search. The prefix is parsed first so a
+    /// `>`-scoped query still surfaces inline args from its remainder. Drives both
+    /// the feed short-circuit and the view's arg-entry affordance.
+    var inlineArgCommand: ParsedInlineCommand? {
+        // The trailing space is significant for arg activation ("grep " enters arg
+        // mode), but `PalettePrefix.parse` trims it — so strip only a leading `>`
+        // command sigil here and hand the rest to the parser with trailing space
+        // intact. A sessions/settings/help sigil never captures a verb.
+        var query = commandQuery
+        let leading = query.drop(while: { $0 == " " })
+        if let first = leading.first {
+            switch first {
+            case ">":
+                // Drop the sigil and a single following space; keep the rest.
+                var rest = leading.dropFirst()
+                if rest.first == " " { rest = rest.dropFirst() }
+                query = String(rest)
+            case "@", ":", "?":
+                return nil
+            default:
+                query = String(leading)
+            }
+        }
+        return CommandArguments.parse(query, against: inlineArgActions)
+    }
+
     /// CK-S3: the ⌘K feed, ranking-driven (not a fixed agents/profiles/actions
     /// concat). `PaletteRanker` blends the shared fuzzy score, per-item
     /// exp-decay frecency, and live-context boosts into one order; the matched
@@ -1483,6 +1518,13 @@ final class TermyStore: ObservableObject {
     /// reads this once per body eval and reuses the tuple for both the items and
     /// the highlight ranges, so the ranking runs once per render.
     var rankedCommandCenterFeed: (items: [CommandCenterItem], ranges: [String: [Range<Int>]]) {
+        // CK-S7: in inline-arg mode the query is "verb + argument", which fuzzy
+        // search would mangle — short-circuit to just the matched command so the
+        // row shows the parsed-arg preview and Enter runs it with the argument.
+        if let parsed = inlineArgCommand {
+            return ([.action(parsed.action)], [:])
+        }
+
         // CK-S6: a leading sigil scopes the feed; `remainder` is what the ranker
         // fuzzy-matches and what seeds the empty-state fallbacks.
         let prefix = PalettePrefix.parse(commandQuery)
@@ -1863,6 +1905,87 @@ final class TermyStore: ObservableObject {
             requestTerminalSearchFocus()
         }
         isCommandCenterPresented = false
+    }
+
+    // MARK: - CK-S7 inline arguments
+
+    /// CK-S7: run an inline-argument command with its parsed value. Routes each
+    /// verb to a REAL side effect (B4-safe): ssh/cd/grep run an explicit user
+    /// connection/command, `branch` runs the git checkout in the live shell, and
+    /// `agent-prompt` SEEDS the agent's input line without submitting (the user
+    /// presses Enter in the agent — never an auto-executed turn). A required arg
+    /// left empty is a no-op (the view disables Enter; this guards anyway).
+    func performInlineArgCommand(_ parsed: ParsedInlineCommand) {
+        guard parsed.isComplete else { return }
+        paletteFrecency.record(itemID: "action-\(parsed.action.id)")
+        let value = parsed.effectiveValue
+        switch parsed.action.id {
+        case "connect-ssh":
+            if value.isEmpty {
+                // No destination typed: fall back to the pre-S7 draft seeding.
+                openModuleTab(.connections)
+                addRemotePreview(kind: .ssh)
+            } else {
+                connectAdHocSSH(destination: value)
+            }
+        case "grep-scrollback":
+            terminalSearchQuery = value
+            openModuleTab(.shell)
+            requestTerminalSearchFocus()
+        case "cd-directory":
+            runCommandInShell("cd \(shellQuoted(value))")
+        case "git-create-branch":
+            runCommandInShell("git checkout -b \(shellQuoted(value))")
+        case "agent-prompt-claude":
+            launchCLIAgent(.claudeCode, isolation: .here,
+                           baseCwd: selectedSessionWorkingDirectory, seededPrompt: value)
+        default:
+            statusMessage = "No inline handler registered for \(parsed.action.id)."
+        }
+        isCommandCenterPresented = false
+    }
+
+    /// CK-S7: open an ad-hoc SSH session from a typed `user@host` (or bare host).
+    /// Builds a transient, UNSAVED `ConnectionProfile` (no secret reference — ssh
+    /// resolves the key via ssh-agent/Keychain, P1: Termy never inlines a secret)
+    /// and drives the existing `openConnection` launch path. The profile is not
+    /// added to `profiles`, so this never persists a connection the user didn't
+    /// choose to save.
+    private func connectAdHocSSH(destination: String) {
+        let trimmed = destination.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        let user: String?
+        let host: String
+        if let at = trimmed.firstIndex(of: "@") {
+            user = String(trimmed[trimmed.startIndex..<at])
+            host = String(trimmed[trimmed.index(after: at)...])
+        } else {
+            user = nil
+            host = trimmed
+        }
+        guard !host.isEmpty else {
+            statusMessage = "SSH needs a host (try `ssh user@host`)."
+            return
+        }
+        let profile = ConnectionProfile(
+            kind: .ssh,
+            name: trimmed,
+            host: host,
+            user: user,
+            port: 22,
+            gateway: nil,
+            groupPath: nil,
+            sshOptions: [:],
+            terminalOutputMode: .stream,
+            secretReferences: [])
+        openConnection(profile)
+    }
+
+    /// CK-S7: minimal POSIX single-quote escaping so a path/branch with spaces or
+    /// shell metacharacters is passed literally. Wraps in single quotes and
+    /// escapes any embedded single quote as `'\''`.
+    private func shellQuoted(_ value: String) -> String {
+        "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
     // MARK: - CK-S5 Action Panel
@@ -3015,6 +3138,50 @@ final class TermyStore: ObservableObject {
         statusMessage = "Resized workspace split."
     }
 
+    /// CK-S7: completions for an inline-argument command's current value, by the
+    /// argument's declared completion kind. Reuses the existing `CompletionEngine`
+    /// branch for the matching verb so path/branch suggestions stay consistent
+    /// with the live shell's. Returns at most `limit` candidates whose `title` is
+    /// the bare value to substitute into the arg (the verb is re-prepended by the
+    /// view). Free-text args (`grep`/`agent-prompt`) get no completions.
+    func inlineArgCompletions(for parsed: ParsedInlineCommand, limit: Int = 6) -> [String] {
+        let engine = CompletionEngine(
+            history: [],
+            commandNames: Self.commandNames,
+            commandFlags: Self.commandFlags,
+            filePaths: fileItems.map(\.relativePath),
+            sshHosts: profiles.filter { $0.kind == .ssh }.map(\.name),
+            gitBranches: gitBranches)
+        switch parsed.completion {
+        case .none:
+            return []
+        case .path:
+            // Drive the engine's path branch via a `cd ` prefix, then strip it
+            // back to the bare path so the view can re-prepend the verb.
+            return engine.suggestions(for: "cd \(parsed.rest)", limit: limit)
+                .compactMap { stripLeadingToken($0.replacement) }
+        case .branch:
+            return engine.suggestions(for: "git checkout \(parsed.rest)", limit: limit)
+                .compactMap { stripLeadingTokens($0.replacement, count: 2) }
+        }
+    }
+
+    /// Drop the first whitespace-delimited token (and following space) from a
+    /// completion replacement, leaving the bare argument value.
+    private func stripLeadingToken(_ value: String) -> String? {
+        stripLeadingTokens(value, count: 1)
+    }
+
+    private func stripLeadingTokens(_ value: String, count: Int) -> String? {
+        var remaining = Substring(value)
+        for _ in 0..<count {
+            guard let space = remaining.firstIndex(of: " ") else { return nil }
+            remaining = remaining[remaining.index(after: space)...]
+        }
+        let result = String(remaining).trimmingCharacters(in: .whitespaces)
+        return result.isEmpty ? nil : result
+    }
+
     func completionSuggestions(for input: String) -> [CompletionCandidate] {
         CompletionEngine(
             history: historyStore.rankedSnapshot(forCwd: currentSessionCwd()),
@@ -4020,7 +4187,8 @@ final class TermyStore: ObservableObject {
         launchCLIAgent(agent, isolation: .here, baseCwd: nil)
     }
 
-    func launchCLIAgent(_ agent: CLIAgent, isolation: AgentIsolation, baseCwd: String?) {
+    func launchCLIAgent(_ agent: CLIAgent, isolation: AgentIsolation, baseCwd: String?,
+                         seededPrompt: String? = nil) {
         let sessionID = UUID()
         let workingDirectory: URL
         var worktreeHandle: AgentWorktreeHandle?
@@ -4089,6 +4257,13 @@ final class TermyStore: ObservableObject {
             workingDirectory: command.workingDirectory.path,
             usesZshIntegration: false)
         registerTerminalLaunch(descriptor, for: session.id)
+        // CK-S7: stash a seeded prompt to flush into the agent's input line WHEN
+        // its PTY input sink registers (the sink does not exist at launch time).
+        // Seeded without a trailing CR — the agent's REPL shows the prompt and the
+        // user presses Enter (B4: offer/seed, never auto-execute a turn).
+        if let seededPrompt, !seededPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            pendingAgentPromptSeeds[session.id] = seededPrompt
+        }
         let isolationNote = isolation == .newWorktree ? " (worktree)" : ""
         appendAIConversationHistoryEntry("agent: \(agent.displayName) launched in \(command.workingDirectory.path)\(isolationNote)")
         statusMessage = "\(agent.displayName) launched."
@@ -6050,6 +6225,7 @@ final class TermyStore: ObservableObject {
         terminalInputHighlights[sessionID] = nil
         terminalCaretOriginProviders[sessionID] = nil
         terminalInputSinks[sessionID] = nil
+        pendingAgentPromptSeeds[sessionID] = nil   // CK-S7: drop an unflushed seed
         terminalBlockSnapshots[sessionID] = nil
         clearTerminalBlockProviders(for: sessionID)
 
@@ -6987,6 +7163,12 @@ final class TermyStore: ObservableObject {
     /// Runtime-only, not synced. Cleared on closeSession / runtime-state reset.
     private var terminalInputSinks: [UUID: (String) -> Void] = [:]
 
+    /// CK-S7: prompts to seed into an agent's input line the moment its PTY input
+    /// sink registers (the sink does not exist at launch time, so an immediate
+    /// feed would silently drop). Flushed once per session in
+    /// `registerTerminalInputSink`. Runtime-only; never synced (P1).
+    private var pendingAgentPromptSeeds: [UUID: String] = [:]
+
     /// Slice 5: model-owned live terminal surfaces, keyed "<sessionID>#<gen>".
     /// Runtime-only; holds AppKit views so it is NOT @Observable and never synced.
     let terminalSurfacePool = TerminalSurfacePool<TerminalSurfaceController>()
@@ -6997,6 +7179,11 @@ final class TermyStore: ObservableObject {
 
     func registerTerminalInputSink(_ sink: @escaping (String) -> Void, for id: UUID) {
         terminalInputSinks[id] = sink
+        // CK-S7: flush a pending agent prompt seed now that a live sink exists.
+        // No trailing CR — the prompt is seeded for the user to send (B4).
+        if let seed = pendingAgentPromptSeeds.removeValue(forKey: id) {
+            sink(seed)
+        }
     }
 
     /// T7: prefill the live input buffer with `text` WITHOUT executing it — a thin
