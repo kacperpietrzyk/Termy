@@ -31,10 +31,58 @@ struct SettingsContent: View {
         VStack(spacing: 16) {
             privacyCard
             keyboardCard
+            aliasesCard
             terminalCard
             privateSyncCard
             updatesCard
             workspacesCard
+        }
+    }
+
+    // MARK: Command Aliases (CK-S8)
+
+    /// Strict-prefix ⌘K aliases: a short literal prefix → an action title, a
+    /// connection name, or a shell command. Typing the exact prefix in ⌘K jumps
+    /// straight to the target (ahead of fuzzy). Persisted + synced via the same
+    /// private-sync planner as snippets.
+    private var aliasesCard: some View {
+        TermyDetailCard(title: "Command Aliases", systemImage: "arrow.right.square") {
+            VStack(spacing: 12) {
+                SettingsRow("Prefix") {
+                    TextField("gs", text: $store.aliasPrefixDraft)
+                        .textFieldStyle(GlassTextFieldStyle())
+                        .frame(width: 120)
+                }
+                SettingsRow("Expansion", description: "Action title, connection name, or shell command") {
+                    TextField("git status", text: $store.aliasExpansionDraft)
+                        .textFieldStyle(GlassTextFieldStyle())
+                        .frame(width: 200)
+                }
+                HStack {
+                    Button("Add Alias") { store.addAlias() }
+                        .buttonStyle(TermyCompactButtonStyle())
+                    Spacer()
+                }
+                if !store.paletteAliases.isEmpty {
+                    Divider().overlay(Color(DesignTokens.hair))
+                    ForEach(store.paletteAliases) { alias in
+                        HStack(spacing: 8) {
+                            Text(alias.prefix)
+                                .font(Typography.mono(12, weight: .semibold))
+                            Text("→")
+                                .foregroundStyle(Color(DesignTokens.fg4))
+                            Text(alias.expansion)
+                                .font(Typography.mono(12))
+                                .foregroundStyle(Color(DesignTokens.fg3))
+                                .lineLimit(1)
+                            Spacer()
+                            Button("Remove") { store.removeAlias(alias) }
+                                .buttonStyle(TermyCompactButtonStyle())
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+            }
         }
     }
 

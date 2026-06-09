@@ -238,4 +238,91 @@ final class TermyStorePrivateSyncTests: XCTestCase {
         XCTAssertEqual(restaged.fields["modifiedAt"], record.fields["modifiedAt"],
                        "an untouched record must keep its prior stamp across staging")
     }
+
+    // MARK: - CK-S8 palette aliases
+
+    @MainActor
+    func testAddAliasStagesAndStampsMatchingRecordName() throws {
+        let store = TermyStore(startInitialPTY: false)
+        store.aliasPrefixDraft = "gs"
+        store.aliasExpansionDraft = "git status"
+
+        store.addAlias()
+
+        XCTAssertEqual(store.paletteAliases, [
+            PaletteAlias(id: "gs", prefix: "gs", expansion: "git status")
+        ])
+        // The encoder uses recordName `alias-<id>`; the stamp must match it (D1) so
+        // the record carries a real modifiedAt.
+        let record = try XCTUnwrap(store.privateSyncRecords.first { $0.recordName == "alias-gs" })
+        XCTAssertEqual(record.recordType, "Alias")
+        XCTAssertEqual(record.fields["prefix"], "gs")
+        XCTAssertEqual(record.fields["expansion"], "git status")
+        let stamp = try XCTUnwrap(record.fields["modifiedAt"].flatMap(Double.init))
+        XCTAssertGreaterThan(stamp, 0, "an added alias record must carry a real modifiedAt")
+    }
+
+    @MainActor
+    func testRestoreHydratesAliasesFromSyncedRecords() {
+        let store = TermyStore(startInitialPTY: false)
+        store.privateSyncRecords = [
+            PrivateSyncRecord(
+                recordType: "Alias",
+                recordName: "alias-gs",
+                fields: ["prefix": "gs", "expansion": "git status"]
+            )
+        ]
+
+        store.applyPrivateSyncRecordsToAppState()
+
+        XCTAssertEqual(store.paletteAliases, [
+            PaletteAlias(id: "gs", prefix: "gs", expansion: "git status")
+        ])
+    }
+
+    @MainActor
+    func testAliasResolvesFeedToShellFallbackBeforeFuzzy() {
+        let store = TermyStore(startInitialPTY: false)
+        store.paletteAliases = [PaletteAlias(id: "gs", prefix: "gs", expansion: "git status")]
+
+        store.commandQuery = "gs"
+        guard case .fallback(.runInSession(let command)) = store.filteredCommandCenterItems.first else {
+            return XCTFail("exact alias prefix must resolve to its target as the sole feed item")
+        }
+        XCTAssertEqual(command, "git status")
+        XCTAssertEqual(store.filteredCommandCenterItems.count, 1)
+
+        // Strict: typing past the prefix falls back to normal fuzzy search (no
+        // single-item alias short-circuit).
+        store.commandQuery = "gstatus"
+        XCTAssertFalse(store.filteredCommandCenterItems.contains {
+            if case .fallback(.runInSession("git status")) = $0 { return true }
+            return false
+        })
+    }
+
+    @MainActor
+    func testAliasResolvesToCommandActionByTitle() {
+        let store = TermyStore(startInitialPTY: false)
+        store.paletteAliases = [PaletteAlias(id: "d", prefix: "d", expansion: "Connect SSH")]
+
+        store.commandQuery = "d"
+        guard case .action(let action) = store.filteredCommandCenterItems.first else {
+            return XCTFail("an alias whose expansion names an action title resolves to that action")
+        }
+        XCTAssertEqual(action.id, "connect-ssh")
+    }
+
+    @MainActor
+    func testAliasDoesNotResolveUnderExplicitScopeSigil() {
+        let store = TermyStore(startInitialPTY: false)
+        store.paletteAliases = [PaletteAlias(id: "gs", prefix: "gs", expansion: "git status")]
+
+        // A `>` scope is an explicit command search; an alias must not hijack it.
+        store.commandQuery = ">gs"
+        XCTAssertFalse(store.filteredCommandCenterItems.contains {
+            if case .fallback(.runInSession("git status")) = $0 { return true }
+            return false
+        })
+    }
 }
