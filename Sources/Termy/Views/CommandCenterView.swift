@@ -7,7 +7,10 @@ struct CommandCenterView: View {
     @State private var selectedIndex = 0
 
     var body: some View {
-        VStack {
+        // Snapshot the ranking once per body eval; reuse for the empty check,
+        // the rows, and the highlight ranges so the ranker runs once per render.
+        let feed = store.rankedCommandCenterFeed
+        return VStack {
             Spacer(minLength: 64)
 
             VStack(spacing: 0) {
@@ -28,7 +31,7 @@ struct CommandCenterView: View {
                 }
                 .padding(16)
 
-                if store.filteredCommandCenterItems.isEmpty {
+                if feed.items.isEmpty {
                     ContentUnavailableView(
                         "No Results",
                         systemImage: "command",
@@ -36,15 +39,19 @@ struct CommandCenterView: View {
                     )
                     .frame(height: 360)
                 } else {
+                    let titleRanges = feed.ranges
                     ScrollViewReader { proxy in
                         ScrollView {
                             LazyVStack(spacing: 2) {
-                                ForEach(Array(store.filteredCommandCenterItems.enumerated()),
+                                ForEach(Array(feed.items.enumerated()),
                                         id: \.element.id) { index, item in
                                     Button {
                                         store.performCommandCenterItem(item)
                                     } label: {
-                                        CommandCenterItemRow(item: item, isSelected: index == selectedIndex)
+                                        CommandCenterItemRow(
+                                            item: item,
+                                            titleRanges: titleRanges[item.id] ?? [],
+                                            isSelected: index == selectedIndex)
                                     }
                                     .buttonStyle(.plain)
                                     .id(index)
@@ -104,6 +111,8 @@ struct CommandCenterView: View {
 
 private struct CommandCenterItemRow: View {
     let item: CommandCenterItem
+    /// CK-S3: matched Character-offset ranges into `item.title` to highlight.
+    var titleRanges: [Range<Int>] = []
     var isSelected = false
 
     private var leadingTint: Color {
@@ -116,13 +125,36 @@ private struct CommandCenterItemRow: View {
         return Color(DesignTokens.fg2)
     }
 
+    /// CK-S3: the title with matched glyph runs emphasized (accent tint +
+    /// semibold). Builds one `Text` by concatenating per-character runs over the
+    /// merged Character-offset ranges — the matcher reports Character offsets, so
+    /// indexing `Array(title)` (not UTF-16) keeps the highlight aligned for
+    /// multi-byte glyphs.
+    private var highlightedTitle: Text {
+        let chars = Array(item.title)
+        guard !titleRanges.isEmpty else { return Text(item.title) }
+        let matched = Set(titleRanges.flatMap { Array($0) })
+        var result = Text("")
+        for (index, char) in chars.enumerated() {
+            let run = Text(String(char))
+            if matched.contains(index) {
+                result = result + run
+                    .foregroundColor(Color(DesignTokens.primary))
+                    .fontWeight(.semibold)
+            } else {
+                result = result + run
+            }
+        }
+        return result
+    }
+
     var body: some View {
         HStack(spacing: 12) {
             Image(systemName: item.systemImage)
                 .foregroundStyle(leadingTint)
                 .frame(width: 18, height: 18)
             VStack(alignment: .leading, spacing: 3) {
-                Text(item.title)
+                highlightedTitle
                     .foregroundStyle(.primary)
                     .lineLimit(1)
                 Text(item.subtitle)
