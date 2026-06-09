@@ -3,13 +3,13 @@
   <channel>
     <title>Termy</title>
     <item>
-      <title>0.1.0</title>
+      <title>0.1.1</title>
       
-      <pubDate>Sun, 07 Jun 2026 19:47:29 +0000</pubDate>
-      <sparkle:version>0.1.0</sparkle:version>
-      <sparkle:shortVersionString>0.1.0</sparkle:shortVersionString>
+      <pubDate>Tue, 09 Jun 2026 09:46:02 +0000</pubDate>
+      <sparkle:version>0.1.1</sparkle:version>
+      <sparkle:shortVersionString>0.1.1</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
-      <enclosure url="https://github.com/kacperpietrzyk/Termy/releases/download/v0.1.0/Termy-0.1.0.dmg" type="application/octet-stream" sparkle:edSignature="sT6dvy5QALDblRftBCWedk9/uK3nq17XR6bFgfW7W8J/Zqz0gAkZyMwv14eVKp2YXEoGgVuVjr1kgly5lPNMCQ==" length="9619702" />
+      <enclosure url="https://github.com/kacperpietrzyk/Termy/releases/download/v0.1.1/Termy-0.1.1.dmg" type="application/octet-stream" sparkle:edSignature="cYtuTEV6KkERKtH1PJuTNbESodz5Fn7ryGp/C0mh8AmpsVkiPMSX2H9guk+J6qVnU3IclYHifPOEWRtel1gRBQ==" length="9639322" />
     </item>
   </channel>
 </rss>
