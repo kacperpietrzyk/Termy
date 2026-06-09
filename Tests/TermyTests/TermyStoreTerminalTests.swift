@@ -72,9 +72,32 @@ final class TermyStoreTerminalTests: XCTestCase {
         let store = TermyStore(startInitialPTY: false)
         store.selectedGitBranch = "main"
         store.gitDivergence = GitDivergence(ahead: 2, behind: 1)
-        store.gitStatus = " M Sources/App.swift\n?? README.md"
+        // X1: count comes from the real gitChanges array, not the gitStatus string.
+        store.gitChanges = [
+            GitChange(x: " ", y: "M", path: "Sources/App.swift"),
+            GitChange(x: "?", y: "?", path: "README.md"),
+        ]
 
         XCTAssertEqual(store.gitStatusBarSummary, "git: main 2 changes +2 -1")
+    }
+
+    @MainActor
+    func testGitStatusBarSummaryDoesNotCountPlaceholderAsDirtyChange() {
+        // X1 regression: a fresh store has GitModel's default placeholder string
+        // in `gitStatus` ("Run Git Status…") which the old parser mis-counted as
+        // "1 change". With no branch and no real changes it must read "no repo",
+        // never "no branch 1 change".
+        let store = TermyStore(startInitialPTY: false)
+        XCTAssertFalse(store.gitStatusBarSummary.contains("1 change"))
+        XCTAssertFalse(store.gitStatusBarSummary.contains("no branch"))
+    }
+
+    @MainActor
+    func testGitStatusBarSummaryNotARepoShowsNoRepo() {
+        let store = TermyStore(startInitialPTY: false)
+        store.gitIsRepository = false
+        store.selectedGitBranch = nil
+        XCTAssertEqual(store.gitStatusBarSummary, "git: no repo")
     }
 
     @MainActor

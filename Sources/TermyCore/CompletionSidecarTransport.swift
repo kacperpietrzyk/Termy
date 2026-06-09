@@ -49,7 +49,7 @@ public enum CompletionSidecarTransport {
                 description: description
             )))
         }
-        return suppressBroadCommandFallback(rows)
+        return dedupePreservingOrder(suppressBroadCommandFallback(rows))
     }
 
     /// Tags that the sidecar's `compadd` shadow captures from a single
@@ -66,23 +66,71 @@ public enum CompletionSidecarTransport {
     /// generalises to any completer that pairs a curated group with an
     /// `*-all-*` / "all" fallback.
     private static let broadFallbackTags: Set<String> = ["all-commands", "all-files"]
+    // `main-porcelain-commands` is git's REAL curated subcommand tag, confirmed by
+    // a live PTY capture of `_main_complete` for `git sta` on macOS zsh 5.9 (it
+    // yields `main-porcelain-commands<TAB>status` and `…<TAB>stash` — NOT the
+    // `common-commands`/`all-commands` split the original T3 hypothesis assumed).
+    // Registering it here lets the broad-noise merge below actually engage for git.
     private static let narrowGroupTags: Set<String> = [
-        "common-commands", "alias-commands", "aliases", "commands", "builtins"
+        "common-commands", "main-porcelain-commands", "user-commands",
+        "alias-commands", "aliases", "commands", "builtins"
     ]
 
     private static func suppressBroadCommandFallback(
         _ rows: [(tag: String, candidate: CompletionCandidate)]
     ) -> [CompletionCandidate] {
         let tags = Set(rows.map { $0.tag })
-        // Only suppress the broad group when a narrower curated group is present
-        // in the SAME batch — otherwise the broad group is all the user has.
+        // When no broad group co-occurs, OR no narrow curated group is present,
+        // pass everything through unchanged (broad-alone is all the user has).
         guard !tags.isDisjoint(with: narrowGroupTags),
               !tags.isDisjoint(with: broadFallbackTags) else {
             return rows.map { $0.candidate }
         }
-        return rows
-            .filter { !broadFallbackTags.contains($0.tag) }
-            .map { $0.candidate }
+        // T3: merge instead of dropping the whole broad group. zsh's bundled
+        // `_git` puts real porcelain subcommands like `stash`/`stage` ONLY in the
+        // broad `all-commands` group (its `common-commands` curated group omits
+        // them), so a whole-group drop loses `git sta` → stash/stage. Emit the
+        // narrow + non-grouped rows first (preserving their curated descriptions
+        // and order, recording each replacement), then append broad rows that are
+        // (a) not already present and (b) not `git-`-prefixed PATH-binary plumbing
+        // noise (git-cvsserver/git-upload-pack/git-shell, B3). Internal hyphens
+        // like `cherry-pick` are kept — only the leading `git-` marks plumbing.
+        var seen = Set<String>()
+        var out: [CompletionCandidate] = []
+        out.reserveCapacity(rows.count)
+        for row in rows where !broadFallbackTags.contains(row.tag) {
+            seen.insert(row.candidate.replacement)
+            out.append(row.candidate)
+        }
+        for row in rows where broadFallbackTags.contains(row.tag) {
+            let candidate = row.candidate
+            if seen.contains(candidate.replacement) { continue }   // dedupe vs narrow
+            if candidate.title.hasPrefix("git-") { continue }       // PATH-binary noise (B3)
+            seen.insert(candidate.replacement)
+            out.append(candidate)
+        }
+        return out
+    }
+
+    /// T2: order-preserving dedup keyed on (title, replacement). zsh's single-pass
+    /// `compadd` shadow can surface the SAME match under multiple retained
+    /// completion groups (e.g. `_git`'s `common-commands` plus a `commands`/
+    /// `aliases` group both yielding "status"), which the group-level
+    /// `suppressBroadCommandFallback` does not catch. Keeping the FIRST occurrence
+    /// preserves the curated group's ordering and its (usually richer) description.
+    /// A U+001F unit-separator in the key prevents (title, replacement) boundary
+    /// collisions (e.g. "a"+"bc" vs "ab"+"c").
+    private static func dedupePreservingOrder(
+        _ items: [CompletionCandidate]
+    ) -> [CompletionCandidate] {
+        var seen = Set<String>()
+        var out: [CompletionCandidate] = []
+        out.reserveCapacity(items.count)
+        for item in items {
+            let key = "\(item.title)\u{1F}\(item.replacement)"
+            if seen.insert(key).inserted { out.append(item) }
+        }
+        return out
     }
 
     // ----- Err body decoding -----

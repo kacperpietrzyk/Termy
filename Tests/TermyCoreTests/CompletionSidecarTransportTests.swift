@@ -172,4 +172,99 @@ final class CompletionSidecarTransportTests: XCTestCase {
         XCTAssertEqual(items.count, 1)
         XCTAssertEqual(items[0].title, "status")
     }
+
+    // ----- T3: recover real porcelain subcommands from the broad group -----
+
+    func test_decodeTSVBody_gitSta_realPorcelainTagShape_keepsStatusAndStash() {
+        // EXACT shape captured from a live PTY `_main_complete` run for `git sta`
+        // on macOS zsh 5.9: git's porcelain subcommands carry the tag
+        // `main-porcelain-commands` (NOT `common-commands`/`all-commands`). Both
+        // `status` and `stash` must survive (T3) and there must be no duplicate.
+        let body = """
+        main-porcelain-commands\tstash\tstash\tStash the changes in a dirty working directory away
+        main-porcelain-commands\tstatus\tstatus\tShow the working tree status
+        """ + "\n"
+        let titles = CompletionSidecarTransport.decodeTSVBody(body).map { $0.title }
+        XCTAssertTrue(titles.contains("status"))
+        XCTAssertTrue(titles.contains("stash"))
+        XCTAssertEqual(titles.filter { $0 == "status" }.count, 1)
+        XCTAssertEqual(titles.count, 2)
+    }
+
+    func test_decodeTSVBody_realPorcelainPlusBroadNoise_keepsPorcelainDropsGitPrefixed() {
+        // When the real porcelain group co-occurs with the broad all-commands
+        // PATH-binary group, keep the porcelain (status/stash) and drop the
+        // git--prefixed plumbing noise (B3), now that main-porcelain-commands is
+        // recognized as a narrow curated group.
+        let body = """
+        main-porcelain-commands\tstatus\tstatus\tShow the working tree status
+        main-porcelain-commands\tstash\tstash\t
+        all-commands\tgit-cvsserver\tgit-cvsserver\t
+        all-commands\tgit-upload-pack\tgit-upload-pack\t
+        """ + "\n"
+        let titles = Set(CompletionSidecarTransport.decodeTSVBody(body).map { $0.title })
+        XCTAssertTrue(titles.contains("status"))
+        XCTAssertTrue(titles.contains("stash"))
+        XCTAssertFalse(titles.contains("git-cvsserver"))
+        XCTAssertFalse(titles.contains("git-upload-pack"))
+    }
+
+    func test_decodeTSVBody_mixedBroad_keepsRealSubcommandsDropsGitPrefixed() {
+        // A broad batch mixing a real subcommand (stash) with PATH-binary noise
+        // (git-cvsserver) alongside a curated group: keep stash, drop the noise.
+        let body = """
+        common-commands\tstatus\tstatus\tShow the working tree status
+        all-commands\tstash\tstash\t
+        all-commands\tgit-cvsserver\tgit-cvsserver\t
+        """ + "\n"
+        let titles = Set(CompletionSidecarTransport.decodeTSVBody(body).map { $0.title })
+        XCTAssertTrue(titles.contains("stash"))
+        XCTAssertFalse(titles.contains("git-cvsserver"))
+    }
+
+    // ----- T2: order-preserving (title, replacement) dedup -----
+
+    func test_decodeTSVBody_duplicateSameTitleAndReplacement_dedupedToOne() {
+        // The same match surfaced under two retained narrow groups (the real
+        // git sta+Tab duplicate, which group-level suppression does not catch).
+        let body = """
+        commands\tstatus\tstatus\tShow the working tree status
+        aliases\tstatus\tstatus\t
+        """ + "\n"
+        let items = CompletionSidecarTransport.decodeTSVBody(body)
+        XCTAssertEqual(items.count, 1)
+        XCTAssertEqual(items.filter { $0.title == "status" }.count, 1)
+        XCTAssertEqual(items[0].description, "Show the working tree status", "first occurrence wins")
+    }
+
+    func test_decodeTSVBody_dedup_preservesOrder() {
+        let body = """
+        commands\tstatus\tstatus\t
+        commands\tadd\tadd\t
+        aliases\tstatus\tstatus\t
+        commands\tcommit\tcommit\t
+        """ + "\n"
+        let titles = CompletionSidecarTransport.decodeTSVBody(body).map { $0.title }
+        XCTAssertEqual(titles, ["status", "add", "commit"])
+    }
+
+    func test_decodeTSVBody_differentReplacementSameTitle_bothKept() {
+        // Same title but distinct replacement is NOT a visual duplicate.
+        let body = """
+        commands\tstatus\tstatus\t
+        aliases\tstatus\tgit status\t
+        """ + "\n"
+        let items = CompletionSidecarTransport.decodeTSVBody(body)
+        XCTAssertEqual(items.count, 2)
+    }
+
+    func test_decodeTSVBody_noDuplicates_unchanged() {
+        // Regression guard: the existing happy-path body still yields 2 distinct items.
+        let body = """
+        commands\tpush\tpush\tUpdate remote refs
+        commands\tpull\tpull\tFetch and integrate
+        """ + "\n"
+        let items = CompletionSidecarTransport.decodeTSVBody(body)
+        XCTAssertEqual(items.count, 2)
+    }
 }
