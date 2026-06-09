@@ -74,5 +74,11 @@ final class AIModel {
     var promptSnippetTitle = "Deploy"
     var promptSnippetBody = "Use make deploy"
 
+    /// CK-S8: user strict-prefix ⌘K aliases + the editor draft fields. Mirrors the
+    /// snippet trio above.
+    var paletteAliases: [PaletteAlias] = []
+    var aliasPrefixDraft = "gs"
+    var aliasExpansionDraft = "git status"
+
     init() {}
 }

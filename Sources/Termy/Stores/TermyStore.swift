@@ -293,6 +293,19 @@ final class TermyStore: ObservableObject {
         get { appModel.ai.promptSnippetBody }
         set { objectWillChange.send(); appModel.ai.promptSnippetBody = newValue }
     }
+    // CK-S8: user strict-prefix ⌘K aliases + editor draft fields.
+    var paletteAliases: [PaletteAlias] {
+        get { appModel.ai.paletteAliases }
+        set { objectWillChange.send(); appModel.ai.paletteAliases = newValue }
+    }
+    var aliasPrefixDraft: String {
+        get { appModel.ai.aliasPrefixDraft }
+        set { objectWillChange.send(); appModel.ai.aliasPrefixDraft = newValue }
+    }
+    var aliasExpansionDraft: String {
+        get { appModel.ai.aliasExpansionDraft }
+        set { objectWillChange.send(); appModel.ai.aliasExpansionDraft = newValue }
+    }
     // M2c-3 strangler facade → `appModel.coordinator` (canonical invariant at
     // the `let appModel` comment below). Transient — deleted in final M2c.
     var statusMessage: String {
@@ -1518,6 +1531,14 @@ final class TermyStore: ObservableObject {
     /// reads this once per body eval and reuses the tuple for both the items and
     /// the highlight ranges, so the ranking runs once per render.
     var rankedCommandCenterFeed: (items: [CommandCenterItem], ranges: [String: [Range<Int>]]) {
+        // CK-S8: a user strict-prefix alias resolves BEFORE fuzzy (and before the
+        // inline-arg parse) — typing the exact alias prefix jumps straight to its
+        // target. Strict literal match means `gs` never swallows `gst`/`gstatus`,
+        // so the user can always type past an alias into normal search.
+        if let item = aliasResolvedItem() {
+            return ([item], [:])
+        }
+
         // CK-S7: in inline-arg mode the query is "verb + argument", which fuzzy
         // search would mangle — short-circuit to just the matched command so the
         // row shows the parsed-arg preview and Enter runs it with the argument.
@@ -1606,6 +1627,40 @@ final class TermyStore: ObservableObject {
             items = PaletteFallback.suggestions(for: prefix).map(CommandCenterItem.fallback)
         }
         return (items, ranges)
+    }
+
+    /// CK-S8: resolve a strict-prefix user alias for the current query into the
+    /// single ⌘K item it targets, or nil when no alias matches. Only fires in the
+    /// default (no-sigil) scope — a `>`/`@`/`:`/`?` query is an explicit scope and
+    /// must not be hijacked by an alias. Target priority (each EXACT, never fuzzy):
+    ///   1. a command action by id or title → `.action` (e.g. `d` → "Connect SSH");
+    ///   2. a connection profile by name → `.profile`;
+    ///   3. otherwise the expansion is a shell command → `.fallback(.runInSession)`
+    ///      (B4-safe: the user's OWN command, run only on a conscious Enter).
+    /// Availability/keymap are applied so an alias can't surface a gated-out verb.
+    func aliasResolvedItem() -> CommandCenterItem? {
+        let prefix = PalettePrefix.parse(commandQuery)
+        guard prefix.scope == .all else { return nil }
+        guard let alias = PaletteAliasTable(aliases: paletteAliases).resolve(query: prefix.remainder) else {
+            return nil
+        }
+        let expansion = alias.expansion.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !expansion.isEmpty else { return nil }
+
+        let actions = keymapProfile.apply(to: availableCommandActions(registry.actions))
+        if let action = actions.first(where: {
+            $0.id.caseInsensitiveCompare(expansion) == .orderedSame
+                || $0.title.caseInsensitiveCompare(expansion) == .orderedSame
+        }) {
+            return .action(action)
+        }
+        if let profile = profiles.first(where: {
+            ($0.kind == .ssh || $0.kind == .rdp)
+                && $0.name.caseInsensitiveCompare(expansion) == .orderedSame
+        }) {
+            return .profile(profile)
+        }
+        return .fallback(.runInSession(expansion))
     }
 
     var filteredCommandCenterItems: [CommandCenterItem] {
@@ -2718,6 +2773,35 @@ final class TermyStore: ObservableObject {
         aiPrompt = aiPrompt.isEmpty ? body : "\(aiPrompt)\n\(body)"
     }
 
+    // MARK: - CK-S8 palette aliases
+
+    /// Add (or replace) a strict-prefix ⌘K alias from the editor drafts. The id is
+    /// derived from the prefix slug so editing the same prefix re-stamps the same
+    /// sync record (D1 — stamp recordName must equal the encoder's `alias-<id>`).
+    func addAlias() {
+        let prefix = aliasPrefixDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        let expansion = aliasExpansionDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !prefix.isEmpty, !expansion.isEmpty else {
+            statusMessage = "Alias prefix and expansion are required."
+            return
+        }
+        let id = promptSnippetID(for: prefix)
+        let alias = PaletteAlias(id: id, prefix: prefix, expansion: expansion)
+        paletteAliases.removeAll { $0.id == alias.id }
+        paletteAliases.append(alias)
+        paletteAliases.sort { $0.prefix.localizedCaseInsensitiveCompare($1.prefix) == .orderedAscending }
+        statusMessage = "Added alias \(prefix) → \(expansion)."
+        stampSyncEdit("alias-\(alias.id)")
+        stagePrivateSyncSnapshot()
+    }
+
+    /// Remove an alias by id (the editor's per-row delete).
+    func removeAlias(_ alias: PaletteAlias) {
+        paletteAliases.removeAll { $0.id == alias.id }
+        statusMessage = "Removed alias \(alias.prefix)."
+        stagePrivateSyncSnapshot()
+    }
+
     // MARK: - D1 sync conflict timestamps
 
     /// Per-record last-edited stamps captured at mutation choke points, consumed by the
@@ -2772,6 +2856,7 @@ final class TermyStore: ObservableObject {
             SyncSnippet(id: $0.fileName, title: $0.fileName, body: $0.contents)
         }
         let userSnippets = PrivateSyncPlanner.syncSnippets(from: UserPromptSnippetLibrary(snippets: userPromptSnippets))
+        let syncAliases = PrivateSyncPlanner.syncAliases(from: PaletteAliasTable(aliases: paletteAliases))
         let snapshot = PrivateSyncSnapshot(
             profiles: profiles.filter { $0.kind != .local },
             terminalThemeID: selectedTerminalThemeID,
@@ -2785,6 +2870,7 @@ final class TermyStore: ObservableObject {
             customTerminalThemes: customTerminalThemes,
             keymapBindings: keymapProfile.bindings,
             snippets: guidanceSnippets + userSnippets,
+            aliases: syncAliases,
             workspaces: workspaceStore.layouts.map {
                 SyncWorkspace(id: $0.id, name: $0.name, panelIDs: $0.panelIDs, paneTree: $0.paneTree)
             },
@@ -2852,6 +2938,11 @@ final class TermyStore: ObservableObject {
             userPromptSnippets = restored.snippets.map { snippet in
                 let id = snippet.id.hasPrefix("user-") ? String(snippet.id.dropFirst("user-".count)) : snippet.id
                 return UserPromptSnippet(id: id, title: snippet.title, body: snippet.body)
+            }
+        }
+        if !restored.aliases.isEmpty {
+            paletteAliases = restored.aliases.map {
+                PaletteAlias(id: $0.id, prefix: $0.prefix, expansion: $0.expansion)
             }
         }
         if !restored.workspaces.isEmpty {

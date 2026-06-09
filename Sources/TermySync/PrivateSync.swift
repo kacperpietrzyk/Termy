@@ -5,6 +5,7 @@ public enum PrivateSyncDataset: String, Hashable, Sendable {
     case connectionProfiles
     case appearanceAndKeymap
     case snippetsAndPrompts
+    case aliases
     case workspaces
     case agentArchives
     case secrets
@@ -82,6 +83,34 @@ public struct SyncSnippet: Equatable, Sendable {
             id: String(record.recordName.dropFirst("snippet-".count)),
             title: title,
             body: body
+        )
+    }
+}
+
+/// CK-S8: the syncable view of a `PaletteAlias`. Mirrors `SyncSnippet` exactly
+/// (id + two freeform fields); recordType `"Alias"`, recordName `"alias-<id>"`.
+public struct SyncAlias: Equatable, Sendable {
+    public let id: String
+    public let prefix: String
+    public let expansion: String
+
+    public init(id: String, prefix: String, expansion: String) {
+        self.id = id
+        self.prefix = prefix
+        self.expansion = expansion
+    }
+
+    public init?(record: PrivateSyncRecord) {
+        guard record.recordType == "Alias",
+              record.recordName.hasPrefix("alias-"),
+              let prefix = record.fields["prefix"],
+              let expansion = record.fields["expansion"] else {
+            return nil
+        }
+        self.init(
+            id: String(record.recordName.dropFirst("alias-".count)),
+            prefix: prefix,
+            expansion: expansion
         )
     }
 }
@@ -200,6 +229,7 @@ public struct PrivateSyncSnapshot: Equatable, Sendable {
     public let customTerminalThemes: [TerminalTheme]
     public let keymapBindings: [String: ShortcutDescriptor]
     public let snippets: [SyncSnippet]
+    public let aliases: [SyncAlias]
     public let workspaces: [SyncWorkspace]
     public let agentArchives: [AgentArchiveSyncRecord]
     public let terminalScrollback: [String]
@@ -218,6 +248,7 @@ public struct PrivateSyncSnapshot: Equatable, Sendable {
         customTerminalThemes: [TerminalTheme] = [],
         keymapBindings: [String: ShortcutDescriptor] = [:],
         snippets: [SyncSnippet],
+        aliases: [SyncAlias] = [],
         workspaces: [SyncWorkspace],
         agentArchives: [AgentArchiveSyncRecord] = [],
         terminalScrollback: [String],
@@ -236,6 +267,7 @@ public struct PrivateSyncSnapshot: Equatable, Sendable {
         self.customTerminalThemes = customTerminalThemes
         self.keymapBindings = keymapBindings
         self.snippets = snippets
+        self.aliases = aliases
         self.workspaces = workspaces
         self.agentArchives = agentArchives
         self.terminalScrollback = terminalScrollback
@@ -256,6 +288,7 @@ public struct PrivateSyncRestoredSnapshot: Equatable, Sendable {
     public let customTerminalThemes: [TerminalTheme]
     public let keymapBindings: [String: ShortcutDescriptor]
     public let snippets: [SyncSnippet]
+    public let aliases: [SyncAlias]
     public let workspaces: [SyncWorkspace]
     public let agentArchives: [AgentArchiveSyncRecord]
     public let aiConversationHistory: [String]
@@ -314,6 +347,7 @@ public struct PrivateSyncSnapshotRestorer: Sendable {
             customTerminalThemes: restoreThemes(from: appearanceRecord?.fields["customTerminalThemes"] ?? ""),
             keymapBindings: restoreKeymap(from: appearanceRecord?.fields["keymapBindings"] ?? ""),
             snippets: records.compactMap(SyncSnippet.init(record:)).sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending },
+            aliases: records.compactMap(SyncAlias.init(record:)).sorted { $0.prefix.localizedCaseInsensitiveCompare($1.prefix) == .orderedAscending },
             workspaces: records.compactMap(SyncWorkspace.init(record:)).sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending },
             agentArchives: records.compactMap(AgentArchiveSyncRecord.init(record:)).sorted { $0.archive.archivedAt > $1.archive.archivedAt },
             aiConversationHistory: records
@@ -784,6 +818,7 @@ public struct PrivateSyncAppEventCoordinator: Sendable {
         "ConnectionProfile",
         "Appearance",
         "Snippet",
+        "Alias",
         "Workspace",
         "AgentArchive",
         "AIConversation"
@@ -1178,11 +1213,25 @@ public struct PrivateSyncPlanner: Sendable {
         }
     }
 
+    /// CK-S8: maps a `PaletteAliasTable`'s active entries into sync DTOs.
+    /// Symmetric with `syncSnippets(from:)` — keeps `PaletteAliasTable` in
+    /// `TermyCore` free of `SyncAlias` knowledge.
+    public static func syncAliases(from table: PaletteAliasTable) -> [SyncAlias] {
+        table.activeAliases().map {
+            SyncAlias(
+                id: $0.id,
+                prefix: $0.prefix.trimmingCharacters(in: .whitespacesAndNewlines),
+                expansion: $0.expansion.trimmingCharacters(in: .whitespacesAndNewlines)
+            )
+        }
+    }
+
     public func plan(for snapshot: PrivateSyncSnapshot) -> PrivateSyncPlan {
         var records: [PrivateSyncRecord] = []
         records.append(contentsOf: snapshot.profiles.map(profileRecord))
         records.append(appearanceRecord(from: snapshot))
         records.append(contentsOf: snapshot.snippets.map(snippetRecord))
+        records.append(contentsOf: snapshot.aliases.map(aliasRecord))
         records.append(contentsOf: snapshot.workspaces.map(workspaceRecord))
         records.append(contentsOf: snapshot.agentArchives.map(agentArchiveRecord))
         records.append(contentsOf: snapshot.aiConversationHistory.enumerated().map(aiHistoryRecord))
@@ -1192,6 +1241,7 @@ public struct PrivateSyncPlanner: Sendable {
                 .connectionProfiles: .cloudKitPrivateDatabase,
                 .appearanceAndKeymap: .cloudKitPrivateDatabase,
                 .snippetsAndPrompts: .cloudKitPrivateDatabase,
+                .aliases: .cloudKitPrivateDatabase,
                 .workspaces: .cloudKitPrivateDatabase,
                 .agentArchives: .cloudKitPrivateDatabase,
                 .secrets: .iCloudKeychain,
@@ -1287,6 +1337,17 @@ public struct PrivateSyncPlanner: Sendable {
             fields: [
                 "title": snippet.title,
                 "body": snippet.body
+            ]
+        )
+    }
+
+    private func aliasRecord(_ alias: SyncAlias) -> PrivateSyncRecord {
+        PrivateSyncRecord(
+            recordType: "Alias",
+            recordName: "alias-\(alias.id)",
+            fields: [
+                "prefix": alias.prefix,
+                "expansion": alias.expansion
             ]
         )
     }

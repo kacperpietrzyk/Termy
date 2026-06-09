@@ -152,6 +152,7 @@ final class TermyCoreTests: XCTestCase {
                 .connectionProfiles: .cloudKitPrivateDatabase,
                 .appearanceAndKeymap: .cloudKitPrivateDatabase,
                 .snippetsAndPrompts: .cloudKitPrivateDatabase,
+                .aliases: .cloudKitPrivateDatabase,
                 .workspaces: .cloudKitPrivateDatabase,
                 .agentArchives: .cloudKitPrivateDatabase,
                 .secrets: .iCloudKeychain,
@@ -6405,6 +6406,76 @@ final class TermyCoreTests: XCTestCase {
         // emitted — otherwise the `78` leak reappears once at teardown. The "ok"
         // is emitted on consume; flush must contribute nothing (no `78`).
         XCTAssertEqual(renderBlockOutput(["ok\u{1B}[78"]), "ok")
+    }
+
+    // MARK: - CK-S8 palette aliases
+
+    func testPaletteAliasTableResolvesExactPrefixOnly() {
+        let table = PaletteAliasTable(aliases: [
+            PaletteAlias(id: "gs", prefix: "gs", expansion: "git status"),
+            PaletteAlias(id: "d", prefix: "d", expansion: "Connect SSH")
+        ])
+        // Exact prefix → its alias (trimmed, case-insensitive).
+        XCTAssertEqual(table.resolve(query: "gs")?.expansion, "git status")
+        XCTAssertEqual(table.resolve(query: "  GS  ")?.expansion, "git status")
+        XCTAssertEqual(table.resolve(query: "d")?.expansion, "Connect SSH")
+        // Strict: a longer query that merely STARTS with the prefix must NOT match,
+        // so the user can always type past an alias into normal fuzzy search.
+        XCTAssertNil(table.resolve(query: "gst"))
+        XCTAssertNil(table.resolve(query: "gstatus"))
+        XCTAssertNil(table.resolve(query: "gs status"))
+        XCTAssertNil(table.resolve(query: ""))
+        XCTAssertNil(table.resolve(query: "nope"))
+    }
+
+    func testPaletteAliasTableActiveAliasesDropsBlankFields() {
+        let table = PaletteAliasTable(aliases: [
+            PaletteAlias(id: "ok", prefix: "gs", expansion: "git status"),
+            PaletteAlias(id: "blankPrefix", prefix: "   ", expansion: "git log"),
+            PaletteAlias(id: "blankExpansion", prefix: "x", expansion: "  ")
+        ])
+        XCTAssertEqual(table.activeAliases().map(\.id), ["ok"])
+        // A blank alias never resolves even if the query equals its (blank) prefix.
+        XCTAssertNil(table.resolve(query: "x"))
+    }
+
+    func testPaletteAliasSyncRecordRoundTrip() {
+        let alias = SyncAlias(id: "gs", prefix: "gs", expansion: "git status")
+        let snapshot = PrivateSyncSnapshot(
+            profiles: [],
+            terminalThemeID: "default-dark",
+            terminalFontSize: 14,
+            terminalUsesLigatures: false,
+            snippets: [],
+            aliases: [alias],
+            workspaces: [],
+            terminalScrollback: [],
+            aiConversationHistory: []
+        )
+        let plan = PrivateSyncPlanner().plan(for: snapshot)
+        XCTAssertEqual(plan.datasets[.aliases], .cloudKitPrivateDatabase)
+        let record = plan.records.first { $0.recordType == "Alias" }
+        XCTAssertEqual(record?.recordName, "alias-gs")
+        XCTAssertEqual(record?.fields["prefix"], "gs")
+        XCTAssertEqual(record?.fields["expansion"], "git status")
+
+        // Snapshot → plan → restore round-trips the alias unchanged.
+        let restored = PrivateSyncSnapshotRestorer().restore(from: plan.records)
+        XCTAssertEqual(restored.aliases, [alias])
+    }
+
+    func testPaletteAliasSyncMapperTrimsAndKeepsActiveOnly() {
+        let table = PaletteAliasTable(aliases: [
+            PaletteAlias(id: "gs", prefix: "  gs  ", expansion: "  git status  "),
+            PaletteAlias(id: "blank", prefix: "x", expansion: "   ")
+        ])
+        let synced = PrivateSyncPlanner.syncAliases(from: table)
+        XCTAssertEqual(synced, [SyncAlias(id: "gs", prefix: "gs", expansion: "git status")])
+    }
+
+    func testPaletteAliasDefaultFetchTypesIncludeAlias() {
+        // Without "Alias" in the fetch set, synced aliases would never come back.
+        XCTAssertTrue(PrivateSyncAppEventCoordinator.defaultFetchRecordTypes.contains("Alias"))
     }
 
 }
