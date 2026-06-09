@@ -751,6 +751,9 @@ final class TermyStore: ObservableObject {
     private let agentHookHelperPath: String?
     private var agentWorktrees: [UUID: AgentWorktreeHandle] = [:]
     private let localAISession: URLSession
+    /// Debounce + per-request timeout + LRU cache in front of the local-AI FIM
+    /// completion path, so editor completion requests dedupe and cache.
+    private let completionLatencyLane = CompletionLatencyLane()
     private var privateSyncCoordinator = PrivateSyncAppEventCoordinator()
     private var privateSyncEngineRuntime = PrivateSyncEngineRuntime()
     #if canImport(CloudKit)
@@ -3435,20 +3438,49 @@ final class TermyStore: ObservableObject {
     func suggestEditorCompletionWithLocalAI() {
         let context = editorCompletionContext()
 
+        let completionModel = appModel.ai.model(for: .completion)
+        let guidance = aiGuidanceContext
+        let endpointString = aiEndpoint
+        let session = localAISession
+        let cwd = projectRoot.path
+        let key = CompletionLatencyLane.Key(
+            prefix: context.prefix,
+            suffix: context.suffix,
+            cwd: cwd,
+            completionModel: completionModel
+        )
+
         Task {
+            let endpoint: LocalAIEndpoint
             do {
-                let endpoint = try LocalAIEndpoint(urlString: aiEndpoint)
-                let completion = try await localAIClient(endpoint: endpoint, role: .completion).suggestEditorCompletion(
-                    prefix: context.prefix,
-                    suffix: context.suffix,
-                    projectGuidance: aiGuidanceContext
-                )
-                editorAICompletion = completion.text
-                appendAIConversationHistoryEntry("editor-completion: \(completion.text)")
-                statusMessage = "Local AI suggested an editor completion."
+                endpoint = try LocalAIEndpoint(urlString: endpointString)
             } catch {
                 statusMessage = "Editor completion AI failed: \(error.localizedDescription)"
+                return
             }
+
+            // Run through the latency lane: rapid keystrokes are debounced (only
+            // the trailing request hits the model), slow requests time out, and
+            // identical contexts are served from the LRU cache. A nil result
+            // means superseded / timed out / no completion — a silent no-op.
+            let text = await completionLatencyLane.run(key: key) {
+                let client = LocalAIClient(endpoint: endpoint, model: completionModel, session: session)
+                do {
+                    let completion = try await client.suggestEditorCompletion(
+                        prefix: context.prefix,
+                        suffix: context.suffix,
+                        projectGuidance: guidance
+                    )
+                    return completion.text
+                } catch LocalAIClientError.emptySuggestion {
+                    return nil
+                }
+            }
+
+            guard let text, !text.isEmpty else { return }
+            editorAICompletion = text
+            appendAIConversationHistoryEntry("editor-completion: \(text)")
+            statusMessage = "Local AI suggested an editor completion."
         }
     }
 
