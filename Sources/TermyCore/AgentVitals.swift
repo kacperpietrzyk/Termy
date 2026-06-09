@@ -76,6 +76,39 @@ public func agentVitalsFlatOrder(_ vitals: [AgentSessionVitals]) -> [AgentSessio
     }
 }
 
+/// AD-5: keyboard-first fleet navigation over the flat, waiting-first order.
+///
+/// `agentFleetTarget(index:in:)` resolves a 1-based fleet slot (the digit the
+/// user pressed) to the session id at that position in `agentVitalsFlatOrder`,
+/// or nil when the slot is out of range. `nextAgentInGroup(state:after:in:)`
+/// cycles, with wraparound, through the subgroup of a given state relative to
+/// the current selection: when the selection is already inside the group it
+/// advances to the next member (wrapping past the end), and when it is not (no
+/// selection, or selection is in another group) it jumps to the first member.
+/// Both are pure so they unit-test without the store or a live PTY.
+
+/// Session id at the 1-based `index` in the flat fleet order, or nil if out of range.
+public func agentFleetTarget(index oneBased: Int, in vitals: [AgentSessionVitals]) -> UUID? {
+    guard oneBased >= 1 else { return nil }
+    let ordered = agentVitalsFlatOrder(vitals)
+    let zeroBased = oneBased - 1
+    guard zeroBased < ordered.count else { return nil }
+    return ordered[zeroBased].id
+}
+
+/// Next session id in the `state` subgroup, cycling with wraparound relative to
+/// `currentID`. Returns nil when the group is empty.
+public func nextAgentInGroup(
+    state: AgentActivityState, after currentID: UUID?, in vitals: [AgentSessionVitals]
+) -> UUID? {
+    let group = agentVitalsFlatOrder(vitals).filter { $0.state == state }
+    guard !group.isEmpty else { return nil }
+    guard let currentID, let current = group.firstIndex(where: { $0.id == currentID }) else {
+        return group[0].id   // selection not in this group → jump to its first member
+    }
+    return group[(current + 1) % group.count].id
+}
+
 /// AD-2: one entry in the in-app notifications popover — an agent that needs
 /// attention (waiting for input, or finished/failed), tagged by `kind` so the
 /// view renders per-type icon/color. Pure value type; built from the vitals plus
