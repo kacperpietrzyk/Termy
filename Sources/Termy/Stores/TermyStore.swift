@@ -805,20 +805,6 @@ final class TermyStore: ObservableObject {
         // v3 §6.1: the default local shell renders as the block terminal too
         // (matches ⌘T sessions); `.local()` alone defaults to `.stream`.
         let local = ConnectionProfile.local(terminalOutputMode: .blocks)
-        let sampleSSH = ConnectionProfile.ssh(
-            name: "Example Bastion",
-            host: "bastion.example.test",
-            user: NSUserName(),
-            port: 22,
-            identity: .keychain("termy.example.ssh")
-        )
-        let sampleRDP = ConnectionProfile.rdp(
-            name: "Example Windows VM",
-            host: "windows.example.test",
-            user: NSUserName(),
-            gateway: nil,
-            credential: .keychain("termy.example.rdp")
-        )
 
         self.registry = CommandRegistry(actions: FeatureCatalog.termDefault.commandCenterActions)
         self.runner = ShellCommandRunner(workingDirectory: URL(fileURLWithPath: FileManager.default.currentDirectoryPath))
@@ -839,7 +825,10 @@ final class TermyStore: ObservableObject {
         // observably identical; direct writes also avoid spurious
         // `objectWillChange` emissions during construction. This is outside
         // the bypass invariant's scope, not an exception to it.
-        appModel.connections.profiles = [local, sampleSSH, sampleRDP]
+        // X3: ship with no remote hosts — the user adds their own (or private
+        // iCloud sync restores them). Only the always-present local shell remains;
+        // the Connections/Home views show their honest empty states until then.
+        appModel.connections.profiles = [local]
         appModel.keymap.keymapProfile = KeymapProfile.defaults(for: FeatureCatalog.termDefault.commandCenterActions)
         appModel.terminal.sessions = [
             TermySession(
@@ -931,16 +920,33 @@ final class TermyStore: ObservableObject {
     }
 
     var gitStatusBarSummary: String {
-        let branch = selectedGitBranch?.trimmingCharacters(in: .whitespacesAndNewlines)
-        var parts = ["git: \(branch?.isEmpty == false ? branch! : "no branch")"]
-        let dirtyCount = gitStatus
-            .split(whereSeparator: \.isNewline)
-            .filter { line in
-                let text = line.trimmingCharacters(in: .whitespacesAndNewlines)
-                return text.count > 2 && (text.first?.isLetter == true || text.first == "?" || text.first == "!")
-            }
-            .count
-        parts.append(dirtyCount == 0 ? "clean" : "\(dirtyCount) \(dirtyCount == 1 ? "change" : "changes")")
+        // X1: source-of-truth = the same live precmd context the pinned-input
+        // header trusts (livePromptContext), so footer and header can't
+        // contradict. Falls back to the heavy GitModel when no live context yet.
+        let live = selectedSessionID.flatMap { livePromptContext(for: $0) }
+        let liveBranch = live?.branch?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let modelBranch = selectedGitBranch?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let branch = (liveBranch?.isEmpty == false ? liveBranch : nil)
+            ?? (modelBranch?.isEmpty == false ? modelBranch : nil)
+
+        // No branch anywhere → "no repo" (or "clean" if a live context confirms a
+        // repo), never the old "no branch <N> change" that mis-counted GitModel's
+        // default placeholder string as 1 dirty change.
+        guard let branch else {
+            return gitIsRepository && live != nil ? "git: clean" : "git: no repo"
+        }
+
+        var parts = ["git: \(branch)"]
+        // Dirty count from the REAL model array; if the model hasn't refreshed yet
+        // but the live context exists, fall back to its dirty boolean ('*').
+        let dirtyCount = gitChanges.count
+        if dirtyCount > 0 {
+            parts.append("\(dirtyCount) \(dirtyCount == 1 ? "change" : "changes")")
+        } else if let liveStatus = live?.gitStatus, !liveStatus.isEmpty {
+            parts.append("dirty")
+        } else {
+            parts.append("clean")
+        }
         if let gitDivergence {
             if gitDivergence.ahead > 0 {
                 parts.append("+\(gitDivergence.ahead)")
@@ -2405,8 +2411,8 @@ final class TermyStore: ObservableObject {
         Task {
             #if canImport(CloudKit)
             guard hasCloudKitPrivateSyncEntitlement else {
-                privateSyncStatus = "CloudKit entitlement unavailable"
-                statusMessage = "Private iCloud sync requires a signed build with the iCloud container entitlement."
+                privateSyncStatus = Self.cloudKitEntitlementUnavailableStatus
+                statusMessage = Self.cloudKitEntitlementUnavailableMessage
                 return
             }
             let status = await CloudKitPrivateSyncClient(containerIdentifier: "iCloud.com.kacperpietrzyk.Termy").accountStatus()
@@ -2440,7 +2446,7 @@ final class TermyStore: ObservableObject {
     func startPrivateSyncAppLaunch() {
         #if canImport(CloudKit)
         guard hasCloudKitPrivateSyncEntitlement else {
-            privateSyncStatus = "CloudKit entitlement unavailable"
+            privateSyncStatus = Self.cloudKitEntitlementUnavailableStatus
             return
         }
         startPrivateSyncEngineRuntime()
@@ -4789,6 +4795,13 @@ final class TermyStore: ObservableObject {
         #endif
     }
 
+    /// X2: single precise string for the dev/unsigned-build no-entitlement state,
+    /// shared by every code path so the footer never flips between this and the
+    /// generic "Sync failed" for the SAME state.
+    private static let cloudKitEntitlementUnavailableStatus = "CloudKit entitlement unavailable"
+    private static let cloudKitEntitlementUnavailableMessage =
+        "Private iCloud sync requires a signed build with the iCloud container entitlement."
+
     private func applyPrivateSyncEventStep(_ step: PrivateSyncAppEventStep) {
         privateSyncRecords = step.records
         privateSyncPendingOperations = step.eventLoopStep.pendingOperations
@@ -4798,8 +4811,19 @@ final class TermyStore: ObservableObject {
             if case .failed = $0.outcome { return true }
             return false
         }) {
-            privateSyncStatus = "Sync failed"
-            statusMessage = "Private sync \(formatPrivateSyncOperationKind(failedResult.operation.kind)) failed: \(failureMessage(failedResult.outcome))"
+            if !hasCloudKitPrivateSyncEntitlement {
+                // Dev/unsigned build: not a sync error — the iCloud container
+                // entitlement is simply absent. Reuse the exact precise string the
+                // direct guards set so the footer never flips to "Sync failed".
+                // (runPrivateSyncEvent AND the CKSyncEngine runtime path both route
+                // their no-entitlement failures through here.) A real signed build
+                // has the entitlement, so a genuine CKError still shows "Sync failed".
+                privateSyncStatus = Self.cloudKitEntitlementUnavailableStatus
+                statusMessage = Self.cloudKitEntitlementUnavailableMessage
+            } else {
+                privateSyncStatus = "Sync failed"
+                statusMessage = "Private sync \(formatPrivateSyncOperationKind(failedResult.operation.kind)) failed: \(failureMessage(failedResult.outcome))"
+            }
         } else if let savedRecordCount = step.savedRecordCount {
             // D2: a successful push has carried the tombstones; re-deleting would be
             // idempotent, but clear them so we don't resend indefinitely.
@@ -5950,8 +5974,18 @@ final class TermyStore: ObservableObject {
                 // Bug 1: precmd's live context for the CURRENT prompt — drives the
                 // pinned input bar's header. Always overwrite (incl. all-nil) so a
                 // `cd` into a non-repo clears a stale branch.
+                let previousBranch = livePromptContext[sessionID]?.branch
                 livePromptContext[sessionID] =
                     TerminalBlockContext(branch: branch, gitStatus: gitStatus, node: node)
+                // X1: keep the heavy GitModel (count/divergence) following the
+                // session cwd so the footer's numbers converge with the live
+                // header. Only on branch change, only for the selected session →
+                // no git subprocess on every Enter.
+                if sessionID == selectedSessionID,
+                   branch?.trimmingCharacters(in: .whitespacesAndNewlines)
+                     != previousBranch?.trimmingCharacters(in: .whitespacesAndNewlines) {
+                    refreshGitStatus()
+                }
                 objectWillChange.send()
             }
         }

@@ -125,4 +125,24 @@ final class TermyStoreConnectionTests: XCTestCase {
             "Compression=yes;ServerAliveInterval=30"
         )
     }
+
+    // ----- X3: no example placeholder hosts ship in the product -----
+
+    @MainActor
+    func testFreshStoreSeedsNoExampleHosts() {
+        let store = TermyStore(startInitialPTY: false)
+        let remotes = store.profiles.filter { $0.kind == .ssh || $0.kind == .rdp }
+        XCTAssertTrue(remotes.isEmpty, "no SSH/RDP hosts should be seeded")
+        XCTAssertFalse(
+            store.profiles.contains { $0.host.hasSuffix(".example.test") },
+            "no *.example.test placeholder hosts should ship"
+        )
+    }
+
+    @MainActor
+    func testFreshStoreRetainsOnlyLocalProfile() {
+        let store = TermyStore(startInitialPTY: false)
+        XCTAssertEqual(store.profiles.count, 1)
+        XCTAssertEqual(store.profiles.first?.kind, .local)
+    }
 }

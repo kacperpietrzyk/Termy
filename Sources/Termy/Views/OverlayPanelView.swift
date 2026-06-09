@@ -942,7 +942,12 @@ private struct ConnectionsPanel: View {
             .padding(.horizontal, 16).padding(.vertical, 10)
             Divider().overlay(Color(DesignTokens.hair))
 
-            if store.profiles.isEmpty {
+            // X3: the Connections list is about SSH/RDP remotes. The always-present
+            // `.local` shell has no real host (and SFTP/Tunnel actions are SSH-only),
+            // so filter it out — otherwise `profiles.isEmpty` is never true and the
+            // empty state is unreachable, and `.local` renders as a bogus card.
+            let remotes = store.profiles.filter { $0.kind == .ssh || $0.kind == .rdp }
+            if remotes.isEmpty {
                 ContentUnavailableView {
                     Label("No connections", systemImage: "network")
                 } description: {
@@ -953,7 +958,7 @@ private struct ConnectionsPanel: View {
             } else {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 18) {
-                        ForEach(Array(ConnectionGrouping.grouped(store.profiles).enumerated()), id: \.offset) { _, section in
+                        ForEach(Array(ConnectionGrouping.grouped(remotes).enumerated()), id: \.offset) { _, section in
                             VStack(alignment: .leading, spacing: 10) {
                                 Text((section.title ?? "Ungrouped").uppercased())
                                     .font(.system(size: 10, weight: .semibold))

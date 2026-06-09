@@ -190,6 +190,23 @@ final class TermyStorePrivateSyncTests: XCTestCase {
     }
 
     @MainActor
+    func testPushWithoutEntitlementKeepsPreciseStatusNotGenericSyncFailed() async {
+        // X2: the unsigned test binary has no iCloud entitlement
+        // (hasCloudKitPrivateSyncEntitlement == false) while canImport(CloudKit)
+        // is true — exactly the dev-build state. `.appLaunch` schedules a fetch
+        // that is due immediately, so the throwing no-entitlement closure runs and
+        // produces a FAILED operation outcome. That failure must keep the precise
+        // "CloudKit entitlement unavailable" string, not the generic "Sync failed"
+        // that the failure branch used to overwrite it with.
+        let store = TermyStore(startInitialPTY: false)
+        store.stagePrivateSyncSnapshot(scheduleSync: false)
+        _ = await store.runPrivateSyncEvent(.appLaunch)
+
+        XCTAssertEqual(store.privateSyncStatus, "CloudKit entitlement unavailable")
+        XCTAssertNotEqual(store.privateSyncStatus, "Sync failed")
+    }
+
+    @MainActor
     func testStagedSyncRecordsCarryMutationStampedModifiedAtAndPreserveIt() throws {
         // D1: editing a profile stamps its record's `modifiedAt`; re-staging without an
         // edit preserves that stamp (no churn). ai-history is never stamped.
