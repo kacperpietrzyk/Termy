@@ -4,6 +4,8 @@ public enum LocalAIClientError: Error, Equatable {
     case invalidResponse
     case requestFailed(Int)
     case emptySuggestion
+    /// An error object surfaced mid-stream by the model (`{"error":"..."}`).
+    case streamError(String)
 }
 
 public struct LocalAICommandSuggestion: Equatable, Sendable {
@@ -212,5 +214,88 @@ public struct LocalAIClient {
             throw LocalAIClientError.invalidResponse
         }
         return text
+    }
+
+    /// Stream a generation as it is produced, one ``LocalAIToken`` per NDJSON line.
+    ///
+    /// Sends `stream: true` to Ollama's `/api/generate` and parses the
+    /// newline-delimited JSON response incrementally via `URLSession.bytes(for:)`.
+    /// A terminal token (`done == true`) ends the stream; a mid-stream
+    /// `{"error":...}` object surfaces as ``LocalAIClientError/streamError(_:)``.
+    ///
+    /// The returned stream honours Swift Task cancellation: when the consuming
+    /// task is cancelled (e.g. on Esc), the underlying URLSession transfer is
+    /// cancelled and the stream finishes.
+    ///
+    /// - Parameters:
+    ///   - prompt: The generation prompt.
+    ///   - suffix: Optional text after the cursor (Ollama `suffix` field) — used
+    ///     by later FIM work; threaded into the request when non-nil.
+    ///   - role: The role of this request. Threaded for forward-compatibility;
+    ///     model selection by role arrives in a later slice.
+    ///   - options: Optional Ollama generation options passthrough.
+    public func generateStream(
+        prompt: String,
+        suffix: String? = nil,
+        role: LocalAIRole = .chat,
+        options: LocalAIGenerateOptions? = nil
+    ) -> AsyncThrowingStream<LocalAIToken, Error> {
+        _ = role
+        var body: [String: Any] = [
+            "model": model,
+            "prompt": prompt,
+            "stream": true
+        ]
+        if let suffix {
+            body["suffix"] = suffix
+        }
+        if let optionsObject = options?.jsonObject {
+            body["options"] = optionsObject
+        }
+
+        let url = endpoint.url.appending(path: "api/generate")
+        let session = self.session
+
+        return AsyncThrowingStream { continuation in
+            let task = Task {
+                do {
+                    var request = URLRequest(url: url)
+                    request.httpMethod = "POST"
+                    request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                    request.httpBody = try JSONSerialization.data(withJSONObject: body)
+
+                    let (bytes, response) = try await session.bytes(for: request)
+                    guard let http = response as? HTTPURLResponse else {
+                        throw LocalAIClientError.invalidResponse
+                    }
+                    guard (200..<300).contains(http.statusCode) else {
+                        throw LocalAIClientError.requestFailed(http.statusCode)
+                    }
+
+                    for try await line in bytes.lines {
+                        try Task.checkCancellation()
+                        switch LocalAINDJSONLineParser.parse(line) {
+                        case .token(let token):
+                            continuation.yield(token)
+                            if token.done {
+                                continuation.finish()
+                                return
+                            }
+                        case .error(let message):
+                            throw LocalAIClientError.streamError(message)
+                        case .ignored:
+                            continue
+                        }
+                    }
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+
+            continuation.onTermination = { _ in
+                task.cancel()
+            }
+        }
     }
 }
