@@ -1483,7 +1483,10 @@ final class TermyStore: ObservableObject {
     /// reads this once per body eval and reuses the tuple for both the items and
     /// the highlight ranges, so the ranking runs once per render.
     var rankedCommandCenterFeed: (items: [CommandCenterItem], ranges: [String: [Range<Int>]]) {
-        let query = commandQuery
+        // CK-S6: a leading sigil scopes the feed; `remainder` is what the ranker
+        // fuzzy-matches and what seeds the empty-state fallbacks.
+        let prefix = PalettePrefix.parse(commandQuery)
+        let query = prefix.remainder
 
         // Candidate pool: actions (availability-gated, keymap-applied), remote
         // connection profiles, and every agent session. The ranker filters by
@@ -1498,7 +1501,7 @@ final class TermyStore: ObservableObject {
         var candidates: [PaletteRanker.Candidate] = []
         candidates.reserveCapacity(actions.count + profiles.count + agents.count)
 
-        for vitals in agents {
+        for vitals in agents where prefix.admits(kind: .agentSession) {
             let item = CommandCenterItem.agentSession(vitals)
             byID[item.id] = item
             candidates.append(PaletteRanker.Candidate(
@@ -1509,6 +1512,12 @@ final class TermyStore: ObservableObject {
                 kind: .agentSession))
         }
         for action in actions {
+            // CK-S6: `?` help scope shows only actions that carry a shortcut
+            // (the keyboard cheat-sheet set); the prefix gates the rest.
+            if prefix.scope == .help, action.shortcut == nil { continue }
+            guard prefix.admits(kind: .action,
+                                actionArea: action.area.rawValue,
+                                actionID: action.id) else { continue }
             let item = CommandCenterItem.action(action)
             byID[item.id] = item
             candidates.append(PaletteRanker.Candidate(
@@ -1520,7 +1529,7 @@ final class TermyStore: ObservableObject {
                 area: action.area.rawValue,
                 isBlockAction: Self.isBlockAction(action)))
         }
-        for profile in profiles {
+        for profile in profiles where prefix.admits(kind: .profile) {
             let item = CommandCenterItem.profile(profile)
             byID[item.id] = item
             candidates.append(PaletteRanker.Candidate(
@@ -1545,6 +1554,14 @@ final class TermyStore: ObservableObject {
             guard let item = byID[entry.id] else { continue }
             items.append(item)
             if !entry.titleRanges.isEmpty { ranges[entry.id] = entry.titleRanges }
+        }
+
+        // CK-S6: when the scoped feed is empty, offer actionable fallbacks
+        // instead of a dead end — but a bare sigil (e.g. ">" alone) means "show
+        // everything in scope", so it never triggers fallbacks. Fallbacks are
+        // first-class items, so the keyboard ↑/↓/↵ path operates them unchanged.
+        if items.isEmpty, !prefix.isBareSigil {
+            items = PaletteFallback.suggestions(for: prefix).map(CommandCenterItem.fallback)
         }
         return (items, ranges)
     }
@@ -1812,7 +1829,40 @@ final class TermyStore: ObservableObject {
         case .agentSession(let vitals):
             focusAgentSession(vitals.id)
             isCommandCenterPresented = false
+        case .fallback(let fallback):
+            performPaletteFallback(fallback)
         }
+    }
+
+    /// CK-S6: dispatch an empty-state fallback to a real store seam. All four
+    /// honor B4: `runInSession` submits the user's *own* typed command (explicit
+    /// intent — not AI), while `askLocalAI` only *seeds + opens* the assistant
+    /// surface (never auto-sends a model request), `sshTo` seeds the Connections
+    /// draft (live launch is S7), and `searchScrollback` opens the find toolbar
+    /// pre-filled. Each closes the palette afterward.
+    func performPaletteFallback(_ fallback: PaletteFallback) {
+        let input = fallback.input.trimmingCharacters(in: .whitespacesAndNewlines)
+        switch fallback {
+        case .runInSession:
+            if !input.isEmpty { runCommandInShell(input) } // opens Shell + submits
+            else { openModuleTab(.shell) }
+        case .askLocalAI:
+            // Seed the offline assistant with the typed text and reveal it; the
+            // user consciously hits send (B4: offer, never auto-execute).
+            if !input.isEmpty { aiPrompt = input }
+            activePanel = .ai
+        case .sshTo:
+            // Seed the Connections SSH draft host (live launch is S7 inline-args
+            // territory); the user reviews + connects from there.
+            openModuleTab(.connections)
+            if !input.isEmpty { sshProfileHostDraft = input }
+        case .searchScrollback:
+            // Open the on-demand find toolbar pre-filled with the typed text.
+            if !input.isEmpty { terminalSearchQuery = input }
+            openModuleTab(.shell)
+            requestTerminalSearchFocus()
+        }
+        isCommandCenterPresented = false
     }
 
     // MARK: - CK-S5 Action Panel
@@ -1827,6 +1877,11 @@ final class TermyStore: ObservableObject {
         case .action(let action): target = .action(action)
         case .profile(let profile): target = .profile(profile)
         case .agentSession(let vitals): target = .agentSession(vitals)
+        case .fallback:
+            // CK-S6: a fallback row is its own single action (run it with ↵).
+            // It has no contextual secondary set, so ⌘K/→ opens nothing (the
+            // view guards against an empty panel).
+            return []
         }
         return ActionPanelResolver.resolve(target)
     }

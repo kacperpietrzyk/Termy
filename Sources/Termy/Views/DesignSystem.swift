@@ -348,6 +348,12 @@ extension CommandCenterItem {
             }
         case .agentSession:
             return .ai
+        case .fallback(let fallback):
+            switch fallback {
+            case .runInSession, .searchScrollback: return .terminal
+            case .askLocalAI: return .ai
+            case .sshTo: return .ssh
+            }
         }
     }
 }
