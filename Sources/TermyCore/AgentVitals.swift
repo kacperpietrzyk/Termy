@@ -20,7 +20,11 @@ public struct AgentSessionVitals: Sendable, Equatable, Identifiable {
     public let ahead: Int
     public let behind: Int
     public let isolation: AgentIsolationKind
-    public let ports: [Int]          // FB-3-4 deferred — always empty this slice
+    // AD-1 decision: kept deferred-empty + hidden from the UI (no honest live
+    // source for per-agent listening ports yet). Field retained — not dropped —
+    // because the data layer + FB34 tests reference it and a future slice can
+    // fill it; never-fabricate means render nothing rather than invent a value.
+    public let ports: [Int]          // always [] until a real probe exists
     public let startedAt: Date
     public let stateChangedAt: Date
     public let plan: [AgentPlanStep]
