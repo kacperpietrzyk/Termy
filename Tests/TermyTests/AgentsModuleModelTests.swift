@@ -8,11 +8,13 @@ final class AgentsModuleModelTests: XCTestCase {
                         cwd: String? = "~/.worktrees/a", branch: String? = "agent/a",
                         dirty: Int = 0, isolation: AgentIsolationKind = .worktree(path: "/x"),
                         started: Date = Date(), changed: Date = Date(),
-                        plan: [AgentPlanStep] = [], touched: [String] = []) -> AgentSessionVitals {
+                        plan: [AgentPlanStep] = [], touched: [String] = [],
+                        usage: AgentTranscriptUsage? = nil) -> AgentSessionVitals {
         AgentSessionVitals(
             id: id, name: name, agentType: type, state: state, cwd: cwd, branch: branch,
             dirtyCount: dirty, ahead: 0, behind: 0, isolation: isolation, ports: [],
-            startedAt: started, stateChangedAt: changed, plan: plan, touched: touched)
+            startedAt: started, stateChangedAt: changed, plan: plan, touched: touched,
+            usage: usage)
     }
 
     func testActiveAgentKeepsValidSelection() {
@@ -68,6 +70,48 @@ final class AgentsModuleModelTests: XCTestCase {
         let stateRow = rows.first { $0.key == "state" }
         XCTAssertEqual(stateRow?.tag, .hook)                       // waiting → hook
         XCTAssertTrue(stateRow?.value.contains("awaiting-input") == true)
+    }
+
+    // MARK: AD-6 — context/token indicator + honest CC/Codex asymmetry.
+
+    func testContextUsageCodexIsNotAvailable() {
+        // Codex has no transcript → honest "n/a", never fabricated, regardless of
+        // any (impossible) usage value.
+        let v = vitals(type: .codex, state: .working)
+        XCTAssertEqual(AgentsModuleModel.contextUsageLabel(v), "n/a")
+        let rows = AgentsModuleModel.signalRows(v)
+        XCTAssertEqual(rows.first { $0.key == "context" }?.value, "n/a")
+        XCTAssertNil(rows.first { $0.key == "context" }?.tag)   // no source tag for n/a
+    }
+
+    func testContextUsageClaudeWithNoTranscriptShowsDash() {
+        let v = vitals(type: .claudeCode, state: .working, usage: nil)
+        XCTAssertEqual(AgentsModuleModel.contextUsageLabel(v), "—")
+        XCTAssertNil(AgentsModuleModel.signalRows(v).first { $0.key == "context" }?.tag)
+    }
+
+    func testContextUsageClaudeWithWindowShowsPercent() {
+        let usage = AgentTranscriptUsage(
+            contextTokens: 57_609, model: "claude-opus-4-7", contextWindow: 200_000)
+        let v = vitals(type: .claudeCode, state: .working, usage: usage)
+        XCTAssertEqual(AgentsModuleModel.contextUsageLabel(v), "57.6k / 200k · 29%")
+        XCTAssertEqual(
+            AgentsModuleModel.signalRows(v).first { $0.key == "context" }?.tag, .transcript)
+    }
+
+    func testContextUsageUnknownModelShowsRawTokensNoDenominator() {
+        let usage = AgentTranscriptUsage(
+            contextTokens: 12_345, model: "local-llm", contextWindow: nil)
+        let v = vitals(type: .claudeCode, state: .working, usage: usage)
+        XCTAssertEqual(AgentsModuleModel.contextUsageLabel(v), "12.3k tokens")
+    }
+
+    func testCompactTokens() {
+        XCTAssertEqual(AgentsModuleModel.compactTokens(950), "950")
+        XCTAssertEqual(AgentsModuleModel.compactTokens(57_609), "57.6k")
+        XCTAssertEqual(AgentsModuleModel.compactTokens(200_000), "200k")
+        XCTAssertEqual(AgentsModuleModel.compactTokens(1_000_000), "1M")
+        XCTAssertEqual(AgentsModuleModel.compactTokens(1_500_000), "1.5M")
     }
 
     func testSignalRowsTouchedSingularPlural() {

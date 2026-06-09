@@ -111,11 +111,12 @@ enum AgentsModuleModel {
 
     // MARK: signals card — value + truthful source tag.
     enum SourceTag: Equatable {
-        case hook, pty, osc, proc
+        case hook, pty, osc, proc, transcript
         var label: String {
             switch self {
             case .hook: return "hook"; case .pty: return "pty"
             case .osc:  return "osc 133"; case .proc: return "proc"
+            case .transcript: return "transcript"
             }
         }
     }
@@ -142,7 +143,39 @@ enum AgentsModuleModel {
             .init(key: "isolation", value: isolationLabel(v.isolation), tag: nil),
             .init(key: "touched",
                   value: "\(v.touched.count) \(v.touched.count == 1 ? "file" : "files")", tag: .hook),
+            .init(key: "context", value: contextUsageLabel(v),
+                  tag: v.usage == nil ? nil : .transcript),
         ]
+    }
+
+    // MARK: AD-6 — token / context-window indicator (CC transcript, read-only).
+
+    /// The signals-card "context" value. Honest CC/Codex asymmetry: Codex (no
+    /// transcript) shows "n/a"; a CC session with no parsed usage yet shows "—";
+    /// otherwise "57.6k / 200k · 29%", or "57.6k tokens" when the model's window
+    /// is unknown (no fabricated denominator). Never invents a number.
+    static func contextUsageLabel(_ v: AgentSessionVitals) -> String {
+        guard v.agentType == .claudeCode else { return "n/a" }
+        guard let usage = v.usage else { return "—" }
+        let used = compactTokens(usage.contextTokens)
+        if let window = usage.contextWindow, let frac = usage.fraction {
+            return "\(used) / \(compactTokens(window)) · \(Int((frac * 100).rounded()))%"
+        }
+        return "\(used) tokens"
+    }
+
+    /// Compact token count: 57609 → "57.6k", 1_000_000 → "1M", 950 → "950".
+    static func compactTokens(_ n: Int) -> String {
+        switch n {
+        case 1_000_000...:
+            let m = Double(n) / 1_000_000
+            return m == m.rounded() ? "\(Int(m))M" : String(format: "%.1fM", m)
+        case 1_000...:
+            let k = Double(n) / 1_000
+            return k == k.rounded() ? "\(Int(k))k" : String(format: "%.1fk", k)
+        default:
+            return "\(n)"
+        }
     }
 
     // MARK: §5.8 — plan progress.

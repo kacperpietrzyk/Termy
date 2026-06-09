@@ -29,18 +29,22 @@ public struct AgentSessionVitals: Sendable, Equatable, Identifiable {
     public let stateChangedAt: Date
     public let plan: [AgentPlanStep]
     public let touched: [String]
+    // AD-6: token / context-window occupancy, parsed read-only + locally from the
+    // CC transcript. nil for Codex (no equivalent transcript → honest "n/a"), and
+    // for a CC session whose transcript has no assistant turn yet. Never fabricated.
+    public let usage: AgentTranscriptUsage?
 
     public init(
         id: UUID, name: String, agentType: CLIAgent, state: AgentActivityState,
         cwd: String?, branch: String?, dirtyCount: Int, ahead: Int, behind: Int,
         isolation: AgentIsolationKind, ports: [Int], startedAt: Date, stateChangedAt: Date,
-        plan: [AgentPlanStep] = [], touched: [String] = []
+        plan: [AgentPlanStep] = [], touched: [String] = [], usage: AgentTranscriptUsage? = nil
     ) {
         self.id = id; self.name = name; self.agentType = agentType; self.state = state
         self.cwd = cwd; self.branch = branch; self.dirtyCount = dirtyCount
         self.ahead = ahead; self.behind = behind; self.isolation = isolation
         self.ports = ports; self.startedAt = startedAt; self.stateChangedAt = stateChangedAt
-        self.plan = plan; self.touched = touched
+        self.plan = plan; self.touched = touched; self.usage = usage
     }
 }
 
@@ -194,9 +198,13 @@ public struct AgentVitalsSnapshot: Sendable, Equatable {
 }
 
 /// Combines live snapshots with cached git facts (default `.unknown` when a
-/// session has no cache entry yet). Preserves snapshot order.
+/// session has no cache entry yet) and cached transcript usage (AD-6; nil when a
+/// session has no entry — e.g. Codex, or a CC session with no assistant turn
+/// yet). Preserves snapshot order.
 public func mergeAgentVitals(
-    snapshots: [AgentVitalsSnapshot], gitCache: [UUID: GitVitals]
+    snapshots: [AgentVitalsSnapshot],
+    gitCache: [UUID: GitVitals],
+    usageCache: [UUID: AgentTranscriptUsage] = [:]
 ) -> [AgentSessionVitals] {
     snapshots.map { snapshot in
         let git = gitCache[snapshot.id] ?? .unknown
@@ -206,6 +214,7 @@ public func mergeAgentVitals(
             dirtyCount: git.dirtyCount, ahead: git.ahead, behind: git.behind,
             isolation: snapshot.isolation, ports: [],
             startedAt: snapshot.startedAt, stateChangedAt: snapshot.stateChangedAt,
-            plan: snapshot.plan, touched: snapshot.touched)
+            plan: snapshot.plan, touched: snapshot.touched,
+            usage: usageCache[snapshot.id])
     }
 }

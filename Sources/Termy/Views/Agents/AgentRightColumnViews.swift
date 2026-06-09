@@ -116,6 +116,7 @@ private struct SourceTagChip: View {
         case .pty:  return Color(DesignTokens.sync.base)
         case .osc:  return Color(DesignTokens.git.base)
         case .proc: return Color(DesignTokens.fg3)
+        case .transcript: return Color(DesignTokens.primary)
         }
     }
 
