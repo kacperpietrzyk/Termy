@@ -28,7 +28,14 @@ struct AgentDiffReviewView: View {
         TermyDetailCard(title: diffTitle, trailing: diffTrailing, systemImage: "plus.forwardslash.minus") {
             content
         }
-        .task(id: vitals.id) { await load() }
+        // Re-load when the agent changes OR its working tree moves (dirty count /
+        // state transition) so a live agent's diff tracks its edits, not just the
+        // first drill-in.
+        .task(id: refreshKey) { await load() }
+    }
+
+    private var refreshKey: String {
+        "\(vitals.id)-\(vitals.dirtyCount)-\(vitals.stateChangedAt.timeIntervalSince1970)"
     }
 
     private var diffTitle: String {
@@ -107,6 +114,8 @@ struct AgentDiffReviewView: View {
 // MARK: - one collapsible file
 
 private struct AgentDiffFileSection: View {
+    static let maxLines = 400
+
     let file: GitFileDiff
     let isCollapsed: Bool
     let toggle: () -> Void
@@ -117,7 +126,17 @@ private struct AgentDiffFileSection: View {
             if !isCollapsed {
                 Rectangle().fill(Color(DesignTokens.hair)).frame(height: 1)
                 VStack(alignment: .leading, spacing: 0) {
-                    ForEach(file.lines) { line in AgentDiffLineRow(line: line, fileName: file.path) }
+                    // Cap per-file rendering: each row syntax-highlights synchronously,
+                    // so a huge refactor diff would hitch the main thread. Truncate
+                    // with a footer rather than render thousands of rows.
+                    ForEach(file.lines.prefix(Self.maxLines)) { line in
+                        AgentDiffLineRow(line: line, fileName: file.path)
+                    }
+                    if file.lines.count > Self.maxLines {
+                        Text("… \(file.lines.count - Self.maxLines) more lines")
+                            .font(Typography.mono(10.5)).foregroundStyle(Color(DesignTokens.fg4))
+                            .padding(.horizontal, 10).padding(.vertical, 3)
+                    }
                 }
                 .padding(.vertical, 4)
             }

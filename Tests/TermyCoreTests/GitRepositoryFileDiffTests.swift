@@ -54,6 +54,34 @@ final class GitRepositoryFileDiffTests: XCTestCase {
         XCTAssertEqual(stillUntracked?.isUntracked, true)
     }
 
+    func testUntrackedFileInNewDirectoryIsSurfaced() throws {
+        // Porcelain collapses a new dir to "?? newdir/"; ls-files lists the file.
+        let repoURL = try makeTempGitRepo()
+        let sub = repoURL.appendingPathComponent("newdir")
+        try FileManager.default.createDirectory(at: sub, withIntermediateDirectories: true)
+        try "nested\n".write(to: sub.appendingPathComponent("deep.txt"),
+                             atomically: true, encoding: .utf8)
+
+        let diffs = try GitRepository(root: repoURL).fileDiffs()
+        let nested = try XCTUnwrap(diffs.first { $0.path == "newdir/deep.txt" })
+        XCTAssertTrue(nested.untracked)
+        XCTAssertTrue(nested.lines.contains { $0.kind == .added && $0.content == "nested" })
+    }
+
+    func testGitignoredUntrackedFileIsNotSurfaced() throws {
+        let repoURL = try makeTempGitRepo()
+        try "ignored.log\n".write(to: repoURL.appendingPathComponent(".gitignore"),
+                                  atomically: true, encoding: .utf8)
+        runGit(["add", ".gitignore"], in: repoURL)
+        runGit(["commit", "-q", "-m", "ignore"], in: repoURL)
+        try "noise\n".write(to: repoURL.appendingPathComponent("ignored.log"),
+                            atomically: true, encoding: .utf8)
+
+        let diffs = try GitRepository(root: repoURL).fileDiffs()
+        XCTAssertFalse(diffs.contains { $0.path == "ignored.log" },
+                       "ls-files --exclude-standard must respect .gitignore")
+    }
+
     func testCleanRepoYieldsNoDiffs() throws {
         let repoURL = try makeTempGitRepo()
         XCTAssertTrue(try GitRepository(root: repoURL).fileDiffs().isEmpty)

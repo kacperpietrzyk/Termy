@@ -174,8 +174,8 @@ public struct GitRepository: Sendable {
     ///      `Write`s are visible **without** mutating its index (no `add -N`).
     /// Committed agent work (HEAD already advanced) is intentionally NOT shown —
     /// base-SHA recovery is a follow-up; this surface is working-tree only.
-    /// Binary/oversized untracked files degrade to a single meta line rather than
-    /// dumping bytes. Never throws for a per-file failure — that file is skipped.
+    /// A per-file synthesize that produces no usable diff (binary, empty) is
+    /// skipped rather than surfaced. Never throws for a per-file failure.
     public func fileDiffs() throws -> [GitFileDiff] {
         var result = UnifiedDiffParser.parse(try runGit(["diff", "HEAD", "--no-color"]).stdout)
         for path in try untrackedPaths() {
@@ -186,9 +186,17 @@ public struct GitRepository: Sendable {
         return result
     }
 
-    /// Porcelain `??` entries — files git is not yet tracking.
+    /// Individual untracked files git is not yet tracking. Uses
+    /// `git ls-files --others --exclude-standard` rather than porcelain `??`
+    /// because porcelain collapses a wholly-untracked directory into one
+    /// `?? dir/` entry — `ls-files` lists the files inside it (respecting
+    /// .gitignore identically), so an agent that creates a NEW directory of
+    /// files still has every file surfaced.
     private func untrackedPaths() throws -> [String] {
-        try changes().filter(\.isUntracked).map(\.path)
+        try runGit(["ls-files", "--others", "--exclude-standard"]).stdout
+            .split(whereSeparator: \.isNewline)
+            .map(String.init)
+            .filter { !$0.isEmpty }
     }
 
     /// Read-only synthesized diff for one untracked file: `git diff --no-index`
