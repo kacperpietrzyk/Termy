@@ -3954,6 +3954,177 @@ final class TermyStore: ObservableObject {
         return true
     }
 
+    // MARK: - AD-8 gh PR finalizer
+
+    /// The agent's worktree root for a session — where its commits/pushes/PR must
+    /// operate (NOT `gitWorkingRoot`, which is the main session's cwd). Mirrors
+    /// AD-3's `AgentDiffReviewView.worktreeRoot` and `archiveAgentSessionOnExit`:
+    /// the worktree path when isolated, else the enclosing git root of the cwd.
+    private func agentWorktreeRoot(for sessionID: UUID) -> URL? {
+        if let path = agentWorktrees[sessionID]?.path { return path }
+        guard let session = sessions.first(where: { $0.id == sessionID }),
+              let cwd = session.currentWorkingDirectory, !cwd.isEmpty else { return nil }
+        let url = URL(fileURLWithPath: (cwd as NSString).expandingTildeInPath)
+        return GitRepository.enclosingGitRoot(of: url) ?? url
+    }
+
+    /// AD-8 step 1 (explicit, B4): commit the agent worktree's staged+unstaged
+    /// changes with `message`. Stages everything first (the agent's edits) so the
+    /// happy-path "review → commit" needs no separate stage step. Honest result via
+    /// `statusMessage`; never silently succeeds. `completion(true)` only on a real
+    /// commit so the UI can advance to push.
+    func commitAgentWorktree(sessionID: UUID, message: String, completion: @escaping (Bool) -> Void) {
+        let trimmed = message.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            statusMessage = "Enter a commit message first."
+            completion(false); return
+        }
+        guard let root = agentWorktreeRoot(for: sessionID) else {
+            statusMessage = "No worktree to commit — agent has no resolvable repository."
+            completion(false); return
+        }
+        let repo = GitRepository(root: root)
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = Result { () -> GitCommitResult in
+                try repo.stageAll()
+                return try repo.commit(message: trimmed)
+            }
+            DispatchQueue.main.async {
+                switch result {
+                case .success:
+                    self.statusMessage = "Committed the agent's changes."
+                    completion(true)
+                case .failure(let error):
+                    self.statusMessage = "Commit failed: \(error.localizedDescription)"
+                    completion(false)
+                }
+            }
+        }
+    }
+
+    /// AD-8 step 2 (explicit, B4): push the agent worktree's current branch,
+    /// setting upstream (an isolated worktree branch has none yet). Honest result.
+    func pushAgentWorktree(sessionID: UUID, completion: @escaping (Bool) -> Void) {
+        guard let root = agentWorktreeRoot(for: sessionID) else {
+            statusMessage = "No worktree to push."
+            completion(false); return
+        }
+        let repo = GitRepository(root: root)
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = Result { try repo.pushCurrentBranch(setUpstream: true) }
+            DispatchQueue.main.async {
+                switch result {
+                case .success:
+                    self.statusMessage = "Pushed the agent's branch to origin."
+                    completion(true)
+                case .failure(let error):
+                    self.statusMessage = "Push failed: \(error.localizedDescription)"
+                    completion(false)
+                }
+            }
+        }
+    }
+
+    /// AD-8 step 3 (explicit, B4): draft a PR title+body with the LOCAL model from
+    /// the agent worktree's branch context (branch names + commit subjects +
+    /// touched files + a bounded diff). The draft is returned for the user to
+    /// REVIEW AND EDIT — nothing is sent. `completion(nil)` with an honest status
+    /// on failure (no model / empty repo).
+    func draftAgentPRDescription(sessionID: UUID, completion: @escaping ((title: String, body: String)?) -> Void) {
+        guard let root = agentWorktreeRoot(for: sessionID) else {
+            statusMessage = "No worktree to describe."
+            completion(nil); return
+        }
+        let endpointString = aiEndpoint
+        Task { [weak self] in
+            guard let self else { return }
+            let context: PRDescriptionPrompt.Context? = await Task.detached(priority: .userInitiated) {
+                let base = "main"
+                let repo = GitRepository(root: root)
+                guard repo.isRepository() else { return nil }
+                let head = (try? repo.currentBranch()) ?? ""
+                let subjects = (try? repo.recentCommits(limit: 20))?.map(\.subject) ?? []
+                // Branch-vs-base delta (committed + uncommitted) so the draft is
+                // non-empty whether the user commits before or after drafting.
+                let files = (try? repo.changedFiles(againstBase: base)) ?? []
+                let diff = (try? repo.diff(againstBase: base)) ?? ""
+                return PRDescriptionPrompt.Context(
+                    headBranch: head, baseBranch: base,
+                    commitSubjects: subjects, touchedFiles: files, diff: diff)
+            }.value
+            guard let context else {
+                self.statusMessage = "No git context for a PR description."
+                completion(nil); return
+            }
+            do {
+                let endpoint = try LocalAIEndpoint(urlString: endpointString)
+                let suggestion = try await self.localAIClient(endpoint: endpoint).draftPRDescription(context)
+                let parsed = PRDescriptionPrompt.parseResponse(suggestion.text)
+                self.statusMessage = "Local AI drafted a PR description — review before creating."
+                completion(parsed)
+            } catch {
+                self.statusMessage = "PR description draft failed: \(error.localizedDescription)"
+                completion(nil)
+            }
+        }
+    }
+
+    /// AD-8 step 4 (explicit, B4): create the PR via the user's own `gh` auth from
+    /// the agent worktree (gh infers the repo from the cwd, so the runner's working
+    /// directory MUST be the worktree root). The title/body are the REVIEWED draft.
+    /// Honest outcome via `statusMessage`; success is never faked.
+    func createAgentPR(
+        sessionID: UUID,
+        base: String = "main",
+        title: String,
+        body: String,
+        draft: Bool = false,
+        completion: @escaping (GhPullRequest.CreateOutcome) -> Void
+    ) {
+        guard let root = agentWorktreeRoot(for: sessionID) else {
+            statusMessage = "No worktree to open a PR from."
+            completion(.ghMissing); return
+        }
+        let head = (try? GitRepository(root: root).currentBranch()) ?? ""
+        guard !head.isEmpty else {
+            statusMessage = "Could not resolve the agent's branch."
+            completion(.failed(reason: .other, detail: "no branch")); return
+        }
+        let request = GhPullRequest.CreateRequest(
+            base: base, head: head, title: title, body: body, draft: draft)
+        DispatchQueue.global(qos: .userInitiated).async {
+            // gh shells out from the worktree cwd via the same runner pattern as
+            // GitRepository — system `gh`, the user's own auth, no Termy relay.
+            let gh = GhPullRequest { args in
+                let command = args.map { "'\($0.replacingOccurrences(of: "'", with: "'\\''"))'" }
+                    .joined(separator: " ")
+                let result = try ShellCommandRunner(workingDirectory: root).run(command)
+                return GhPullRequest.RunResult(
+                    exitCode: result.exitCode, stdout: result.stdout, stderr: result.stderr)
+            }
+            let outcome = gh.create(request)
+            DispatchQueue.main.async {
+                switch outcome {
+                case .created(let url, let number):
+                    if let number {
+                        self.statusMessage = "Opened PR #\(number)."
+                    } else if url != nil {
+                        self.statusMessage = "Opened the pull request."
+                    } else {
+                        self.statusMessage = "gh created the pull request."
+                    }
+                case .alreadyExists(let detail):
+                    self.statusMessage = "A pull request already exists for this branch. \(detail)"
+                case .failed(_, let detail):
+                    self.statusMessage = "PR creation failed: \(detail)"
+                case .ghMissing:
+                    self.statusMessage = "`gh` is not installed or not on PATH."
+                }
+                completion(outcome)
+            }
+        }
+    }
+
     /// v3 Shell §6.1 History action: place a chosen command at the selected
     /// session's live prompt WITHOUT executing it (no CR — the user reviews then
     /// presses Enter). Falls back to the pasteboard when the session has no live
