@@ -158,6 +158,27 @@ public struct GitRepository: Sendable {
         try runGit(["diff"]).stdout
     }
 
+    /// Lazy per-commit diff: only invoked when the user selects a commit row in
+    /// the graph, so we never `git show` every commit up front. `--no-color`
+    /// keeps the output plain for the monospaced diff sheet.
+    public func diff(commit: String) throws -> String {
+        try runGit(["show", "--no-color", commit]).stdout
+    }
+
+    /// Walk up from `url` looking for a `.git` entry; returns the repo root or
+    /// nil. Pure, filesystem-only — used by the app to resolve the git working
+    /// root from the active session's cwd (track-active-session-cwd).
+    public static func enclosingGitRoot(of url: URL) -> URL? {
+        var dir = url.standardizedFileURL
+        while dir.path != "/" {
+            if FileManager.default.fileExists(atPath: dir.appendingPathComponent(".git").path) {
+                return dir
+            }
+            dir = dir.deletingLastPathComponent()
+        }
+        return nil
+    }
+
     public func conflictHunks() throws -> [GitConflictHunk] {
         let conflictedPaths = try statusShort().entries
             .filter { $0.code.contains("U") || $0.code == "AA" || $0.code == "DD" }

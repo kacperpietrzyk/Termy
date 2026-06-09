@@ -12,6 +12,9 @@ final class GitModel {
     var gitStatus = "Run Git Status to inspect the current repository."
     var gitCommitMessage = ""
     var gitDiff = ""
+    /// Header label for the diff sheet so a per-commit `git show` isn't mislabeled
+    /// as the working-tree diff. Set by refreshGitDiff / loadDiff(forCommit:).
+    var gitDiffTitle = "Diff"
     var gitConflictExplanation = ""
     var gitBranchDraft = ""
     var selectedGitBranch: String?
