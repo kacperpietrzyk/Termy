@@ -47,6 +47,110 @@ final class EditorBuffersTests: XCTestCase {
         XCTAssertEqual(a, b)
     }
 
+    // MARK: - ED-2 language / selection / Codable
+
+    func testLanguageDerivedFromFileExtension() {
+        XCTAssertEqual(EditorLanguage(path: "src/App.swift"), .swift)
+        XCTAssertEqual(EditorLanguage(path: "main.ts"), .typescript)
+        XCTAssertEqual(EditorLanguage(path: "index.jsx"), .javascript)
+        XCTAssertEqual(EditorLanguage(path: "deploy.yaml"), .yaml)
+        XCTAssertEqual(EditorLanguage(path: "Cargo.toml"), .toml)
+        XCTAssertEqual(EditorLanguage(path: "main.go"), .go)
+        XCTAssertEqual(EditorLanguage(path: "run.sh"), .shell)
+        // Unknown extension and the unnamed scratch buffer both fall back to plain.
+        XCTAssertEqual(EditorLanguage(path: "data.xyz"), .plain)
+        XCTAssertEqual(EditorLanguage(path: nil), .plain)
+    }
+
+    func testBufferLanguageDefaultsFromPathAndTracksPathChange() {
+        var buffer = EditorBuffer(filePath: "notes/readme.md", text: "# hi")
+        XCTAssertEqual(buffer.language, .markdown)
+        // Scratch buffer (no path) is plain.
+        let scratch = EditorBuffer(text: "scratch")
+        XCTAssertEqual(scratch.language, .plain)
+        // didSet keeps language in sync when the path changes.
+        buffer.filePath = "lib/util.py"
+        XCTAssertEqual(buffer.language, .python)
+    }
+
+    func testSelectionDefaultsToCollapsedCaretAtZero() {
+        let buffer = EditorBuffer(text: "abc")
+        XCTAssertEqual(buffer.selection, EditorSelection(location: 0, length: 0))
+        XCTAssertEqual(EditorSelection().location, 0)
+        XCTAssertEqual(EditorSelection().length, 0)
+        // Negative inputs clamp to zero (never an invalid offset).
+        XCTAssertEqual(EditorSelection(location: -5, length: -3), EditorSelection())
+    }
+
+    func testSelectionDecodeClampsNegativeOffsets() throws {
+        let blob = Data(#"{"location":-7,"length":-2}"#.utf8)
+        let decoded = try JSONDecoder().decode(EditorSelection.self, from: blob)
+        XCTAssertEqual(decoded, EditorSelection())
+    }
+
+    func testBufferCodableRoundTripPreservesPersistedFieldsAndRebuildsVimState() throws {
+        let original = EditorBuffer(filePath: "src/App.swift",
+                                    text: "let x = 1\nlet y = 2\n",
+                                    isDirty: true,
+                                    selection: EditorSelection(location: 4, length: 3))
+        let data = try JSONEncoder().encode(original)
+        let decoded = try JSONDecoder().decode(EditorBuffer.self, from: data)
+
+        XCTAssertEqual(decoded.id, original.id)
+        XCTAssertEqual(decoded.filePath, original.filePath)
+        XCTAssertEqual(decoded.text, original.text)
+        XCTAssertEqual(decoded.isDirty, original.isDirty)
+        XCTAssertEqual(decoded.language, .swift)
+        XCTAssertEqual(decoded.selection, original.selection)
+        // vimState is excluded from coding and rebuilt from text on decode.
+        XCTAssertEqual(decoded.vimState, VimEditorState(buffer: original.text))
+        // Full equality holds because the rebuilt vimState matches.
+        XCTAssertEqual(decoded, original)
+    }
+
+    func testModelSnapshotRoundTrip() throws {
+        let model = EditorModel()
+        model.openBuffers.append(EditorBuffer(filePath: "a.go", text: "package main"))
+        let fileID = model.openBuffers[1].id
+        model.activeBufferID = fileID
+
+        let data = try JSONEncoder().encode(model.snapshot)
+        let snapshot = try JSONDecoder().decode(EditorBuffersSnapshot.self, from: data)
+
+        let restored = EditorModel()
+        restored.restore(from: snapshot)
+        XCTAssertEqual(restored.openBuffers.count, 2)
+        XCTAssertEqual(restored.activeBufferID, fileID)
+        XCTAssertEqual(restored.openBuffers[1].language, .go)
+        XCTAssertEqual(restored.scratchText, "package main")
+    }
+
+    func testRestoreFromEmptySnapshotIsRejected() {
+        let model = EditorModel()
+        let originalID = model.activeBufferID
+        model.restore(from: EditorBuffersSnapshot(openBuffers: [], activeBufferID: UUID()))
+        // Invariant preserved: never zero buffers, active id unchanged.
+        XCTAssertEqual(model.openBuffers.count, 1)
+        XCTAssertEqual(model.activeBufferID, originalID)
+    }
+
+    func testRestoreClampsStaleActiveID() {
+        let model = EditorModel()
+        let buffer = EditorBuffer(filePath: "x.rs", text: "fn main() {}")
+        let snapshot = EditorBuffersSnapshot(openBuffers: [buffer], activeBufferID: UUID())
+        model.restore(from: snapshot)
+        // Active id pointed at no buffer → clamped to the first real buffer.
+        XCTAssertEqual(model.activeBufferID, buffer.id)
+    }
+
+    func testOpenFileDerivesLanguageInStore() throws {
+        let dir = try makeTempFile(name: "alpha.swift", contents: "let a = 1\n")
+        let store = TermyStore(startInitialPTY: false, projectRoot: dir.root)
+        store.openFileInEditorBuffer("alpha.swift")
+        let active = try XCTUnwrap(store.openBuffers.first { $0.id == store.activeBufferID })
+        XCTAssertEqual(active.language, .swift)
+    }
+
     // MARK: - Store mutations
 
     func testOpenFileInEditorBufferAppendsAndActivates() throws {
