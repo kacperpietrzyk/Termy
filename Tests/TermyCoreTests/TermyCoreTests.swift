@@ -6121,20 +6121,20 @@ final class TermyCoreTests: XCTestCase {
         LocalAIURLProtocol.handler = { request in
             let body = try XCTUnwrap(request.bodyData)
             let json = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
+            // qwen2.5-coder is FIM-capable: native FIM sends the bare prefix as
+            // the prompt plus the suffix field — no prose "Complete…" wrapper.
             let prompt = try XCTUnwrap(json["prompt"] as? String)
-            XCTAssertTrue(prompt.contains("Complete this editor buffer at the cursor"))
-            XCTAssertTrue(prompt.contains("Prefix:"))
-            XCTAssertTrue(prompt.contains("func deploy()"))
-            XCTAssertTrue(prompt.contains("Suffix:"))
-            XCTAssertTrue(prompt.contains("Use Swift"))
+            XCTAssertEqual(prompt, "func deploy()")
+            XCTAssertFalse(prompt.contains("Complete this editor buffer at the cursor"))
+            XCTAssertEqual(json["suffix"] as? String, "\n")
 
             let response = HTTPURLResponse(
                 url: request.url!,
                 statusCode: 200,
                 httpVersion: nil,
-                headerFields: ["Content-Type": "application/json"]
+                headerFields: ["Content-Type": "application/x-ndjson"]
             )!
-            return (response, Data(#"{"response":" {\n    runDeploy()\n}"}"#.utf8))
+            return (response, Data((#"{"response":" {\n    runDeploy()\n}","done":true}"# + "\n").utf8))
         }
         defer { LocalAIURLProtocol.handler = nil }
 

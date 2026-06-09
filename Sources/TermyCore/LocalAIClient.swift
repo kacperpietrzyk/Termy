@@ -168,27 +168,100 @@ public struct LocalAIClient {
         return LocalAITextSuggestion(text: text)
     }
 
-    public func suggestEditorCompletion(
+    /// The set of local-model name fragments known to support native
+    /// fill-in-the-middle (FIM) via Ollama's `suffix` field on `/api/generate`.
+    ///
+    /// FIM-capable code models accept a prefix/suffix pair and infill the gap
+    /// using their FIM tokens — a far higher-quality completion than the legacy
+    /// prose `Complete… Prefix:/Suffix:` prompt. Matching is a pure, offline,
+    /// case-insensitive substring test against the configured model name; no
+    /// network probe (model auto-discovery via `GET /api/tags` is a later slice).
+    private static let fimCapableModelFragments: [String] = [
+        "qwen2.5-coder",
+        "qwen-coder",
+        "qwen3-coder",
+        "codellama",
+        "deepseek-coder",
+        "starcoder",
+        "codegemma",
+        "stable-code",
+        "stablecode",
+        "codestral",
+        "granite-code"
+    ]
+
+    /// Whether `model` is known to support native FIM completion.
+    ///
+    /// Pure, offline name classifier — used to route the completion path to
+    /// native `suffix`-field FIM (capable) or the legacy prose prompt (otherwise).
+    public static func isFIMCapable(_ model: String) -> Bool {
+        let normalized = model.lowercased()
+        return fimCapableModelFragments.contains { normalized.contains($0) }
+    }
+
+    /// Native fill-in-the-middle completion at the cursor.
+    ///
+    /// For FIM-capable models (``isFIMCapable(_:)``) this sends `prompt: prefix`
+    /// plus the Ollama `suffix` field so the model infills the gap with its
+    /// native FIM tokens — the highest-ROI completion-quality path. For
+    /// non-FIM models it gracefully falls back to the legacy prose prompt
+    /// (no `suffix` field). Either path is accumulated from the S1 streaming
+    /// transport (``generateStream(prompt:suffix:role:options:)``).
+    ///
+    /// - Parameters:
+    ///   - prefix: Buffer text before the cursor.
+    ///   - suffix: Buffer text after the cursor.
+    ///   - role: The request role (defaults to `.completion`).
+    ///   - projectGuidance: Optional project guidance — applied only on the
+    ///     prose fallback path (native FIM has no prompt slot for it).
+    public func completeFIM(
         prefix: String,
         suffix: String,
+        role: LocalAIRole = .completion,
         projectGuidance: String? = nil
     ) async throws -> LocalAITextSuggestion {
-        let guidance = projectGuidance?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let context = guidance?.isEmpty == false ? "\nProject guidance:\n\(guidance!)\n" : ""
-        let prompt = """
-        Complete this editor buffer at the cursor. Return only the text to insert at the cursor, no markdown.\(context)
-        Prefix:
-        \(prefix)
+        let prompt: String
+        let fimSuffix: String?
+        if Self.isFIMCapable(model) {
+            // Native FIM: the model infills between prefix and suffix.
+            prompt = prefix
+            fimSuffix = suffix
+        } else {
+            // Graceful fallback: the legacy prose prompt, no suffix field.
+            let guidance = projectGuidance?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let context = guidance?.isEmpty == false ? "\nProject guidance:\n\(guidance!)\n" : ""
+            prompt = """
+            Complete this editor buffer at the cursor. Return only the text to insert at the cursor, no markdown.\(context)
+            Prefix:
+            \(prefix)
 
-        Suffix:
-        \(suffix)
-        """
-        let response = try await generate(prompt: prompt)
+            Suffix:
+            \(suffix)
+            """
+            fimSuffix = nil
+        }
+
+        var response = ""
+        for try await token in generateStream(prompt: prompt, suffix: fimSuffix, role: role) {
+            response += token.response
+        }
         let text = response.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else {
             throw LocalAIClientError.emptySuggestion
         }
         return LocalAITextSuggestion(text: text)
+    }
+
+    /// Editor completion at the cursor, re-pointed onto native FIM.
+    ///
+    /// Preserves the original signature so the existing store caller is
+    /// unchanged; delegates to ``completeFIM(prefix:suffix:role:projectGuidance:)``.
+    public func suggestEditorCompletion(
+        prefix: String,
+        suffix: String,
+        projectGuidance: String? = nil
+    ) async throws -> LocalAITextSuggestion {
+        try await completeFIM(prefix: prefix, suffix: suffix, projectGuidance: projectGuidance)
     }
 
     private func generate(prompt: String) async throws -> String {
