@@ -94,6 +94,119 @@ final class TermyStoreAITests: XCTestCase {
         })
     }
 
+    // MARK: - ED-4: live selection (normal editing) drives explain + completion
+
+    /// In NORMAL (non-Vim) editing, explain-on-selection must operate on the live
+    /// `editorSelection` reported by the editing surface, and the prompt must be
+    /// enriched with the enclosing-scope header — all over loopback only.
+    @MainActor
+    func testExplainEditorSelectionUsesLiveSelectionAndScopeContextInNormalMode() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [TermyStoreLocalAIURLProtocol.self]
+        TermyStoreLocalAIURLProtocol.handler = { request in
+            // P1: every request must target a loopback host.
+            let host = request.url?.host ?? ""
+            XCTAssertTrue(["localhost", "127.0.0.1", "::1"].contains(host), "non-loopback host: \(host)")
+
+            let body = try XCTUnwrap(request.bodyData)
+            let json = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
+            let prompt = try XCTUnwrap(json["prompt"] as? String)
+            // The live selection text (the `run()` call) flows into the prompt…
+            XCTAssertTrue(prompt.contains("run()"), prompt)
+            // …enriched with the enclosing-scope header derived offline.
+            XCTAssertTrue(prompt.contains("Enclosing scope:"), prompt)
+            XCTAssertTrue(prompt.contains("func deploy()"), prompt)
+
+            let response = HTTPURLResponse(
+                url: request.url!, statusCode: 200, httpVersion: nil,
+                headerFields: ["Content-Type": "application/json"]
+            )!
+            return .complete(response, Data(#"{"response":"It runs the deploy step."}"#.utf8))
+        }
+        defer { TermyStoreLocalAIURLProtocol.handler = nil }
+
+        let store = TermyStore(
+            startInitialPTY: false,
+            localAISession: URLSession(configuration: configuration)
+        )
+        store.editorVimEnabled = false
+        store.scratchText = "func deploy() {\n    run()\n}\n"
+        // Select "run()" (UTF-16 offsets into the buffer).
+        let ns = store.scratchText as NSString
+        let runRange = ns.range(of: "run()")
+        store.editorSelection = EditorSelection(location: runRange.location, length: runRange.length)
+        XCTAssertTrue(store.hasEditorSelectionForAI)
+
+        store.explainEditorSelectionWithLocalAI()
+
+        try await waitUntil { store.aiExplanation == "It runs the deploy step." }
+        XCTAssertEqual(store.aiConversationHistory.last, "editor-selection: It runs the deploy step.")
+    }
+
+    /// With no selection and Vim off, completion must insert at the live caret
+    /// (selection start), not blindly at end-of-buffer.
+    @MainActor
+    func testCompletionInsertsAtLiveCaretInNormalMode() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [TermyStoreLocalAIURLProtocol.self]
+        TermyStoreLocalAIURLProtocol.handler = { request in
+            let response = HTTPURLResponse(
+                url: request.url!, statusCode: 200, httpVersion: nil,
+                headerFields: ["Content-Type": "application/x-ndjson"]
+            )!
+            return .complete(response, Data((#"{"response":"X","done":true}"# + "\n").utf8))
+        }
+        defer { TermyStoreLocalAIURLProtocol.handler = nil }
+
+        let store = TermyStore(
+            startInitialPTY: false,
+            localAISession: URLSession(configuration: configuration)
+        )
+        store.editorVimEnabled = false
+        store.scratchText = "abcdef"
+        // Caret after "abc" (collapsed selection at offset 3).
+        store.editorSelection = EditorSelection(location: 3, length: 0)
+
+        store.suggestEditorCompletionWithLocalAI()
+        try await waitUntil { store.editorAICompletion == "X" }
+
+        store.acceptEditorAICompletion()
+        XCTAssertEqual(store.scratchText, "abcXdef")
+        XCTAssertEqual(store.editorAICompletion, "")
+    }
+
+    /// Before the editing surface has reported any caret, completion must append
+    /// at end-of-buffer (legacy behavior) — NOT prepend at offset 0 — because the
+    /// model's untouched default selection (0/0) is indistinguishable from a real
+    /// caret-at-start.
+    @MainActor
+    func testCompletionAppendsAtEndWhenNoCaretReportedYet() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [TermyStoreLocalAIURLProtocol.self]
+        TermyStoreLocalAIURLProtocol.handler = { request in
+            let response = HTTPURLResponse(
+                url: request.url!, statusCode: 200, httpVersion: nil,
+                headerFields: ["Content-Type": "application/x-ndjson"]
+            )!
+            return .complete(response, Data((#"{"response":"X","done":true}"# + "\n").utf8))
+        }
+        defer { TermyStoreLocalAIURLProtocol.handler = nil }
+
+        let store = TermyStore(
+            startInitialPTY: false,
+            localAISession: URLSession(configuration: configuration)
+        )
+        store.editorVimEnabled = false
+        store.scratchText = "abcdef"
+        // No editorSelection ever set → editorSelectionReported stays false.
+
+        store.suggestEditorCompletionWithLocalAI()
+        try await waitUntil { store.editorAICompletion == "X" }
+
+        store.acceptEditorAICompletion()
+        XCTAssertEqual(store.scratchText, "abcdefX")
+    }
+
     // MARK: - AI-S5: streaming + Esc-cancel + stale-gen guard
 
     @MainActor
