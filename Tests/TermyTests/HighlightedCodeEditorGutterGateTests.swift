@@ -61,4 +61,74 @@ final class HighlightedCodeEditorGutterGateTests: XCTestCase {
             try? png.write(to: URL(fileURLWithPath: "/tmp/gate-editor-gutter-01.png"))
         }
     }
+
+    // MARK: - ED-5 git blame gutter
+
+    private func sampleBlame(lineCount: Int) -> GitBlame {
+        let authors = ["Ada Lovelace", "Grace Hopper", "Carol Shaw"]
+        let lines = (1...lineCount).map { n in
+            GitBlameLine(lineNumber: n,
+                         sha: String(format: "%040x", n * 0x1111),
+                         author: authors[(n - 1) % authors.count],
+                         date: Date(timeIntervalSince1970: 1_700_000_000 + Double(n) * 86_400))
+        }
+        return GitBlame(lines: lines)
+    }
+
+    func test_blameLabel_showsAuthorAndShortSHA() {
+        let blame = sampleBlame(lineCount: 1)
+        let label = try? XCTUnwrap(EditorBlameGutter.label(for: 1, in: blame))
+        XCTAssertEqual(label, "Ada · \(blame.line(1)!.shortSHA)")
+    }
+
+    func test_blameLabel_uncommittedLineShowsMarker() {
+        let blame = GitBlame(lines: [
+            GitBlameLine(lineNumber: 1, sha: String(repeating: "0", count: 40),
+                         author: "Not Committed Yet", date: nil)
+        ])
+        XCTAssertEqual(EditorBlameGutter.label(for: 1, in: blame), "uncommitted")
+    }
+
+    func test_blameLabel_nilWhenLineHasNoBlame() {
+        XCTAssertNil(EditorBlameGutter.label(for: 99, in: sampleBlame(lineCount: 3)))
+        XCTAssertNil(EditorBlameGutter.label(for: 1, in: nil))
+    }
+
+    func test_ruler_widensWhenBlamePresentAndNarrowsWhenCleared() {
+        let scroll = HighlightedCodeEditor.makeScrollViewWithGutter(text: "a\nb\nc\n")
+        guard let ruler = scroll.verticalRulerView as? LineNumberRulerView else {
+            return XCTFail("expected LineNumberRulerView")
+        }
+        let bareThickness = ruler.ruleThickness
+        ruler.blame = sampleBlame(lineCount: 3)
+        XCTAssertGreaterThan(ruler.ruleThickness, bareThickness,
+                             "ruler must reserve extra width for the blame column")
+        ruler.blame = nil
+        XCTAssertEqual(ruler.ruleThickness, bareThickness,
+                       "ruler must narrow back when blame is cleared")
+    }
+
+    func test_blameGutterRendersToPNG_forOwnerGate() throws {
+        let source = """
+        import Foundation
+
+        func greet(name: String) -> String {
+            return "Hello, \\(name)"
+        }
+        """
+        let scroll = HighlightedCodeEditor.makeScrollViewWithGutter(text: source)
+        let ruler = try XCTUnwrap(scroll.verticalRulerView as? LineNumberRulerView)
+        ruler.blame = sampleBlame(lineCount: 5)
+        scroll.frame = NSRect(x: 0, y: 0, width: 680, height: 320)
+        let textView = try XCTUnwrap(scroll.documentView as? NSTextView)
+        textView.layoutManager?.ensureLayout(for: textView.textContainer!)
+        scroll.tile()
+        scroll.layoutSubtreeIfNeeded()
+
+        guard let rep = scroll.bitmapImageRepForCachingDisplay(in: scroll.bounds) else { return }
+        scroll.cacheDisplay(in: scroll.bounds, to: rep)
+        if let png = rep.representation(using: .png, properties: [:]) {
+            try? png.write(to: URL(fileURLWithPath: "/tmp/gate-editor-blame-gutter-01.png"))
+        }
+    }
 }

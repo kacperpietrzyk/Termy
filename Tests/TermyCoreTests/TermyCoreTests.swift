@@ -6478,6 +6478,100 @@ final class TermyCoreTests: XCTestCase {
         XCTAssertTrue(PrivateSyncAppEventCoordinator.defaultFetchRecordTypes.contains("Alias"))
     }
 
+    // MARK: - GitBlame parse (EDITOR-CESE Slice 5) — pure, never spawns git
+
+    func testGitBlameParseLinePorcelainAssignsPerLineProvenance() {
+        // Two lines from two different commits. `--line-porcelain` repeats the
+        // full header for every line, so each record is self-contained.
+        let output = """
+        aabbccddeeff00112233445566778899aabbccdd 1 1
+        author Ada Lovelace
+        author-mail <ada@example.com>
+        author-time 1700000000
+        author-tz +0000
+        committer Ada Lovelace
+        committer-time 1700000000
+        summary first line
+        filename foo.swift
+        \timport Foundation
+        1122334455667788990011223344556677889900 2 2
+        author Grace Hopper
+        author-mail <grace@example.com>
+        author-time 1700086400
+        author-tz +0000
+        summary second line
+        filename foo.swift
+        \tlet x = 1
+        """
+        let blame = GitBlame.parse(linePorcelain: output)
+        XCTAssertEqual(blame.lines.count, 2)
+        XCTAssertEqual(blame.line(1)?.author, "Ada Lovelace")
+        XCTAssertEqual(blame.line(1)?.shortSHA, "aabbccdd")
+        XCTAssertEqual(blame.line(1)?.date, Date(timeIntervalSince1970: 1_700_000_000))
+        XCTAssertEqual(blame.line(2)?.author, "Grace Hopper")
+        XCTAssertEqual(blame.line(2)?.shortSHA, "11223344")
+        XCTAssertFalse(blame.line(1)?.isUncommitted ?? true)
+    }
+
+    func testGitBlameParseCarriesSameCommitAcrossConsecutiveLines() {
+        // The classic blame bug: multiple lines from the SAME commit. With
+        // --line-porcelain each repeats the header, so both must resolve fully.
+        let output = """
+        deadbeefdeadbeefdeadbeefdeadbeefdeadbeef 10 10 2
+        author Carol
+        author-time 1600000000
+        summary same commit
+        filename a.txt
+        \tline ten
+        deadbeefdeadbeefdeadbeefdeadbeefdeadbeef 11 11
+        author Carol
+        author-time 1600000000
+        summary same commit
+        filename a.txt
+        \tline eleven
+        """
+        let blame = GitBlame.parse(linePorcelain: output)
+        XCTAssertEqual(blame.lines.count, 2)
+        XCTAssertEqual(blame.line(10)?.author, "Carol")
+        XCTAssertEqual(blame.line(11)?.author, "Carol")
+        XCTAssertEqual(blame.line(10)?.sha, blame.line(11)?.sha)
+    }
+
+    func testGitBlameParseFlagsUncommittedZeroSHA() {
+        // git emits an all-zero SHA for a working-tree line not yet committed.
+        let output = """
+        0000000000000000000000000000000000000000 3 3
+        author Not Committed Yet
+        author-time 1700000000
+        summary Version of foo.swift from foo.swift
+        filename foo.swift
+        \tlet y = 2
+        """
+        let blame = GitBlame.parse(linePorcelain: output)
+        XCTAssertEqual(blame.lines.count, 1)
+        XCTAssertTrue(blame.line(3)?.isUncommitted ?? false)
+    }
+
+    func testGitBlameParseEmptyOutputYieldsNoLines() {
+        XCTAssertTrue(GitBlame.parse(linePorcelain: "").lines.isEmpty)
+    }
+
+    func testGitBlameParseUsesFinalLineNumberNotOriginal() {
+        // "<sha> <orig> <final>" — when a line moved, final (the current file
+        // position) is what the gutter must key off, not the original.
+        let output = """
+        abcabcabcabcabcabcabcabcabcabcabcabcabca 42 7
+        author Mover
+        author-time 1700000000
+        summary moved line
+        filename b.txt
+        \tmoved content
+        """
+        let blame = GitBlame.parse(linePorcelain: output)
+        XCTAssertEqual(blame.lines.count, 1)
+        XCTAssertEqual(blame.lines.first?.lineNumber, 7)
+    }
+
 }
 
 private final class LocalAIURLProtocol: URLProtocol {

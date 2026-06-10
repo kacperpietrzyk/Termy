@@ -296,6 +296,21 @@ public struct GitRepository: Sendable {
         return GitCommitResult(summary: result.stdout + result.stderr)
     }
 
+    /// EDITOR-CESE Slice 5: per-line provenance for `file` (a path relative to
+    /// `root`, or absolute inside it), via `git blame --line-porcelain`. This is
+    /// the SINGLE git invocation that backs the editor's read-only blame gutter —
+    /// the editor never shells out itself (integration principle: one capability,
+    /// one home). Throws when the path is untracked / never committed (git's "no
+    /// such path" error); callers treat that as "no blame".
+    ///
+    /// `-w` ignores whitespace-only changes so reformatting doesn't reassign every
+    /// line; `--line-porcelain` repeats the full commit header per line for a
+    /// trivial, robust parse (see `GitBlame.parse`).
+    public func blame(file: String) throws -> GitBlame {
+        let output = try runGit(["blame", "--line-porcelain", "-w", "--", file]).stdout
+        return GitBlame.parse(linePorcelain: output)
+    }
+
     public func resolveHEAD() throws -> String {
         try runGit(["rev-parse", "HEAD"]).stdout
             .trimmingCharacters(in: .whitespacesAndNewlines)

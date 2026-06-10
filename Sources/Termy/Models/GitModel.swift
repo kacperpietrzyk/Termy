@@ -26,5 +26,18 @@ final class GitModel {
     /// instead of a raw error string.
     var gitIsRepository = true
 
+    /// EDITOR-CESE Slice 5: per-line blame for the editor's ACTIVE file, fed FROM
+    /// the Git module (one capability, one home — the editor never shells out).
+    /// Keyed by absolute file path so a stale fetch for a now-closed file is
+    /// ignored. `nil` blame = no provenance to show (scratch / untracked / outside
+    /// a repo / dirty buffer). Transient; recomputed on demand, never persisted.
+    var editorBlame: GitBlame?
+    /// The absolute path the cached `editorBlame` belongs to. The gutter only
+    /// renders blame when this matches the active buffer's path.
+    var editorBlamePath: String?
+    /// HEAD sha at the time `editorBlame` was fetched, so the cache is invalidated
+    /// when the repo advances (commit/checkout) under the same file.
+    var editorBlameHeadSHA: String?
+
     init() {}
 }
