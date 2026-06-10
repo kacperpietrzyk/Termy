@@ -245,6 +245,40 @@ final class EditorBuffersTests: XCTestCase {
         XCTAssertFalse(store.openBuffers.first { $0.id == store.activeBufferID }!.isDirty)
     }
 
+    // MARK: - ED-5 blame gutter read guard
+
+    func testEditorBlameHiddenForScratchBuffer() throws {
+        let store = TermyStore(startInitialPTY: false)
+        // Pretend a fetch cached blame for some path; the active buffer is the
+        // scratch (filePath == nil), so the read guard must still hide it.
+        store.editorBlame = GitBlame(lines: [GitBlameLine(lineNumber: 1, sha: "abc", author: "x", date: nil)])
+        store.editorBlamePath = "/somewhere/file.swift"
+        XCTAssertNil(store.editorBlameForActiveBuffer)
+    }
+
+    func testEditorBlameHiddenWhenBufferDirty() throws {
+        let dir = try makeTempFile(name: "alpha.swift", contents: "AAA")
+        let store = TermyStore(startInitialPTY: false, projectRoot: dir.root)
+        store.openFileInEditorBuffer("alpha.swift")
+        // Simulate a fetch that landed for this path…
+        store.editorBlame = GitBlame(lines: [GitBlameLine(lineNumber: 1, sha: "abc", author: "x", date: nil)])
+        store.editorBlamePath = "alpha.swift"
+        XCTAssertNotNil(store.editorBlameForActiveBuffer, "clean buffer with matching blame shows it")
+        // …then the user types: a dirty buffer must hide blame (offsets drift).
+        store.scratchText = "AAA changed"
+        XCTAssertNil(store.editorBlameForActiveBuffer)
+    }
+
+    func testEditorBlameHiddenWhenCachedPathDiffersFromActive() throws {
+        let dir = try makeTempFile(name: "alpha.swift", contents: "AAA")
+        let store = TermyStore(startInitialPTY: false, projectRoot: dir.root)
+        store.openFileInEditorBuffer("alpha.swift")
+        // Blame cached for a stale (now-closed) path must not leak into this buffer.
+        store.editorBlame = GitBlame(lines: [GitBlameLine(lineNumber: 1, sha: "abc", author: "x", date: nil)])
+        store.editorBlamePath = "other.swift"
+        XCTAssertNil(store.editorBlameForActiveBuffer)
+    }
+
     // MARK: - Helpers
 
     private func makeTempFile(name: String, contents: String) throws -> (root: URL, file: URL) {

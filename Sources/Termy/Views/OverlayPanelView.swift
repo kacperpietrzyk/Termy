@@ -991,6 +991,10 @@ private struct EditorPanel: View {
                 // old editorSyntaxTokens() `?? "Scratch.md"` fallback.
                 text: editorText,
                 fileName: store.editorFilePath.map { ($0 as NSString).lastPathComponent } ?? "Scratch.md",
+                // ED-5: read-only git-blame gutter, fed FROM the Git module. Hidden
+                // for scratch/dirty buffers and files outside a repo (the guard
+                // lives in editorBlameForActiveBuffer).
+                blame: store.editorBlameForActiveBuffer,
                 // ED-4: report the live selection so AI explain/complete operate on
                 // the user's real caret in normal (non-Vim) editing.
                 onSelectionChange: { selection in store.editorSelection = selection }

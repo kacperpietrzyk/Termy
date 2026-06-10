@@ -381,6 +381,18 @@ final class TermyStore: ObservableObject {
         get { appModel.git.gitIsRepository }
         set { objectWillChange.send(); appModel.git.gitIsRepository = newValue }
     }
+    var editorBlame: GitBlame? {
+        get { appModel.git.editorBlame }
+        set { objectWillChange.send(); appModel.git.editorBlame = newValue }
+    }
+    var editorBlamePath: String? {
+        get { appModel.git.editorBlamePath }
+        set { objectWillChange.send(); appModel.git.editorBlamePath = newValue }
+    }
+    var editorBlameHeadSHA: String? {
+        get { appModel.git.editorBlameHeadSHA }
+        set { objectWillChange.send(); appModel.git.editorBlameHeadSHA = newValue }
+    }
     // M2c-2 strangler facade → `appModel.files`. Computed forwarders; the
     // canonical bypass invariant + rationale is at the `let appModel`
     // comment below. Transient — deleted in the final M2c sub-plan.
@@ -3882,6 +3894,7 @@ final class TermyStore: ObservableObject {
             }
             openModuleTab(.editor)
             statusMessage = "Opened \(path)."
+            refreshEditorBlame()
         } catch {
             statusMessage = "Open file failed: \(error.localizedDescription)"
         }
@@ -3892,6 +3905,7 @@ final class TermyStore: ObservableObject {
         guard appModel.editor.openBuffers.contains(where: { $0.id == id }) else { return }
         objectWillChange.send()
         appModel.editor.activeBufferID = id
+        refreshEditorBlame()
     }
 
     /// Close an editor buffer (M3). Never removes the last buffer; if the active
@@ -3996,8 +4010,67 @@ final class TermyStore: ObservableObject {
             }
             refreshFiles()
             statusMessage = "Saved \(editorFilePath)."
+            // The buffer is now clean and on disk — re-blame so the gutter reflects
+            // any newly-committed lines / picks up "not committed yet" markers.
+            refreshEditorBlame()
         } catch {
             statusMessage = "Save failed: \(error.localizedDescription)"
+        }
+    }
+
+    // MARK: - ED-5: editor git-blame gutter (read-only, fed FROM the Git module)
+
+    /// The blame to render in the editor gutter for the CURRENTLY-active buffer,
+    /// or `nil` when there is nothing trustworthy to show. Guards:
+    ///   • scratch / unsaved buffer (`filePath == nil`) — no committed file.
+    ///   • DIRTY buffer — unsaved edits drift the line offsets, so blame would
+    ///     mis-align; we hide rather than ship silent misalignment (advisor #3).
+    ///   • cached blame belongs to a DIFFERENT file (stale fetch for a closed tab).
+    /// Pure read — never spawns git; the fetch is `refreshEditorBlame()`.
+    var editorBlameForActiveBuffer: GitBlame? {
+        guard let path = editorFilePath,
+              let active = appModel.editor.openBuffers.first(where: { $0.id == appModel.editor.activeBufferID }),
+              !active.isDirty,
+              editorBlamePath == path else { return nil }
+        return editorBlame
+    }
+
+    /// Fetch per-line blame for the active editor file FROM the Git module (one
+    /// capability, one home — the editor never shells out). No-op for a
+    /// scratch/dirty buffer or a file outside any git repo. Resolves the git root
+    /// from the ACTIVE FILE (not just the session cwd) so blame works for any open
+    /// file that lives in a repo. Runs off the main actor (blame can be slow on
+    /// large histories — the P0-7 main-thread-walk lesson) and caches by
+    /// (absolute path, HEAD sha); a fetch whose path no longer matches the active
+    /// buffer on completion is discarded.
+    func refreshEditorBlame() {
+        guard let path = editorFilePath,
+              let active = appModel.editor.openBuffers.first(where: { $0.id == appModel.editor.activeBufferID }),
+              !active.isDirty else {
+            // Clear any stale blame so the gutter collapses for scratch/dirty buffers.
+            if editorBlame != nil { editorBlame = nil; editorBlamePath = nil; editorBlameHeadSHA = nil }
+            return
+        }
+        let fileURL = projectRoot.appendingPathComponent(path)
+        guard let root = GitRepository.enclosingGitRoot(of: fileURL) else {
+            if editorBlamePath != nil { editorBlame = nil; editorBlamePath = nil; editorBlameHeadSHA = nil }
+            return
+        }
+        let repository = GitRepository(root: root)
+        let relativePath = fileURL.standardizedFileURL.path
+            .replacingOccurrences(of: root.standardizedFileURL.path + "/", with: "")
+        DispatchQueue.global(qos: .userInitiated).async {
+            let head = (try? repository.resolveHEAD()) ?? ""
+            let blame = try? repository.blame(file: relativePath)
+            DispatchQueue.main.async {
+                // Discard if the user switched files/buffers while we were fetching.
+                guard self.editorFilePath == path,
+                      let current = self.appModel.editor.openBuffers.first(where: { $0.id == self.appModel.editor.activeBufferID }),
+                      !current.isDirty else { return }
+                self.editorBlame = blame
+                self.editorBlamePath = blame == nil ? nil : path
+                self.editorBlameHeadSHA = blame == nil ? nil : head
+            }
         }
     }
 

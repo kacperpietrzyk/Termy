@@ -33,10 +33,17 @@ struct HighlightedCodeEditor: NSViewRepresentable {
     /// normal editing — not only in Vim mode. Optional so existing callers that
     /// don't care about selection stay source-unchanged.
     var onSelectionChange: ((EditorSelection) -> Void)?
+    /// ED-5: per-line git provenance for the read-only blame gutter, fed FROM the
+    /// Git module. `nil` → no blame column (scratch/dirty buffer / outside a repo).
+    var blame: GitBlame?
 
-    init(text: Binding<String>, fileName: String?, onSelectionChange: ((EditorSelection) -> Void)? = nil) {
+    init(text: Binding<String>,
+         fileName: String?,
+         blame: GitBlame? = nil,
+         onSelectionChange: ((EditorSelection) -> Void)? = nil) {
         self._text = text
         self.fileName = fileName
+        self.blame = blame
         self.onSelectionChange = onSelectionChange
     }
 
@@ -80,6 +87,7 @@ struct HighlightedCodeEditor: NSViewRepresentable {
         let scroll = Self.makeScrollViewWithGutter(text: text)
         guard let textView = scroll.documentView as? NSTextView else { return scroll }
         textView.delegate = context.coordinator
+        (scroll.verticalRulerView as? LineNumberRulerView)?.blame = blame
         context.coordinator.applyHighlight(to: textView)
         return scroll
     }
@@ -87,6 +95,12 @@ struct HighlightedCodeEditor: NSViewRepresentable {
     func updateNSView(_ scroll: NSScrollView, context: Context) {
         guard let textView = scroll.documentView as? NSTextView else { return }
         context.coordinator.parent = self
+        // Refresh the blame column whenever the model's blame changes (file switch,
+        // fetch completion, save) — the gutter widens/redraws to match.
+        if let ruler = scroll.verticalRulerView as? LineNumberRulerView, ruler.blame != blame {
+            ruler.blame = blame
+            ruler.needsDisplay = true
+        }
         // Only overwrite when the external binding diverged (e.g. opening a new
         // file or a Vim command rewrote the buffer) — never on the user's own
         // keystrokes, which would fight the cursor.
@@ -169,11 +183,24 @@ struct HighlightedCodeEditor: NSViewRepresentable {
 final class LineNumberRulerView: NSRulerView {
     private weak var textView: NSTextView?
 
+    /// Width of the line-number portion of the gutter.
+    private let lineNumberWidth: CGFloat = 40
+    /// Extra width reserved for the blame column when blame is present (ED-5).
+    private let blameColumnWidth: CGFloat = 150
+
+    /// ED-5: per-line git provenance. Setting it widens/narrows the gutter so the
+    /// blame column only takes space when there is blame to show.
+    var blame: GitBlame? {
+        didSet {
+            ruleThickness = blame == nil ? lineNumberWidth : lineNumberWidth + blameColumnWidth
+        }
+    }
+
     init(textView: NSTextView) {
         self.textView = textView
         super.init(scrollView: textView.enclosingScrollView, orientation: .verticalRuler)
         clientView = textView
-        ruleThickness = 40
+        ruleThickness = lineNumberWidth
     }
 
     @available(*, unavailable)
@@ -226,6 +253,12 @@ final class LineNumberRulerView: NSRulerView {
             .foregroundColor: NSColor(Color(DesignTokens.fg3)),
         ]
 
+        // ED-5: blame text in a dimmer hue so the line numbers stay primary.
+        let blameAttributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.monospacedSystemFont(ofSize: 10, weight: .regular),
+            .foregroundColor: NSColor(Color(DesignTokens.fg3)).withAlphaComponent(0.7),
+        ]
+
         let relativePoint = convert(NSZeroPoint, from: textView)
         let visibleRect = scrollView.contentView.bounds
 
@@ -234,8 +267,15 @@ final class LineNumberRulerView: NSRulerView {
             guard y + font.boundingRectForFont.height >= 0, y <= visibleRect.height else { continue }
             let text = "\(label.number)" as NSString
             let size = text.size(withAttributes: attributes)
-            let drawX = ruleThickness - size.width - 6
+            // Right-align the line number within the line-number column.
+            let drawX = lineNumberWidth - size.width - 6
             text.draw(at: NSPoint(x: drawX, y: y), withAttributes: attributes)
+
+            // Blame column, drawn to the right of the line numbers when present.
+            if blame != nil, let blameLabel = EditorBlameGutter.label(for: label.number, in: blame) {
+                (blameLabel as NSString).draw(at: NSPoint(x: lineNumberWidth + 6, y: y + 1),
+                                              withAttributes: blameAttributes)
+            }
         }
     }
 }
