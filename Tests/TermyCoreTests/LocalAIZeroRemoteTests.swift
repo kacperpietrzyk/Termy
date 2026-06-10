@@ -78,7 +78,7 @@ final class LocalAIZeroRemoteTests: XCTestCase {
             newRequest: URLRequest(url: URL(string: "https://api.openai.com/v1/api/generate")!),
             completionHandler: { captured = .some($0) }
         )
-        XCTAssertNotNil(captured, "guard must invoke the completion handler")
+        XCTAssertTrue(captured != nil, "guard must invoke the completion handler")
         XCTAssertNil(captured!, "a non-loopback redirect target must NOT be followed")
         session.invalidateAndCancel()
     }
@@ -103,7 +103,7 @@ final class LocalAIZeroRemoteTests: XCTestCase {
             newRequest: URLRequest(url: target),
             completionHandler: { captured = .some($0) }
         )
-        XCTAssertNotNil(captured, "guard must invoke the completion handler")
+        XCTAssertTrue(captured != nil, "guard must invoke the completion handler")
         XCTAssertEqual(captured??.url, target, "a loopback redirect target must be followed unchanged")
         session.invalidateAndCancel()
     }
