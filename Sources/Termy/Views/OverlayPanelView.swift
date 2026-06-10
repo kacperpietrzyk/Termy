@@ -1084,6 +1084,11 @@ private struct EditorPanel: View {
                 }
                 .buttonStyle(TermyCompactButtonStyle())
                 .help("New scratch buffer")
+                Button { store.presentEditorQuickOpen() } label: {
+                    Image(systemName: "magnifyingglass").font(.system(size: 11, weight: .medium))
+                }
+                .buttonStyle(TermyCompactButtonStyle())
+                .help("Quick Open file or buffer (⌘P)")
             }
         }
         .background {

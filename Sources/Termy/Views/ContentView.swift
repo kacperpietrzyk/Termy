@@ -24,6 +24,11 @@ struct ContentView: View {
                 CommandCenterView(store: store)
                     .transition(.opacity.combined(with: .scale(scale: 0.98)))
             }
+
+            if store.isEditorQuickOpenPresented {
+                EditorQuickOpenView(store: store)
+                    .transition(.opacity.combined(with: .scale(scale: 0.98)))
+            }
         }
         .background(WindowAccessor())
         .sheet(isPresented: Binding(

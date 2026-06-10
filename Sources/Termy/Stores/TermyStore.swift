@@ -210,6 +210,15 @@ final class TermyStore: ObservableObject {
     // newScratchBuffer methods (each sends objectWillChange like the setters).
     var openBuffers: [EditorBuffer] { appModel.editor.openBuffers }
     var activeBufferID: UUID { appModel.editor.activeBufferID }
+    // ED-3: ⌘P quick-open overlay state.
+    var isEditorQuickOpenPresented: Bool {
+        get { appModel.editor.isQuickOpenPresented }
+        set { objectWillChange.send(); appModel.editor.isQuickOpenPresented = newValue }
+    }
+    var editorQuickOpenQuery: String {
+        get { appModel.editor.quickOpenQuery }
+        set { objectWillChange.send(); appModel.editor.quickOpenQuery = newValue }
+    }
     // M2c-1 strangler facade → `appModel.ai`. Computed forwarders; the
     // canonical bypass invariant + rationale is at the `let appModel`
     // comment below. Transient — deleted in the final M2c sub-plan.
@@ -3893,6 +3902,72 @@ final class TermyStore: ObservableObject {
         appModel.editor.openBuffers.append(buffer)
         appModel.editor.activeBufferID = buffer.id
         openModuleTab(.editor)
+    }
+
+    // MARK: - ED-3: ⌘P fuzzy file/buffer quick-open
+
+    /// Context-aware ⌘P: in the editor module it opens the editor file/buffer
+    /// quick-open; everywhere else it falls back to the ⌘K command center (the
+    /// prior global "Quick Switcher" behavior), so ⌘P never goes dead.
+    func handleQuickOpenShortcut() {
+        if activeModule == .editor {
+            presentEditorQuickOpen()
+        } else {
+            perform("open-command-center")
+        }
+    }
+
+    /// Open the ⌘P quick-open overlay (open buffers first, then project files).
+    /// Routes to the editor module so the overlay always appears in context.
+    func presentEditorQuickOpen() {
+        openModuleTab(.editor)
+        objectWillChange.send()
+        appModel.editor.quickOpenQuery = ""
+        // Snapshot the project files ONCE here; per-keystroke re-ranking reads the
+        // cache (the bounded walk must not run on every keypress — P0-7 class).
+        appModel.editor.quickOpenFileCache = projectFilePathsForQuickOpen()
+        appModel.editor.isQuickOpenPresented = true
+    }
+
+    func dismissEditorQuickOpen() {
+        objectWillChange.send()
+        appModel.editor.isQuickOpenPresented = false
+        appModel.editor.quickOpenFileCache = []
+    }
+
+    /// Bounded snapshot of project files for the ⌘P switcher. Reuses the existing
+    /// `LocalFileService.tree()` walk WITH its hard `maxDepth`/`maxNodes` ceiling
+    /// (the P0-7 runaway guard — never loosened) and keeps files only (⌘P opens
+    /// files, not folders). Failures degrade to an empty list (buffers still work).
+    /// Called ONCE per overlay open (see `presentEditorQuickOpen`), never per keystroke.
+    private func projectFilePathsForQuickOpen() -> [String] {
+        let service = LocalFileService(root: projectRoot)
+        guard let items = try? service.tree() else { return [] }
+        return items.filter { !$0.item.isDirectory }.map { $0.item.relativePath }
+    }
+
+    /// Ranked ⌘P results for `query` via the SHARED `EditorQuickOpen`/`FuzzyMatcher`
+    /// (consistent with ⌘K): open buffers first, then deduped project files. Reads
+    /// the cached file snapshot — pure ranking, no filesystem access per keystroke.
+    func editorQuickOpenItems(query: String) -> [EditorQuickOpenItem] {
+        let buffers = appModel.editor.openBuffers.map {
+            EditorQuickOpenBuffer(id: $0.id, path: $0.filePath)
+        }
+        return EditorQuickOpen.rank(query: query,
+                                    buffers: buffers,
+                                    files: appModel.editor.quickOpenFileCache)
+    }
+
+    /// Activate a ⌘P result: select the buffer, or open the project file in a
+    /// buffer (reuse-or-append). Always dismisses the overlay.
+    func openEditorQuickOpenItem(_ item: EditorQuickOpenItem) {
+        switch item.kind {
+        case .buffer(let bufferID):
+            selectEditorBuffer(bufferID)
+        case .file:
+            if let path = item.path { openFileInEditorBuffer(path) }
+        }
+        dismissEditorQuickOpen()
     }
 
     func saveEditorFile() {
