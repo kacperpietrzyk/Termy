@@ -28,6 +28,17 @@ enum SyntaxTokenColor {
 struct HighlightedCodeEditor: NSViewRepresentable {
     @Binding var text: String
     let fileName: String?
+    /// ED-4: reports the live caret/selection (UTF-16 offset + length) back to the
+    /// model so local-AI explain/complete operate on the user's real selection in
+    /// normal editing — not only in Vim mode. Optional so existing callers that
+    /// don't care about selection stay source-unchanged.
+    var onSelectionChange: ((EditorSelection) -> Void)?
+
+    init(text: Binding<String>, fileName: String?, onSelectionChange: ((EditorSelection) -> Void)? = nil) {
+        self._text = text
+        self.fileName = fileName
+        self.onSelectionChange = onSelectionChange
+    }
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -102,6 +113,16 @@ struct HighlightedCodeEditor: NSViewRepresentable {
             parent.text = textView.string
             applyHighlight(to: textView)
             textView.enclosingScrollView?.verticalRulerView?.needsDisplay = true
+        }
+
+        /// ED-4: forward the live caret/selection (UTF-16 offsets) to the model so
+        /// the AI-on-selection path sees the user's real selection in normal
+        /// editing. A no-op when no observer is wired.
+        func textViewDidChangeSelection(_ notification: Notification) {
+            guard let onSelectionChange = parent.onSelectionChange,
+                  let textView = notification.object as? NSTextView else { return }
+            let range = textView.selectedRange()
+            onSelectionChange(EditorSelection(location: range.location, length: range.length))
         }
 
         /// Re-tokenize the whole buffer and recolor. Guards against a tokenizer

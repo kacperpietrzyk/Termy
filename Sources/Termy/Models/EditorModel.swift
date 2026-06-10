@@ -168,6 +168,27 @@ final class EditorModel {
         }
     }
 
+    /// ED-4: the live (UTF-16 offset) cursor/selection reported by the editing
+    /// surface for the active buffer. Previously the `EditorBuffer.selection`
+    /// field was DATA-only (ED-2); this projection wires it into the live AI
+    /// path so explain/complete-on-selection operate on the user's real caret in
+    /// normal (non-Vim) editing — not just when Vim mode is on.
+    var editorSelection: EditorSelection {
+        get { openBuffers.indices.contains(activeIndex) ? openBuffers[activeIndex].selection : EditorSelection() }
+        set {
+            guard openBuffers.indices.contains(activeIndex) else { return }
+            openBuffers[activeIndex].selection = newValue
+            editorSelectionReported = true
+        }
+    }
+
+    /// ED-4: whether the live editing surface has reported a caret/selection yet.
+    /// The model's default selection is `location 0/length 0`, which is
+    /// indistinguishable from a genuine caret-at-start — this flag lets the AI
+    /// insertion path fall back to end-of-buffer until the surface has actually
+    /// reported a position. Transient; not persisted.
+    var editorSelectionReported = false
+
     // MARK: - Codable snapshot (ED-2 — for a later iCloud-sync slice; no sync wired here)
 
     /// A `Codable` snapshot of the open-buffer set + active selection. The active

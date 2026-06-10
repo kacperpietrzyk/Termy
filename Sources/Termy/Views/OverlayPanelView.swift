@@ -990,7 +990,10 @@ private struct EditorPanel: View {
                 // (its seed content is a "# Termy Scratch" heading) — matches the
                 // old editorSyntaxTokens() `?? "Scratch.md"` fallback.
                 text: editorText,
-                fileName: store.editorFilePath.map { ($0 as NSString).lastPathComponent } ?? "Scratch.md"
+                fileName: store.editorFilePath.map { ($0 as NSString).lastPathComponent } ?? "Scratch.md",
+                // ED-4: report the live selection so AI explain/complete operate on
+                // the user's real caret in normal (non-Vim) editing.
+                onSelectionChange: { selection in store.editorSelection = selection }
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
@@ -1050,7 +1053,7 @@ private struct EditorPanel: View {
                 Button { store.suggestEditorEditWithLocalAI() } label: { Label("Propose", systemImage: "wand.and.stars") }
                     .disabled(store.editorAIInstruction.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 Button { store.explainEditorSelectionWithLocalAI() } label: { Label("Explain", systemImage: "text.magnifyingglass") }
-                    .disabled(store.editorVimState.visualSelectionRange == nil)
+                    .disabled(!store.hasEditorSelectionForAI)
                 Button { store.suggestEditorCompletionWithLocalAI() } label: { Label("Complete", systemImage: "text.append") }
             }
             HStack {

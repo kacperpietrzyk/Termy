@@ -205,6 +205,19 @@ final class TermyStore: ObservableObject {
         get { appModel.editor.editorVimState }
         set { objectWillChange.send(); appModel.editor.editorVimState = newValue }
     }
+    /// ED-4: live cursor/selection (UTF-16 offsets) reported by the editing
+    /// surface for the active buffer. Drives explain/complete-on-selection in
+    /// normal editing (the Vim path keeps using `editorVimState`).
+    var editorSelection: EditorSelection {
+        get { appModel.editor.editorSelection }
+        set { objectWillChange.send(); appModel.editor.editorSelection = newValue }
+    }
+    /// ED-4: whether the editing surface has reported a live caret yet (see
+    /// `EditorModel.editorSelectionReported`). Gates end-of-buffer fallback for
+    /// AI insertion.
+    private var editorSelectionReported: Bool {
+        appModel.editor.editorSelectionReported
+    }
     // M3 multi-file buffers: read-forwarders for the tab strip. Mutations go
     // through the openFileInEditorBuffer/selectEditorBuffer/closeEditorBuffer/
     // newScratchBuffer methods (each sends objectWillChange like the setters).
@@ -4031,6 +4044,7 @@ final class TermyStore: ObservableObject {
         let buffer = scratchText
         let guidance = aiGuidanceContext
         let endpointString = aiEndpoint
+        let scope = editorEnclosingScopeContext()
         runAccumulatingAIRequest(
             makeStream: { [weak self] in
                 guard let self else { throw LocalAIClientError.invalidResponse }
@@ -4038,7 +4052,8 @@ final class TermyStore: ObservableObject {
                 return self.localAIClient(endpoint: endpoint).suggestEditorEditStream(
                     instruction: instruction,
                     buffer: buffer,
-                    projectGuidance: guidance
+                    projectGuidance: guidance,
+                    enclosingScope: scope.isEmpty ? nil : scope
                 )
             },
             onFinish: { [weak self] fullText in
@@ -4073,12 +4088,17 @@ final class TermyStore: ObservableObject {
 
         let guidance = aiGuidanceContext
         let endpointString = aiEndpoint
+        let scope = editorEnclosingScopeContext()
         runStreamingAIRequest(
             into: \.aiExplanation,
             makeStream: { [weak self] in
                 guard let self else { throw LocalAIClientError.invalidResponse }
                 let endpoint = try LocalAIEndpoint(urlString: endpointString)
-                return self.localAIClient(endpoint: endpoint).explainEditorSelectionStream(selection, projectGuidance: guidance)
+                return self.localAIClient(endpoint: endpoint).explainEditorSelectionStream(
+                    selection,
+                    projectGuidance: guidance,
+                    enclosingScope: scope.isEmpty ? nil : scope
+                )
             },
             onFinish: { [weak self] explanation in
                 let text = explanation.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -5899,17 +5919,43 @@ final class TermyStore: ObservableObject {
         }
     }
 
-    private func selectedEditorTextForAI() -> String? {
-        guard editorVimEnabled,
-              let selection = editorVimState.visualSelectionRange,
-              selection.lowerBound < selection.upperBound else {
-            return nil
+    /// The character range `[lower, upper)` (Character offsets, clamped to the
+    /// buffer) currently selected in the editor. In Vim mode this is the visual
+    /// selection; in normal editing it is the live NSTextView selection reported
+    /// to `editorSelection` (UTF-16 offsets, converted to Character offsets so
+    /// indexing `scratchText` stays correct across multi-unit scalars).
+    private func selectedEditorCharacterRange() -> (lower: Int, upper: Int)? {
+        let text = scratchText
+        if editorVimEnabled {
+            guard let selection = editorVimState.visualSelectionRange,
+                  selection.lowerBound < selection.upperBound else { return nil }
+            let lower = max(0, min(selection.lowerBound, text.count))
+            let upper = max(lower, min(selection.upperBound, text.count))
+            return lower < upper ? (lower, upper) : nil
         }
-        let lowerBound = max(0, min(selection.lowerBound, scratchText.count))
-        let upperBound = max(lowerBound, min(selection.upperBound, scratchText.count))
-        let startIndex = scratchText.index(scratchText.startIndex, offsetBy: lowerBound)
-        let endIndex = scratchText.index(scratchText.startIndex, offsetBy: upperBound)
-        let selectedText = String(scratchText[startIndex..<endIndex])
+        // Normal editing: map the live UTF-16 selection onto Character offsets.
+        let ns = text as NSString
+        let nsLocation = max(0, min(editorSelection.location, ns.length))
+        let nsEnd = max(nsLocation, min(nsLocation + editorSelection.length, ns.length))
+        guard nsEnd > nsLocation else { return nil }
+        let lower = utf16OffsetToCharacterOffset(nsLocation, in: text)
+        let upper = utf16OffsetToCharacterOffset(nsEnd, in: text)
+        return upper > lower ? (lower, upper) : nil
+    }
+
+    /// ED-4: whether there is a non-empty editor selection the AI can explain —
+    /// either the Vim visual selection or the live (normal-editing) selection.
+    /// Drives the Explain button's enabled state.
+    var hasEditorSelectionForAI: Bool {
+        selectedEditorTextForAI() != nil
+    }
+
+    private func selectedEditorTextForAI() -> String? {
+        guard let range = selectedEditorCharacterRange() else { return nil }
+        let text = scratchText
+        let startIndex = text.index(text.startIndex, offsetBy: range.lower)
+        let endIndex = text.index(text.startIndex, offsetBy: range.upper)
+        let selectedText = String(text[startIndex..<endIndex])
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return selectedText.isEmpty ? nil : selectedText
     }
@@ -5924,7 +5970,60 @@ final class TermyStore: ObservableObject {
         if editorVimEnabled {
             return min(max(0, editorVimState.cursorOffset), scratchText.count)
         }
-        return scratchText.count
+        // Normal editing: insert at the live caret (selection start). The model's
+        // untouched default is location 0/length 0, which is indistinguishable
+        // from a genuine caret-at-start; before the editing surface has reported
+        // any selection we treat that default as "no live caret known" and fall
+        // back to end-of-buffer (the legacy behavior), so a Complete issued
+        // without ever focusing the editor still appends rather than prepending.
+        guard editorSelectionReported else { return scratchText.count }
+        return characterCountUpToLiveCaret()
+    }
+
+    /// Character-offset of the live caret (selection start), clamped.
+    private func characterCountUpToLiveCaret() -> Int {
+        let text = scratchText
+        let ns = text as NSString
+        let nsLocation = max(0, min(editorSelection.location, ns.length))
+        return utf16OffsetToCharacterOffset(nsLocation, in: text)
+    }
+
+    /// Convert a UTF-16 offset (NSTextView convention) into a Character offset
+    /// (String.Index distance) so `scratchText.index(_:offsetBy:)` is correct
+    /// even when the buffer contains multi-UTF-16-unit scalars (emoji etc.).
+    private func utf16OffsetToCharacterOffset(_ utf16Offset: Int, in text: String) -> Int {
+        let ns = text as NSString
+        let clamped = max(0, min(utf16Offset, ns.length))
+        guard let utf16Index = text.utf16.index(text.utf16.startIndex, offsetBy: clamped, limitedBy: text.utf16.endIndex),
+              let stringIndex = utf16Index.samePosition(in: text) else {
+            return text.count
+        }
+        return text.distance(from: text.startIndex, to: stringIndex)
+    }
+
+    /// ED-4: the enclosing-scope header context for the current selection (or the
+    /// live caret line when nothing is selected), used to enrich the local-AI
+    /// prompt. Empty string when no scope is identified.
+    private func editorEnclosingScopeContext() -> String {
+        let text = scratchText
+        let language = EditorLanguage(path: editorFilePath)
+        let selection: EditorSelection
+        if let range = selectedEditorCharacterRange() {
+            let ns = text as NSString
+            let nsLower = characterOffsetToUTF16(range.lower, in: text)
+            let nsUpper = characterOffsetToUTF16(range.upper, in: text)
+            selection = EditorSelection(location: min(nsLower, ns.length),
+                                        length: max(0, nsUpper - nsLower))
+        } else {
+            selection = EditorSelection(location: editorSelection.location, length: 0)
+        }
+        return EditorEnclosingScope.promptContext(in: text, selection: selection, language: language)
+    }
+
+    private func characterOffsetToUTF16(_ characterOffset: Int, in text: String) -> Int {
+        let clamped = max(0, min(characterOffset, text.count))
+        let index = text.index(text.startIndex, offsetBy: clamped)
+        return text.utf16.distance(from: text.utf16.startIndex, to: index.samePosition(in: text.utf16) ?? text.utf16.endIndex)
     }
 
     private var activePrivateSyncRecordNames: Set<String> {

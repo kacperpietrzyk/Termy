@@ -182,9 +182,22 @@ public struct LocalAIClient {
         """
     }
 
-    static func editorEditPrompt(instruction: String, buffer: String, projectGuidance: String?) -> String {
+    /// ED-4: optional enclosing-scope header block injected ABOVE the buffer/
+    /// selection so the model sees the surrounding declaration. Empty string →
+    /// no extra section (the heuristic found no scope, or it is disabled).
+    private static func scopeContext(_ enclosingScope: String?) -> String {
+        let scope = enclosingScope?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return scope?.isEmpty == false ? "\nEnclosing scope:\n\(scope!)\n" : ""
+    }
+
+    static func editorEditPrompt(
+        instruction: String,
+        buffer: String,
+        projectGuidance: String?,
+        enclosingScope: String? = nil
+    ) -> String {
         """
-        Rewrite this editor buffer according to the instruction. Return only the full replacement text or a unified diff patch, no markdown.\(guidanceContext(projectGuidance))
+        Rewrite this editor buffer according to the instruction. Return only the full replacement text or a unified diff patch, no markdown.\(guidanceContext(projectGuidance))\(scopeContext(enclosingScope))
         Instruction:
         \(instruction)
 
@@ -193,9 +206,13 @@ public struct LocalAIClient {
         """
     }
 
-    static func explainEditorSelectionPrompt(_ selection: String, projectGuidance: String?) -> String {
+    static func explainEditorSelectionPrompt(
+        _ selection: String,
+        projectGuidance: String?,
+        enclosingScope: String? = nil
+    ) -> String {
         """
-        Explain this selected editor text concisely. Return plain text, no markdown.\(guidanceContext(projectGuidance))
+        Explain this selected editor text concisely. Return plain text, no markdown.\(guidanceContext(projectGuidance))\(scopeContext(enclosingScope))
         Selection:
         \(selection)
         """
@@ -256,10 +273,16 @@ public struct LocalAIClient {
         instruction: String,
         buffer: String,
         projectGuidance: String? = nil,
+        enclosingScope: String? = nil,
         role: LocalAIRole = .chat
     ) -> AsyncThrowingStream<LocalAIToken, Error> {
         generateStream(
-            prompt: Self.editorEditPrompt(instruction: instruction, buffer: buffer, projectGuidance: projectGuidance),
+            prompt: Self.editorEditPrompt(
+                instruction: instruction,
+                buffer: buffer,
+                projectGuidance: projectGuidance,
+                enclosingScope: enclosingScope
+            ),
             role: role
         )
     }
@@ -267,9 +290,13 @@ public struct LocalAIClient {
     public func explainEditorSelectionStream(
         _ selection: String,
         projectGuidance: String? = nil,
+        enclosingScope: String? = nil,
         role: LocalAIRole = .chat
     ) -> AsyncThrowingStream<LocalAIToken, Error> {
-        generateStream(prompt: Self.explainEditorSelectionPrompt(selection, projectGuidance: projectGuidance), role: role)
+        generateStream(
+            prompt: Self.explainEditorSelectionPrompt(selection, projectGuidance: projectGuidance, enclosingScope: enclosingScope),
+            role: role
+        )
     }
 
     /// The set of local-model name fragments known to support native
