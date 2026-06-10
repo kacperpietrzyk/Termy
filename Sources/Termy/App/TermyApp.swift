@@ -179,8 +179,10 @@ struct TermyApp: App {
                     store.handleNewTabShortcut()
                 }
                 .keyboardShortcut("t", modifiers: .command)
-                Button("Quick Switcher") { store.perform("open-command-center") }
-                    .keyboardShortcut("p", modifiers: .command)
+                Button(store.activeTab == .module(.editor) ? "Quick Open File…" : "Quick Switcher") {
+                    store.handleQuickOpenShortcut()
+                }
+                .keyboardShortcut("p", modifiers: .command)
                 Button("Close Session") { store.closeActiveTab() }
                     .keyboardShortcut("w", modifiers: .command)
             }

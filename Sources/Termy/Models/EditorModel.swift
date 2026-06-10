@@ -117,6 +117,16 @@ final class EditorModel {
     var editorAIMultiFilePatchPaths: [String] = []
     var editorVimEnabled = false
 
+    /// ED-3: drives the ⌘P fuzzy file/buffer quick-open overlay (open buffers
+    /// first, then bounded project files). Transient UI state, never persisted.
+    var isQuickOpenPresented = false
+    var quickOpenQuery = ""
+    /// Project-file paths snapshotted ONCE when the overlay opens (a bounded
+    /// `LocalFileService.tree()` walk). Re-ranking per keystroke reads this cache
+    /// instead of re-walking the filesystem each keypress (avoids the P0-7
+    /// main-thread-walk class). Cleared on dismiss.
+    var quickOpenFileCache: [String] = []
+
     init() {
         let seed = EditorBuffer(filePath: nil, text: Self.scratchSeed)
         self.openBuffers = [seed]
