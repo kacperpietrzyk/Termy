@@ -26,7 +26,7 @@ let package = Package(
         // (asserted by the M4 dependency-boundary guard test). Sparkle
         // is a binary dynamic framework: package_dmg.sh / build_and_run.sh
         // embed it + fix rpath + sign inside-out.
-        .package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.9.2")
+        .package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.9.3")
     ],
     targets: [
         .executableTarget(
