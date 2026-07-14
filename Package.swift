@@ -20,13 +20,13 @@ let package = Package(
         // requires `products:` to precede `dependencies:` in the Package()
         // initializer, so this block follows `products:` above (the
         // `exact:` pin form is supported from swift-tools 5.7+).
-        .package(url: "https://github.com/migueldeicaza/SwiftTerm.git", exact: "1.13.0"),
+        .package(url: "https://github.com/migueldeicaza/SwiftTerm.git", exact: "1.14.0"),
         // M4: Sparkle 2.9.2 (exact pin) — auto-update, app target only.
         // Like SwiftTerm, NEVER add to TermyCore/TermyRDP/TermySync
         // (asserted by the M4 dependency-boundary guard test). Sparkle
         // is a binary dynamic framework: package_dmg.sh / build_and_run.sh
         // embed it + fix rpath + sign inside-out.
-        .package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.9.2")
+        .package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.9.4")
     ],
     targets: [
         .executableTarget(
